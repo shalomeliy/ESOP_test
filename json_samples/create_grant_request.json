@@ -1,0 +1,8 @@
+{
+    "employee_id": "EMP-001",
+    "pool_id": "POOL-2021",
+    "grant_type": "IL_102_CAPITAL_GAINS",
+    "total_options": 5000,
+    "exercise_price": 3.0,
+    "grant_date": "2026-01-01"
+  }

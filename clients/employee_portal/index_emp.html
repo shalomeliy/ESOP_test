@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>פורטל עובד אישי - ESOP Enterprise</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Rubik', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+    <div id="login-screen" class="flex items-center justify-center min-h-screen p-4 bg-slate-950">
+        <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-emerald-600/20 text-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
+                    <i class="fa-solid text-3xl fa-user-tie"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-white">פורטל עובד - ESOP</h1>
+                <p class="text-slate-400 text-sm mt-1">צפייה במצב האופציות, סימולטור, ובקשות מימוש</p>
+            </div>
+            <form id="login-form" onsubmit="handleLogin(event)" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">שם משתמש (אימייל)</label>
+                    <input type="text" id="username" value="israel@company.com" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-emerald-500 transition font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">סיסמה</label>
+                    <input type="password" id="password" value="Demo1234!" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-emerald-500 transition">
+                </div>
+                <div id="login-error" class="hidden p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-sm text-center"></div>
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-emerald-600/30">התחבר לחשבון שלי</button>
+            </form>
+            <p class="text-xs text-slate-500 text-center mt-6">כניסה לדוגמה: <code class="text-slate-300">israel@company.com</code> / <code class="text-slate-300">Demo1234!</code></p>
+        </div>
+    </div>
+
+    <div id="main-app" class="hidden flex min-h-screen">
+        <aside class="w-64 bg-slate-950 border-l border-slate-800 flex flex-col justify-between">
+            <div>
+                <div class="p-6 border-b border-slate-800 flex items-center gap-3">
+                    <i class="fa-solid fa-user-tie text-emerald-500 text-2xl"></i>
+                    <div>
+                        <h2 class="font-bold text-white text-lg">החשבון שלי</h2>
+                        <span class="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">עובד</span>
+                    </div>
+                </div>
+                <nav class="p-4 space-y-2">
+                    <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-chart-pie"></i> הון המניות שלי</button>
+                    <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-paper-plane"></i> בקשות המימוש שלי</button>
+                </nav>
+            </div>
+            <div class="p-4 border-t border-slate-800">
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center font-bold text-emerald-400">EM</div>
+                    <div>
+                        <div id="employee-profile-name" class="text-sm font-semibold text-white">-</div>
+                        <div id="employee-profile-id" class="text-xs text-slate-500">-</div>
+                    </div>
+                </div>
+                <button onclick="handleLogout()" class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm border border-red-500/20 transition">
+                    <i class="fa-solid fa-right-from-bracket"></i> התנתק
+                </button>
+            </div>
+        </aside>
+
+        <main class="flex-1 p-8 overflow-y-auto">
+            <header class="flex justify-between items-center mb-8 pb-4 border-b border-slate-800">
+                <div>
+                    <h1 class="text-2xl font-bold text-white">פורטל עובד אישי - Equity Dashboard</h1>
+                    <p class="text-slate-400 text-sm mt-1">צפייה במצב ההבשלה (Vesting) של האופציות שלך בזמן אמת</p>
+                </div>
+                <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
+            </header>
+
+            <section id="tab-dashboard" class="space-y-8">
+                <details class="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl p-4 text-sm">
+                    <summary class="cursor-pointer font-medium"><i class="fa-solid fa-flask"></i> כלי בדיקה (QA) - שליפת דשבורד עבור employee_id אחר (לחץ להרחבה)</summary>
+                    <div class="flex items-center justify-between gap-4 mt-3">
+                        <div>שליפת דשבורד עבור employee_id כלשהו - כולל לא שלך. שימושי לבדיקות הרשאה (IDOR).</div>
+                        <div class="flex gap-2 shrink-0">
+                            <input type="text" id="qa-employee-id-input" placeholder="employee_id לבדיקה" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-sm w-48 text-white font-mono">
+                            <button onclick="fetchEmployeeDashboard()" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-xl text-sm transition">שלוף</button>
+                        </div>
+                    </div>
+                </details>
+
+                <div id="api-error-banner" class="hidden p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-2xl flex items-start gap-3">
+                    <i class="fa-solid fa-triangle-exclamation text-xl mt-0.5"></i>
+                    <div>
+                        <h4 class="font-bold">שגיאת שרת</h4>
+                        <p id="error-banner-desc" class="text-sm text-red-300/80 mt-1"></p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-slate-800/40 border border-slate-800 rounded-2xl p-6">
+                        <div class="text-slate-400 text-sm mb-1">סה"כ אופציות שהוקצו</div>
+                        <div id="stat-total-options" class="text-3xl font-bold text-white">0</div>
+                    </div>
+                    <div class="bg-slate-800/40 border border-slate-800 rounded-2xl p-6 border-r-4 border-r-emerald-500">
+                        <div class="text-slate-400 text-sm mb-1">אופציות בשלות למימוש</div>
+                        <div id="stat-vested-options" class="text-3xl font-bold text-emerald-400">0</div>
+                    </div>
+                    <div class="bg-slate-800/40 border border-slate-800 rounded-2xl p-6">
+                        <div class="text-slate-400 text-sm mb-1">מחיר מימוש (מענק אחרון)</div>
+                        <div id="stat-strike-price" class="text-3xl font-bold text-blue-400">$0.00</div>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2"><i class="fa-solid fa-list-check text-emerald-400"></i> פירוט מענקי האופציות</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-right border-collapse">
+                            <thead>
+                                <tr class="border-b border-slate-800 text-slate-400 text-sm">
+                                    <th class="pb-3 font-semibold">מזהה מענק</th>
+                                    <th class="pb-3 font-semibold">התקדמות הבשלה</th>
+                                    <th class="pb-3 font-semibold">מחיר מימוש</th>
+                                    <th class="pb-3 font-semibold">חסימת נאמן</th>
+                                    <th class="pb-3 font-semibold">חלון מימוש לאחר עזיבה</th>
+                                    <th class="pb-3 font-semibold">פעולה</th>
+                                </tr>
+                            </thead>
+                            <tbody id="grants-table-body" class="divide-y divide-slate-800/50 text-sm">
+                                <tr><td colspan="6" class="py-4 text-center text-slate-500">טוען...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <h3 class="text-lg font-bold text-white mb-2 flex items-center gap-2"><i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i> סימולטור מימוש (כולל מס)</h3>
+                    <p class="text-slate-400 text-sm mb-6">מריץ את אותו חישוב שהשרת מבצע בפועל - כולל מחיר מניה אמיתי מההיסטוריה, שיעור מס לפי מסלול/מדינה, וסטטוס חסימות. לא נשמר.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-2">מענק</label>
+                                <select id="sim-grant-select" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 text-sm"></select>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-2">כמות אופציות למימוש</label>
+                                <input type="number" id="sim-options" value="1" min="1" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-2">תאריך מימוש משוער</label>
+                                <input type="date" id="sim-exercise-date" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500">
+                            </div>
+                            <button onclick="calculateSimulation()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 rounded-xl transition">הרץ סימולציה</button>
+                        </div>
+                        <div class="bg-slate-900/50 p-5 rounded-xl border border-slate-800/80 flex flex-col justify-between">
+                            <div class="space-y-2 text-sm">
+                                <div class="flex justify-between"><span class="text-slate-400">מחיר מניה נוכחי (מהמערכת):</span><span id="sim-price" class="font-semibold text-white">-</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">עלות מימוש כוללת:</span><span id="sim-cost" class="font-semibold text-white">-</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">שיעור מס שיחול:</span><span id="sim-tax-rate" class="font-semibold text-white">-</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">מס משוער:</span><span id="sim-tax" class="font-semibold text-rose-400">-</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">חסימת נאמן:</span><span id="sim-trustee" class="font-semibold">-</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">חלון מימוש לאחר עזיבה:</span><span id="sim-ptw" class="font-semibold">-</span></div>
+                            </div>
+                            <div class="border-t border-slate-800 pt-3 mt-3 flex justify-between items-center">
+                                <span class="font-medium text-emerald-400">רווח נקי משוער (אחרי מס):</span>
+                                <span id="sim-profit" class="text-2xl font-bold text-emerald-400">$0.00</span>
+                            </div>
+                            <p id="sim-error" class="hidden text-xs text-red-400 mt-2"></p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="tab-requests" class="space-y-6" style="display:none">
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <h3 class="text-lg font-bold text-white mb-4">הגשת בקשת מימוש חדשה</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <input id="req-grant-id" placeholder="grant_id" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white font-mono text-sm">
+                        <input id="req-options" type="number" placeholder="כמות למימוש" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                        <button id="req-submit-btn" onclick="submitExerciseRequest()" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium px-4 py-2 rounded-xl transition">שלח בקשה</button>
+                    </div>
+                    <div id="req-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+                </div>
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <h3 class="text-lg font-bold text-white mb-4">היסטוריית בקשות</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-right border-collapse text-sm">
+                            <thead>
+                                <tr class="border-b border-slate-800 text-slate-400">
+                                    <th class="pb-3 font-semibold">request_id</th>
+                                    <th class="pb-3 font-semibold">grant_id</th>
+                                    <th class="pb-3 font-semibold">כמות</th>
+                                    <th class="pb-3 font-semibold">סטטוס</th>
+                                    <th class="pb-3 font-semibold">הוגש בתאריך</th>
+                                </tr>
+                            </thead>
+                            <tbody id="my-requests-body" class="divide-y divide-slate-800/50"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const API = "http://127.0.0.1:8000/api/v1";
+        let session = JSON.parse(localStorage.getItem("esop_employee_session") || "null");
+        let currentEmployeeData = null;
+
+        function authHeaders() {
+            return session ? { "Authorization": `Bearer ${session.token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+        }
+
+        function toast(msg, isError=false) {
+            const el = document.getElementById("global-toast");
+            el.textContent = msg;
+            el.className = `text-sm px-4 py-2 rounded-xl ${isError ? "bg-red-500/10 text-red-400 border border-red-500/30" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"}`;
+            setTimeout(() => el.className = "hidden", 4000);
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById("username").value;
+            const password = document.getElementById("password").value;
+            const errBox = document.getElementById("login-error");
+            errBox.classList.add("hidden");
+            try {
+                const res = await fetch(`${API}/auth/login`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username, password })
+                });
+                if (!res.ok) throw new Error(await res.text() || `שגיאה ${res.status}`);
+                session = await res.json();
+                localStorage.setItem("esop_employee_session", JSON.stringify(session));
+                enterApp();
+            } catch (err) {
+                errBox.textContent = "התחברות נכשלה: " + err.message;
+                errBox.classList.remove("hidden");
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem("esop_employee_session");
+            session = null;
+            document.getElementById("main-app").classList.add("hidden");
+            document.getElementById("login-screen").classList.remove("hidden");
+        }
+
+        function enterApp() {
+            document.getElementById("login-screen").classList.add("hidden");
+            document.getElementById("main-app").classList.remove("hidden");
+            document.getElementById("employee-profile-id").textContent = session.employee_id;
+            document.getElementById("qa-employee-id-input").value = session.employee_id;
+            switchTab("dashboard");
+        }
+
+        function switchTab(tabId) {
+            document.getElementById("tab-dashboard").style.display = tabId === "dashboard" ? "block" : "none";
+            document.getElementById("tab-requests").style.display = tabId === "requests" ? "block" : "none";
+            document.querySelectorAll(".nav-btn").forEach(el => {
+                el.classList.remove("bg-emerald-600", "text-white");
+                el.classList.add("text-slate-400");
+            });
+            const btn = document.getElementById(`nav-${tabId}`);
+            btn.classList.add("bg-emerald-600", "text-white");
+            btn.classList.remove("text-slate-400");
+
+            if (tabId === "dashboard") fetchEmployeeDashboard();
+            if (tabId === "requests") loadMyRequests();
+        }
+
+        async function fetchEmployeeDashboard() {
+            const empId = document.getElementById("qa-employee-id-input").value || session.employee_id;
+            const errorBanner = document.getElementById("api-error-banner");
+
+            try {
+                const response = await fetch(`${API}/employee/dashboard/${empId}`, { headers: authHeaders() });
+                const responseText = await response.text();
+                if (!response.ok) throw new Error(responseText || `שגיאת שרת ${response.status}`);
+
+                const data = JSON.parse(responseText);
+                currentEmployeeData = data;
+                errorBanner.classList.add("hidden");
+
+                document.getElementById("employee-profile-name").textContent = data.employee_name;
+
+                let totalGrantsOptions = 0, totalVestedOptions = 0, lastStrike = 0;
+                const tbody = document.getElementById("grants-table-body");
+                tbody.innerHTML = "";
+
+                data.grants.forEach(grant => {
+                    totalGrantsOptions += grant.total_options;
+                    totalVestedOptions += grant.vested_options;
+                    lastStrike = grant.exercise_price;
+
+                    const pct = grant.total_options > 0 ? Math.round((grant.vested_options / grant.total_options) * 100) : 0;
+
+                    const trusteeStatusHtml = grant.is_trustee_holding_period_met
+                        ? `<span class="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">שוחרר</span>`
+                        : `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">בחסימה עד ${grant.holding_period_end_date} (${daysUntil(grant.holding_period_end_date)} ימים)</span>`;
+
+                    const ptwHtml = grant.post_termination_exercise_deadline == null
+                        ? `<span class="text-xs text-slate-500">ללא הגבלה (פעיל)</span>`
+                        : grant.is_within_post_termination_window
+                            ? `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">פתוח עד ${grant.post_termination_exercise_deadline} (${daysUntil(grant.post_termination_exercise_deadline)} ימים)</span>`
+                            : `<span class="text-xs text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">נסגר ב-${grant.post_termination_exercise_deadline}</span>`;
+
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-800/30">
+                            <td class="py-3.5 font-mono text-white font-medium">${grant.grant_id}</td>
+                            <td class="py-3.5">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-24 h-2 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-emerald-500" style="width:${pct}%"></div></div>
+                                    <span class="text-xs text-slate-300">${grant.vested_options.toLocaleString()} / ${grant.total_options.toLocaleString()} (${pct}%)</span>
+                                </div>
+                            </td>
+                            <td class="py-3.5 text-blue-400">$${grant.exercise_price}</td>
+                            <td class="py-3.5">${trusteeStatusHtml}</td>
+                            <td class="py-3.5">${ptwHtml}</td>
+                            <td class="py-3.5"><button onclick="quickFillRequest('${grant.grant_id}')" class="text-emerald-400 hover:text-emerald-300 text-xs"><i class="fa-solid fa-paper-plane"></i> בקש מימוש</button></td>
+                        </tr>
+                    `;
+                });
+                if (data.grants.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">אין מענקים</td></tr>`;
+                }
+
+                document.getElementById("stat-total-options").textContent = totalGrantsOptions.toLocaleString();
+                document.getElementById("stat-vested-options").textContent = totalVestedOptions.toLocaleString();
+                document.getElementById("stat-strike-price").textContent = `$${lastStrike.toFixed(2)}`;
+
+                populateSimGrantSelect();
+                if (data.grants.length > 0) calculateSimulation();
+            } catch (err) {
+                errorBanner.classList.remove("hidden");
+                document.getElementById("error-banner-desc").textContent = err.message;
+                document.getElementById("grants-table-body").innerHTML = `<tr><td colspan="7" class="py-4 text-center text-red-400">שגיאה בטעינת נתונים</td></tr>`;
+            }
+        }
+
+        function daysUntil(dateStr) {
+            const diffMs = new Date(dateStr) - new Date(new Date().toDateString());
+            return Math.round(diffMs / 86400000);
+        }
+
+        function populateSimGrantSelect() {
+            const select = document.getElementById("sim-grant-select");
+            if (!currentEmployeeData || currentEmployeeData.grants.length === 0) {
+                select.innerHTML = `<option value="">אין מענקים</option>`;
+                return;
+            }
+            select.innerHTML = currentEmployeeData.grants.map(g =>
+                `<option value="${g.grant_id}">${g.grant_id} (הבשילו ${g.vested_options.toLocaleString()} מתוך ${g.total_options.toLocaleString()})</option>`
+            ).join("");
+            const dateInput = document.getElementById("sim-exercise-date");
+            if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+        }
+
+        async function calculateSimulation() {
+            const errEl = document.getElementById("sim-error");
+            errEl.classList.add("hidden");
+            const grantId = document.getElementById("sim-grant-select").value;
+            const options = parseFloat(document.getElementById("sim-options").value);
+            const exerciseDate = document.getElementById("sim-exercise-date").value;
+            if (!grantId || !options || !exerciseDate) return;
+
+            try {
+                const res = await fetch(`${API}/employee/simulate-exercise`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ grant_id: grantId, exercise_date: exerciseDate, options_to_exercise: options })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                const result = await res.json();
+
+                const grant = currentEmployeeData.grants.find(g => g.grant_id === grantId);
+                const gain = Math.max(0, (result.current_stock_price - grant.exercise_price) * options);
+                const netAfterTax = gain - result.estimated_tax_amount;
+
+                document.getElementById("sim-price").textContent = `$${result.current_stock_price.toFixed(2)}`;
+                document.getElementById("sim-cost").textContent = `$${result.total_exercise_cost.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                document.getElementById("sim-tax-rate").textContent = `${(result.applied_tax_rate * 100).toFixed(1)}%`;
+                document.getElementById("sim-tax").textContent = `$${result.estimated_tax_amount.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                document.getElementById("sim-trustee").innerHTML = result.is_trustee_holding_period_met
+                    ? `<span class="text-emerald-400">שוחרר</span>`
+                    : `<span class="text-amber-400">בחסימה עד ${result.holding_period_end_date}</span>`;
+                document.getElementById("sim-ptw").innerHTML = result.is_within_post_termination_window
+                    ? (result.post_termination_exercise_deadline ? `<span class="text-amber-400">פתוח עד ${result.post_termination_exercise_deadline}</span>` : `<span class="text-slate-400">ללא הגבלה</span>`)
+                    : `<span class="text-rose-400">סגור (${result.post_termination_exercise_deadline})</span>`;
+                document.getElementById("sim-profit").textContent = `$${netAfterTax.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+            } catch (err) {
+                errEl.textContent = err.message;
+                errEl.classList.remove("hidden");
+            }
+        }
+
+        function quickFillRequest(grantId) {
+            document.getElementById("req-grant-id").value = grantId;
+            switchTab("requests");
+        }
+
+        async function submitExerciseRequest() {
+            const errBox = document.getElementById("req-error");
+            const btn = document.getElementById("req-submit-btn");
+            errBox.classList.add("hidden");
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/employee/exercise-requests`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        grant_id: document.getElementById("req-grant-id").value,
+                        options_to_exercise: parseFloat(document.getElementById("req-options").value),
+                    })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast("בקשת המימוש נשלחה בהצלחה, ממתינה לאישור");
+                loadMyRequests();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function loadMyRequests() {
+            const tbody = document.getElementById("my-requests-body");
+            try {
+                const res = await fetch(`${API}/employee/exercise-requests`, { headers: authHeaders() });
+                if (!res.ok) throw new Error(await res.text());
+                const reqs = await res.json();
+                tbody.innerHTML = reqs.map(r => `
+                    <tr class="hover:bg-slate-800/30">
+                        <td class="py-3 font-mono text-xs text-slate-400">${r.request_id.slice(0,8)}...</td>
+                        <td class="py-3 font-mono text-xs">${r.grant_id}</td>
+                        <td class="py-3">${r.options_requested.toLocaleString()}</td>
+                        <td class="py-3"><span class="text-xs px-2 py-0.5 rounded ${r.status==='PENDING'?'bg-amber-500/10 text-amber-400':r.status==='APPROVED'?'bg-emerald-500/10 text-emerald-400':'bg-rose-500/10 text-rose-400'}">${r.status}</span></td>
+                        <td class="py-3 font-mono text-xs">${new Date(r.requested_at).toLocaleString('he-IL')}</td>
+                    </tr>
+                `).join("") || `<tr><td colspan="5" class="py-4 text-center text-slate-500">אין בקשות עדיין</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        if (session) enterApp();
+    </script>
+</body>
+</html>

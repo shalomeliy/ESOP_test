@@ -1,0 +1,8 @@
+# Project Guidelines
+
+## General Rules
+- Look at the code from a QA tester point of view and think on all possabilirties to test including:
+functional/no functional/security/load/Stress/edge cases/Integration/Data base queries or injection 
+- Always explain code changes clearly in Hebrew before writing them.
+- Write clean, modular, and well-documented code.
+- Prefer simple and maintainable solutions.

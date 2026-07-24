@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>פורטל ניהול חברה - ESOP Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;900&display=swap');
+        body { font-family: 'Heebo', sans-serif; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .modal-backdrop { display: none; }
+        .modal-backdrop.open { display: flex; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+    <!-- מסך התחברות -->
+    <div id="login-screen" class="flex items-center justify-center min-h-screen p-4 bg-slate-950">
+        <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-indigo-600/20 text-indigo-400 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-indigo-500/30">
+                    <i class="fa-solid text-3xl fa-building"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-white">פורטל ניהול חברה</h1>
+                <p class="text-slate-400 text-sm mt-1">ניהול עובדים, מענקים ובקשות מימוש</p>
+            </div>
+
+            <form id="login-form" onsubmit="handleLogin(event)" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">שם משתמש (אימייל)</label>
+                    <input type="text" id="username" value="admin@comp-001.demo" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-indigo-500 transition font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">סיסמה</label>
+                    <input type="password" id="password" value="Demo1234!" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-indigo-500 transition">
+                </div>
+                <div id="login-error" class="hidden p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-sm text-center"></div>
+                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-600/30">התחבר</button>
+            </form>
+            <p class="text-xs text-slate-500 text-center mt-6">כניסה לדוגמה (COMP-001): <code class="text-slate-300">admin@comp-001.demo</code> / <code class="text-slate-300">Demo1234!</code><br>לכל חברה יש admin@{company_id}.demo משלה - אותה סיסמה לכולן.</p>
+        </div>
+    </div>
+
+    <!-- אפליקציה ראשית -->
+    <div id="main-app" class="hidden flex min-h-screen">
+        <aside class="w-64 bg-slate-950 border-l border-slate-800 flex flex-col justify-between shrink-0 min-h-screen">
+            <div>
+                <div class="p-6 border-b border-slate-800">
+                    <h1 class="font-black text-xl text-white tracking-wider">ESOP Admin</h1>
+                    <span id="company-badge" class="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full font-mono border border-indigo-500/20">-</span>
+                </div>
+                <nav class="p-4 space-y-1">
+                    <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>דאשבורד</span><i class="fa-solid fa-house"></i></button>
+                    <button onclick="switchTab('employees')" id="nav-employees" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ניהול עובדים</span><i class="fa-solid fa-users"></i></button>
+                    <button onclick="switchTab('grants')" id="nav-grants" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מענקים ואופציות</span><i class="fa-solid fa-file-contract"></i></button>
+                    <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>בקשות מימוש</span><i class="fa-solid fa-hand-holding-dollar"></i></button>
+                    <button onclick="switchTab('company')" id="nav-company" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>פרופיל חברה</span><i class="fa-solid fa-gear"></i></button>
+                </nav>
+            </div>
+            <div class="p-4 border-t border-slate-800">
+                <div class="mb-3 px-2">
+                    <p id="user-display-name" class="text-xs font-bold text-white">-</p>
+                    <p id="user-username" class="text-[10px] text-slate-400 font-mono">-</p>
+                </div>
+                <button onclick="handleLogout()" class="w-full py-2 bg-slate-900 hover:bg-rose-500/10 hover:text-rose-400 text-slate-400 text-xs rounded-lg transition border border-slate-800 flex items-center justify-center gap-2">
+                    <span>התנתק</span><i class="fa-solid fa-right-from-bracket"></i>
+                </button>
+            </div>
+        </aside>
+
+        <main class="flex-1 p-8 overflow-y-auto">
+            <header class="flex justify-between items-center mb-8 pb-4 border-b border-slate-800">
+                <div>
+                    <h2 class="text-2xl font-black text-white" id="page-title">דאשבורד</h2>
+                    <p class="text-xs text-slate-400 mt-1">API: <code class="text-indigo-400">http://127.0.0.1:8000</code></p>
+                </div>
+                <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
+            </header>
+
+            <!-- DASHBOARD -->
+            <section id="tab-dashboard" class="tab-content space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <p class="text-xs text-slate-400 font-medium">עובדים (רשימה שהתקבלה)</p>
+                        <h3 id="stat-employees" class="text-3xl font-black text-white mt-2">-</h3>
+                    </div>
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <p class="text-xs text-slate-400 font-medium">מענקים בחברה שלי</p>
+                        <h3 id="stat-grants" class="text-3xl font-black text-indigo-400 mt-2">-</h3>
+                    </div>
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <p class="text-xs text-slate-400 font-medium">בקשות מימוש ממתינות</p>
+                        <h3 id="stat-pending" class="text-3xl font-black text-amber-400 mt-2">-</h3>
+                    </div>
+                </div>
+                <div class="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl p-4 text-sm">
+                    <i class="fa-solid fa-flask"></i> טיפ בדיקה: בטאב "ניהול עובדים" יש עמודת <b>company_id</b> - שווה לבדוק אם כל השורות שם באמת שייכות לחברה שלך.
+                </div>
+            </section>
+
+            <!-- EMPLOYEES -->
+            <section id="tab-employees" class="tab-content space-y-6">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-bold text-white">רשימת עובדים</h3>
+                    <button onclick="openEmployeeModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> הוסף עובד</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">employee_id</th>
+                                <th class="p-3 font-semibold">שם</th>
+                                <th class="p-3 font-semibold">אימייל</th>
+                                <th class="p-3 font-semibold">company_id</th>
+                                <th class="p-3 font-semibold">סטטוס</th>
+                                <th class="p-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="employees-table-body"><tr><td colspan="6" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- GRANTS -->
+            <section id="tab-grants" class="tab-content space-y-6">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-bold text-white">מענקים בחברה שלי</h3>
+                    <button onclick="openGrantModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> מענק חדש</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">grant_id</th>
+                                <th class="p-3 font-semibold">employee_id</th>
+                                <th class="p-3 font-semibold">סוג</th>
+                                <th class="p-3 font-semibold">סה"כ אופציות</th>
+                                <th class="p-3 font-semibold">מחיר מימוש</th>
+                                <th class="p-3 font-semibold">תאריך הענקה</th>
+                                <th class="p-3 font-semibold">חלון מימוש לאחר עזיבה</th>
+                            </tr>
+                        </thead>
+                        <tbody id="grants-table-body"><tr><td colspan="7" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- EXERCISE REQUESTS -->
+            <section id="tab-requests" class="tab-content space-y-6">
+                <h3 class="text-lg font-bold text-white">בקשות מימוש</h3>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">request_id</th>
+                                <th class="p-3 font-semibold">grant_id</th>
+                                <th class="p-3 font-semibold">employee_id</th>
+                                <th class="p-3 font-semibold">כמות מבוקשת</th>
+                                <th class="p-3 font-semibold">סטטוס</th>
+                                <th class="p-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="requests-table-body"><tr><td colspan="6" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- COMPANY PROFILE -->
+            <section id="tab-company" class="tab-content space-y-6">
+                <h3 class="text-lg font-bold text-white">פרופיל החברה שלי</h3>
+                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 space-y-4 max-w-lg">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">company_id</label>
+                        <input id="company-id-field" disabled class="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-slate-400 font-mono text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">שם חברה</label>
+                        <input id="company-name-field" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">קוד מדינה</label>
+                        <input id="company-country-field" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">סטטוס</label>
+                        <span id="company-active-badge" class="text-xs px-2 py-1 rounded border">-</span>
+                    </div>
+                    <div class="flex gap-3 pt-2">
+                        <button onclick="saveCompany()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition">שמור שינויים</button>
+                        <button onclick="deleteCompany()" class="bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 text-sm font-medium px-4 py-2 rounded-xl transition border border-rose-600/30">מחק / סגור חברה</button>
+                    </div>
+                    <p class="text-xs text-slate-500">אם לחברה אין אף עובד/פול/נאמן - המחיקה תהיה קשה (hard delete). אחרת, החברה רק תסומן כלא-פעילה (is_active=false).</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modal: Add/Edit Employee -->
+    <div id="employee-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 id="employee-modal-title" class="text-lg font-bold text-white mb-4">הוסף עובד</h3>
+            <input type="hidden" id="employee-edit-id">
+            <div class="space-y-3">
+                <input id="emp-first-name" placeholder="שם פרטי" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="emp-last-name" placeholder="שם משפחה" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="emp-email" placeholder="אימייל" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="emp-country" placeholder="קוד מדינה (IL/US)" value="IL" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div id="emp-hire-date-wrap">
+                    <label class="block text-xs text-slate-400 mb-1">תאריך תחילת עבודה</label>
+                    <input type="date" id="emp-hire-date" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">תאריך לידה (אופציונלי)</label>
+                    <input type="date" id="emp-birth-date" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+            </div>
+            <div id="employee-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="employee-submit-btn" onclick="submitEmployeeModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
+                <button onclick="closeEmployeeModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Grant -->
+    <div id="grant-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <h3 class="text-lg font-bold text-white mb-4">מענק אופציות חדש</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">עובד</label>
+                    <select id="grant-employee-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">פול אופציות</label>
+                    <select id="grant-pool-select" onchange="updatePoolInfo()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                    <p id="grant-pool-info" class="text-xs text-slate-500 mt-1"></p>
+                </div>
+                <select id="grant-type" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                    <option value="IL_102_CAPITAL_GAINS">IL_102_CAPITAL_GAINS</option>
+                    <option value="IL_102_WORK_INCOME">IL_102_WORK_INCOME</option>
+                    <option value="US_ISO">US_ISO</option>
+                    <option value="US_NSO">US_NSO</option>
+                </select>
+                <input id="grant-total-options" type="number" placeholder="כמות אופציות" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="grant-exercise-price" type="number" step="0.01" placeholder="מחיר מימוש" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">תאריך הענקה</label>
+                    <input type="date" id="grant-date" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Cliff (חודשים)</label>
+                        <input id="grant-cliff-months" type="number" value="12" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">סה"כ הבשלה (חודשים)</label>
+                        <input id="grant-total-months" type="number" value="48" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">חלון מימוש לאחר עזיבה (ימים)</label>
+                        <input id="grant-ptw-days" type="number" value="90" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm">
+                    </div>
+                </div>
+            </div>
+            <div id="grant-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="grant-submit-btn" onclick="submitGrantModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">צור מענק</button>
+                <button onclick="closeGrantModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = "http://127.0.0.1:8000/api/v1";
+        let session = JSON.parse(localStorage.getItem("esop_admin_session") || "null");
+
+        function authHeaders() {
+            return session ? { "Authorization": `Bearer ${session.token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+        }
+
+        function toast(msg, isError=false) {
+            const el = document.getElementById("global-toast");
+            el.textContent = msg;
+            el.className = `text-sm px-4 py-2 rounded-xl ${isError ? "bg-red-500/10 text-red-400 border border-red-500/30" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"}`;
+            setTimeout(() => el.className = "hidden", 4000);
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById("username").value;
+            const password = document.getElementById("password").value;
+            const errBox = document.getElementById("login-error");
+            errBox.classList.add("hidden");
+            try {
+                const res = await fetch(`${API}/auth/login`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username, password })
+                });
+                if (!res.ok) {
+                    const t = await res.text();
+                    throw new Error(t || `שגיאה ${res.status}`);
+                }
+                session = await res.json();
+                localStorage.setItem("esop_admin_session", JSON.stringify(session));
+                enterApp();
+            } catch (err) {
+                errBox.textContent = "התחברות נכשלה: " + err.message;
+                errBox.classList.remove("hidden");
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem("esop_admin_session");
+            session = null;
+            document.getElementById("main-app").classList.add("hidden");
+            document.getElementById("login-screen").classList.remove("hidden");
+        }
+
+        function enterApp() {
+            document.getElementById("login-screen").classList.add("hidden");
+            document.getElementById("main-app").classList.remove("hidden");
+            document.getElementById("company-badge").textContent = session.company_id;
+            document.getElementById("user-display-name").textContent = session.display_name;
+            document.getElementById("user-username").textContent = session.company_id;
+            switchTab("dashboard");
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
+            document.querySelectorAll(".nav-btn").forEach(el => {
+                el.classList.remove("bg-indigo-600", "text-white", "shadow-lg", "shadow-indigo-600/30");
+                el.classList.add("text-slate-400");
+            });
+            document.getElementById(`tab-${tabId}`).classList.add("active");
+            const btn = document.getElementById(`nav-${tabId}`);
+            btn.classList.add("bg-indigo-600", "text-white", "shadow-lg", "shadow-indigo-600/30");
+            btn.classList.remove("text-slate-400");
+            document.getElementById("page-title").textContent = btn.querySelector("span").textContent;
+
+            if (tabId === "dashboard") loadDashboard();
+            if (tabId === "employees") loadEmployees();
+            if (tabId === "grants") loadGrants();
+            if (tabId === "requests") loadRequests();
+            if (tabId === "company") loadCompany();
+        }
+
+        async function apiGet(path) {
+            const res = await fetch(`${API}${path}`, { headers: authHeaders() });
+            if (res.status === 401) { handleLogout(); throw new Error("Session expired"); }
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        }
+
+        async function loadDashboard() {
+            try {
+                const [emps, grants, reqs] = await Promise.all([
+                    apiGet("/admin/employees"), apiGet("/admin/grants"), apiGet("/admin/exercise-requests")
+                ]);
+                document.getElementById("stat-employees").textContent = emps.length;
+                document.getElementById("stat-grants").textContent = grants.length;
+                document.getElementById("stat-pending").textContent = reqs.filter(r => r.status === "PENDING").length;
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function loadEmployees() {
+            const tbody = document.getElementById("employees-table-body");
+            try {
+                const emps = await apiGet("/admin/employees");
+                tbody.innerHTML = emps.map(e => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 font-mono text-xs text-slate-400">${e.employee_id}</td>
+                        <td class="p-3 text-white">${e.first_name} ${e.last_name}</td>
+                        <td class="p-3 text-slate-300">${e.email}</td>
+                        <td class="p-3 font-mono text-xs ${e.company_id === session.company_id ? "text-emerald-400" : "text-amber-400"}">${e.company_id || "—"}</td>
+                        <td class="p-3"><span class="text-xs px-2 py-0.5 rounded bg-slate-800">${e.status}</span></td>
+                        <td class="p-3 flex gap-2">
+                            <button onclick='openEmployeeModal(${JSON.stringify(e)})' class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-pen"></i> ערוך</button>
+                            <button onclick="deleteEmployee('${e.employee_id}')" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-solid fa-trash"></i> מחק</button>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-500">אין עובדים</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        function openEmployeeModal(emp) {
+            document.getElementById("employee-modal-error").classList.add("hidden");
+            if (emp) {
+                document.getElementById("employee-modal-title").textContent = "ערוך עובד";
+                document.getElementById("employee-edit-id").value = emp.employee_id;
+                document.getElementById("emp-first-name").value = emp.first_name;
+                document.getElementById("emp-last-name").value = emp.last_name;
+                document.getElementById("emp-email").value = emp.email;
+                document.getElementById("emp-country").value = emp.country_code;
+                document.getElementById("emp-birth-date").value = emp.birth_date || "";
+                document.getElementById("emp-hire-date-wrap").classList.add("hidden");
+            } else {
+                document.getElementById("employee-modal-title").textContent = "הוסף עובד";
+                document.getElementById("employee-edit-id").value = "";
+                document.getElementById("emp-first-name").value = "";
+                document.getElementById("emp-last-name").value = "";
+                document.getElementById("emp-email").value = "";
+                document.getElementById("emp-country").value = "IL";
+                document.getElementById("emp-birth-date").value = "";
+                document.getElementById("emp-hire-date").value = "";
+                document.getElementById("emp-hire-date-wrap").classList.remove("hidden");
+            }
+            document.getElementById("employee-modal").classList.add("open");
+        }
+        function closeEmployeeModal() { document.getElementById("employee-modal").classList.remove("open"); }
+
+        async function submitEmployeeModal() {
+            const editId = document.getElementById("employee-edit-id").value;
+            const errBox = document.getElementById("employee-modal-error");
+            const btn = document.getElementById("employee-submit-btn");
+            errBox.classList.add("hidden");
+            btn.disabled = true;
+            try {
+                if (editId) {
+                    const res = await fetch(`${API}/admin/employees/${editId}`, {
+                        method: "PUT", headers: authHeaders(),
+                        body: JSON.stringify({
+                            first_name: document.getElementById("emp-first-name").value,
+                            last_name: document.getElementById("emp-last-name").value,
+                            email: document.getElementById("emp-email").value,
+                            country_code: document.getElementById("emp-country").value,
+                            birth_date: document.getElementById("emp-birth-date").value || null,
+                        })
+                    });
+                    if (!res.ok) throw new Error(await res.text());
+                    toast("העובד עודכן בהצלחה");
+                } else {
+                    const res = await fetch(`${API}/admin/employees`, {
+                        method: "POST", headers: authHeaders(),
+                        body: JSON.stringify({
+                            first_name: document.getElementById("emp-first-name").value,
+                            last_name: document.getElementById("emp-last-name").value,
+                            email: document.getElementById("emp-email").value,
+                            country_code: document.getElementById("emp-country").value,
+                            hire_date: document.getElementById("emp-hire-date").value,
+                            birth_date: document.getElementById("emp-birth-date").value || null,
+                        })
+                    });
+                    if (!res.ok) throw new Error(await res.text());
+                    toast("העובד נוצר בהצלחה (סיסמת ברירת מחדל: Welcome123!)");
+                }
+                closeEmployeeModal();
+                loadEmployees();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function deleteEmployee(id) {
+            if (!confirm(`למחוק את ${id}? אם יש לו מענקים - זו תהיה מחיקה רכה (TERMINATED) בלבד.`)) return;
+            try {
+                const res = await fetch(`${API}/admin/employees/${id}`, { method: "DELETE", headers: authHeaders() });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                toast(`בוצע: ${data.deleted === "hard" ? "מחיקה מלאה" : "סומן כ-TERMINATED (עדיין קיים בהיסטוריה)"}`);
+                loadEmployees();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function loadGrants() {
+            const tbody = document.getElementById("grants-table-body");
+            try {
+                const grants = await apiGet("/admin/grants");
+                tbody.innerHTML = grants.map(g => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 font-mono text-xs text-slate-400">${g.grant_id}</td>
+                        <td class="p-3 font-mono text-xs text-slate-300">${g.employee_id}</td>
+                        <td class="p-3 text-xs">${g.grant_type}</td>
+                        <td class="p-3 text-white">${g.total_options.toLocaleString()}</td>
+                        <td class="p-3 text-blue-400">${g.exercise_price}</td>
+                        <td class="p-3 text-slate-400 font-mono text-xs">${g.grant_date}</td>
+                        <td class="p-3 text-slate-400 text-xs">${g.post_termination_window_days} יום</td>
+                    </tr>
+                `).join("") || `<tr><td colspan="7" class="p-4 text-center text-slate-500">אין מענקים</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        let grantModalPools = [];
+
+        async function openGrantModal() {
+            document.getElementById("grant-modal-error").classList.add("hidden");
+            const empSelect = document.getElementById("grant-employee-select");
+            const poolSelect = document.getElementById("grant-pool-select");
+            empSelect.innerHTML = `<option>טוען...</option>`;
+            poolSelect.innerHTML = `<option>טוען...</option>`;
+            document.getElementById("grant-modal").classList.add("open");
+            try {
+                const [emps, pools] = await Promise.all([apiGet("/admin/employees"), apiGet("/admin/pools")]);
+                empSelect.innerHTML = emps.map(e => `<option value="${e.employee_id}">${e.first_name} ${e.last_name} (${e.employee_id})</option>`).join("")
+                    || `<option value="">אין עובדים</option>`;
+                grantModalPools = pools;
+                poolSelect.innerHTML = pools.map(p => `<option value="${p.pool_id}">${p.pool_id} - פנויות ${p.unallocated_shares.toLocaleString()}</option>`).join("")
+                    || `<option value="">אין פולים בחברה שלך</option>`;
+                updatePoolInfo();
+            } catch (err) {
+                toast(err.message, true);
+            }
+        }
+        function closeGrantModal() { document.getElementById("grant-modal").classList.remove("open"); }
+
+        function updatePoolInfo() {
+            const poolId = document.getElementById("grant-pool-select").value;
+            const pool = grantModalPools.find(p => p.pool_id === poolId);
+            const info = document.getElementById("grant-pool-info");
+            info.textContent = pool
+                ? `סה"כ: ${pool.total_shares.toLocaleString()} | הוקצו: ${pool.allocated_shares.toLocaleString()} | פנויות: ${pool.unallocated_shares.toLocaleString()}`
+                : "";
+        }
+
+        async function submitGrantModal() {
+            const errBox = document.getElementById("grant-modal-error");
+            const btn = document.getElementById("grant-submit-btn");
+            errBox.classList.add("hidden");
+            btn.disabled = true;
+            btn.textContent = "שולח...";
+            try {
+                const res = await fetch(`${API}/admin/grants`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        employee_id: document.getElementById("grant-employee-select").value,
+                        pool_id: document.getElementById("grant-pool-select").value,
+                        grant_type: document.getElementById("grant-type").value,
+                        total_options: parseFloat(document.getElementById("grant-total-options").value),
+                        exercise_price: parseFloat(document.getElementById("grant-exercise-price").value),
+                        grant_date: document.getElementById("grant-date").value,
+                        cliff_months: parseInt(document.getElementById("grant-cliff-months").value, 10),
+                        total_months: parseInt(document.getElementById("grant-total-months").value, 10),
+                        post_termination_window_days: parseInt(document.getElementById("grant-ptw-days").value, 10),
+                    })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast("המענק נוצר בהצלחה");
+                closeGrantModal();
+                loadGrants();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "צור מענק";
+            }
+        }
+
+        async function loadRequests() {
+            const tbody = document.getElementById("requests-table-body");
+            try {
+                const reqs = await apiGet("/admin/exercise-requests");
+                tbody.innerHTML = reqs.map(r => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 font-mono text-xs text-slate-400">${r.request_id.slice(0,8)}...</td>
+                        <td class="p-3 font-mono text-xs">${r.grant_id}</td>
+                        <td class="p-3 font-mono text-xs">${r.employee_id}</td>
+                        <td class="p-3 text-white">${r.options_requested.toLocaleString()}</td>
+                        <td class="p-3"><span class="text-xs px-2 py-0.5 rounded ${r.status==='PENDING'?'bg-amber-500/10 text-amber-400':r.status==='APPROVED'?'bg-emerald-500/10 text-emerald-400':'bg-rose-500/10 text-rose-400'}">${r.status}</span></td>
+                        <td class="p-3">
+                            ${r.status === 'PENDING' ? `
+                                <button onclick="reviewRequest('${r.request_id}', true)" class="text-emerald-400 hover:text-emerald-300 text-xs ml-2"><i class="fa-solid fa-check"></i> אשר</button>
+                                <button onclick="reviewRequest('${r.request_id}', false)" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-solid fa-xmark"></i> דחה</button>
+                            ` : '<span class="text-slate-600 text-xs">-</span>'}
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-500">אין בקשות</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        async function reviewRequest(id, approve) {
+            try {
+                const res = await fetch(`${API}/admin/exercise-requests/${id}`, {
+                    method: "PATCH", headers: authHeaders(),
+                    body: JSON.stringify({ approve })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast(approve ? "הבקשה אושרה" : "הבקשה נדחתה");
+                loadRequests();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function loadCompany() {
+            try {
+                const comp = await apiGet("/admin/company");
+                document.getElementById("company-id-field").value = comp.company_id;
+                document.getElementById("company-name-field").value = comp.name;
+                document.getElementById("company-country-field").value = comp.country_code;
+                const badge = document.getElementById("company-active-badge");
+                if (comp.is_active) {
+                    badge.textContent = "פעילה";
+                    badge.className = "text-xs px-2 py-1 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/30";
+                } else {
+                    badge.textContent = "לא פעילה";
+                    badge.className = "text-xs px-2 py-1 rounded border bg-slate-700/50 text-slate-400 border-slate-600";
+                }
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function saveCompany() {
+            try {
+                const res = await fetch(`${API}/admin/company`, {
+                    method: "PUT", headers: authHeaders(),
+                    body: JSON.stringify({
+                        name: document.getElementById("company-name-field").value,
+                        country_code: document.getElementById("company-country-field").value,
+                    })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast("פרטי החברה נשמרו");
+                loadCompany();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function deleteCompany() {
+            if (!confirm("למחוק/לסגור את החברה שלך?\nאם אין לחברה אף עובד/פול/נאמן - מחיקה מלאה (בלתי הפיכה).\nאחרת - החברה רק תסומן כלא-פעילה (is_active=false), אפשר להמשיך לצפות בנתונים.")) return;
+            try {
+                const res = await fetch(`${API}/admin/company`, { method: "DELETE", headers: authHeaders() });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                toast(data.deleted === "hard" ? "החברה נמחקה לגמרי" : "החברה סומנה כלא-פעילה");
+                loadCompany();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        // רענון אוטומטי אם יש session שמור
+        if (session) enterApp();
+    </script>
+</body>
+</html>

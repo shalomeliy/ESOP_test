@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>פורטל נאמן 102 - ESOP Enterprise</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Rubik', sans-serif; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+    <div id="login-screen" class="flex items-center justify-center min-h-screen p-4 bg-slate-950">
+        <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-purple-600/20 text-purple-400 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-purple-500/30">
+                    <i class="fa-solid text-3xl fa-building-columns"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-white">פורטל נאמנות 102</h1>
+                <p class="text-slate-400 text-sm mt-1">תיק עבודה מלא על פני כל החברות שבפיקוח</p>
+            </div>
+            <form id="login-form" onsubmit="handleLogin(event)" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">שם משתמש</label>
+                    <input type="text" id="username" value="trustee@trustee-001.demo" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-purple-500 transition font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">סיסמה</label>
+                    <input type="password" id="password" value="Demo1234!" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-purple-500 transition">
+                </div>
+                <div id="login-error" class="hidden p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-sm text-center"></div>
+                <button type="submit" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-purple-600/30">התחבר לקונסול הנאמן</button>
+            </form>
+            <p class="text-xs text-slate-500 text-center mt-6">כניסה לדוגמה: <code class="text-slate-300">trustee@trustee-001.demo</code> / <code class="text-slate-300">Demo1234!</code><br>לכל נאמן יש trustee@{trustee_id}.demo משלו - אותה סיסמה לכולם.</p>
+        </div>
+    </div>
+
+    <div id="main-app" class="hidden flex min-h-screen">
+        <aside class="w-64 bg-slate-950 border-l border-slate-800 flex flex-col justify-between">
+            <div>
+                <div class="p-6 border-b border-slate-800 flex items-center gap-3">
+                    <i class="fa-solid fa-building-columns text-purple-400 text-2xl"></i>
+                    <div>
+                        <h2 id="trustee-name-title" class="font-bold text-white text-md">-</h2>
+                        <span id="trustee-id-badge" class="text-xs text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">-</span>
+                    </div>
+                </div>
+                <nav class="p-4 space-y-2">
+                    <button onclick="switchTab('portfolio')" id="nav-portfolio" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-folder-open"></i> תיק עבודה (כל החברות)</button>
+                    <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-hand-holding-dollar"></i> בקשות מימוש</button>
+                </nav>
+            </div>
+            <div class="p-4 border-t border-slate-800">
+                <button onclick="handleLogout()" class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm border border-red-500/20 transition">
+                    <i class="fa-solid fa-right-from-bracket"></i> התנתק
+                </button>
+            </div>
+        </aside>
+
+        <main class="flex-1 p-8 overflow-y-auto">
+            <header class="flex justify-between items-center mb-8 pb-4 border-b border-slate-800">
+                <div>
+                    <h1 id="page-title" class="text-2xl font-bold text-white">תיק עבודה</h1>
+                    <p class="text-slate-400 text-sm mt-1">כל המענקים תחת פיקוח הנאמן, על פני כל החברות</p>
+                </div>
+                <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
+            </header>
+
+            <!-- PORTFOLIO -->
+            <section id="tab-portfolio" class="tab-content space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                        <p class="text-slate-400 text-sm">חברות בפיקוח</p>
+                        <h3 id="stat-companies" class="text-3xl font-bold text-white mt-2">-</h3>
+                    </div>
+                    <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                        <p class="text-slate-400 text-sm">מענקים בתיק</p>
+                        <h3 id="stat-grants" class="text-3xl font-bold text-purple-400 mt-2">-</h3>
+                    </div>
+                    <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                        <p class="text-slate-400 text-sm">עדיין בחסימת שנתיים</p>
+                        <h3 id="stat-locked" class="text-3xl font-bold text-amber-400 mt-2">-</h3>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-bold text-white">כל המענקים בתיק (על פני כל החברות)</h3>
+                        <input id="portfolio-filter" oninput="renderPortfolio()" placeholder="סינון לפי חברה/עובד..." class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-sm w-64">
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-right border-collapse text-sm">
+                            <thead>
+                                <tr class="border-b border-slate-800 text-slate-400">
+                                    <th class="pb-3 font-semibold">חברה</th>
+                                    <th class="pb-3 font-semibold">עובד</th>
+                                    <th class="pb-3 font-semibold">grant_id</th>
+                                    <th class="pb-3 font-semibold">סה"כ</th>
+                                    <th class="pb-3 font-semibold">הבשילו</th>
+                                    <th class="pb-3 font-semibold">תאריך הפקדה</th>
+                                    <th class="pb-3 font-semibold">סיום חסימה</th>
+                                    <th class="pb-3 font-semibold">סטטוס</th>
+                                    <th class="pb-3 font-semibold">פעולה</th>
+                                </tr>
+                            </thead>
+                            <tbody id="portfolio-table-body" class="divide-y divide-slate-800/50"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- EXERCISE REQUESTS -->
+            <section id="tab-requests" class="tab-content space-y-6">
+                <h3 class="text-lg font-bold text-white">בקשות מימוש (על פני כל החברות בתיק)</h3>
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="pb-3 font-semibold">request_id</th>
+                                <th class="pb-3 font-semibold">grant_id</th>
+                                <th class="pb-3 font-semibold">employee_id</th>
+                                <th class="pb-3 font-semibold">כמות</th>
+                                <th class="pb-3 font-semibold">סטטוס</th>
+                                <th class="pb-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="requests-table-body" class="divide-y divide-slate-800/50"></tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modal: Confirm Trustee Deposit -->
+    <div id="deposit-modal" class="hidden fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-sm">
+            <h3 class="text-lg font-bold text-white mb-1">אישור הפקדה בנאמנות</h3>
+            <p class="text-xs text-slate-500 mb-4">grant_id: <span id="deposit-grant-id" class="font-mono text-slate-300"></span></p>
+            <label class="block text-xs text-slate-400 mb-1">תאריך הפקדה</label>
+            <input type="date" id="deposit-date-input" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+            <div id="deposit-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="deposit-confirm-btn" onclick="submitDeposit()" class="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">אשר הפקדה</button>
+                <button onclick="closeDepositModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = "http://127.0.0.1:8000/api/v1";
+        let session = JSON.parse(localStorage.getItem("esop_trustee_session") || "null");
+        let portfolioData = [];
+
+        function authHeaders() {
+            return session ? { "Authorization": `Bearer ${session.token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+        }
+
+        function toast(msg, isError=false) {
+            const el = document.getElementById("global-toast");
+            el.textContent = msg;
+            el.className = `text-sm px-4 py-2 rounded-xl ${isError ? "bg-red-500/10 text-red-400 border border-red-500/30" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"}`;
+            setTimeout(() => el.className = "hidden", 4000);
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById("username").value;
+            const password = document.getElementById("password").value;
+            const errBox = document.getElementById("login-error");
+            errBox.classList.add("hidden");
+            try {
+                const res = await fetch(`${API}/auth/login`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username, password })
+                });
+                if (!res.ok) throw new Error(await res.text() || `שגיאה ${res.status}`);
+                session = await res.json();
+                localStorage.setItem("esop_trustee_session", JSON.stringify(session));
+                enterApp();
+            } catch (err) {
+                errBox.textContent = "התחברות נכשלה: " + err.message;
+                errBox.classList.remove("hidden");
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem("esop_trustee_session");
+            session = null;
+            document.getElementById("main-app").classList.add("hidden");
+            document.getElementById("login-screen").classList.remove("hidden");
+        }
+
+        function enterApp() {
+            document.getElementById("login-screen").classList.add("hidden");
+            document.getElementById("main-app").classList.remove("hidden");
+            document.getElementById("trustee-name-title").textContent = session.display_name;
+            document.getElementById("trustee-id-badge").textContent = session.trustee_id;
+            switchTab("portfolio");
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
+            document.querySelectorAll(".nav-btn").forEach(el => {
+                el.classList.remove("bg-purple-600", "text-white");
+                el.classList.add("text-slate-400");
+            });
+            document.getElementById(`tab-${tabId}`).classList.add("active");
+            const btn = document.getElementById(`nav-${tabId}`);
+            btn.classList.add("bg-purple-600", "text-white");
+            btn.classList.remove("text-slate-400");
+            document.getElementById("page-title").textContent = tabId === "portfolio" ? "תיק עבודה" : "בקשות מימוש";
+
+            if (tabId === "portfolio") loadPortfolio();
+            if (tabId === "requests") loadRequests();
+        }
+
+        async function apiGet(path) {
+            const res = await fetch(`${API}${path}`, { headers: authHeaders() });
+            if (res.status === 401) { handleLogout(); throw new Error("Session expired"); }
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        }
+
+        async function loadPortfolio() {
+            try {
+                portfolioData = await apiGet("/trustee/portfolio");
+                const companies = new Set(portfolioData.map(g => g.company_id));
+                document.getElementById("stat-companies").textContent = companies.size;
+                document.getElementById("stat-grants").textContent = portfolioData.length;
+                document.getElementById("stat-locked").textContent = portfolioData.filter(g => !g.is_trustee_holding_period_met).length;
+                renderPortfolio();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        function daysUntil(dateStr) {
+            const diffMs = new Date(dateStr) - new Date(new Date().toDateString());
+            return Math.round(diffMs / 86400000);
+        }
+
+        function holdingStatusHtml(g) {
+            if (g.is_trustee_holding_period_met) {
+                return `<span class="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">משוחרר</span>`;
+            }
+            const days = g.holding_period_end_date ? daysUntil(g.holding_period_end_date) : null;
+            return `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">בחסימה${days != null ? ` (${days} ימים)` : ""}</span>`;
+        }
+
+        function renderPortfolio() {
+            const filter = (document.getElementById("portfolio-filter").value || "").toLowerCase();
+            const tbody = document.getElementById("portfolio-table-body");
+            const rows = portfolioData.filter(g =>
+                !filter || (g.company_name||"").toLowerCase().includes(filter) || (g.employee_name||"").toLowerCase().includes(filter) || (g.company_id||"").toLowerCase().includes(filter)
+            );
+
+            // קיבוץ לפי חברה - המשימה המרכזית של הנאמן היא לראות חשיפה לפי חברה, לא רק רשימה שטוחה
+            const byCompany = new Map();
+            rows.forEach(g => {
+                const key = g.company_id || "—";
+                if (!byCompany.has(key)) byCompany.set(key, { name: g.company_name || "-", id: key, grants: [] });
+                byCompany.get(key).grants.push(g);
+            });
+
+            if (byCompany.size === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" class="py-4 text-center text-slate-500">אין נתונים בתיק</td></tr>`;
+                return;
+            }
+
+            let html = "";
+            for (const comp of byCompany.values()) {
+                const totalOptions = comp.grants.reduce((s, g) => s + g.total_options, 0);
+                const vestedOptions = comp.grants.reduce((s, g) => s + g.vested_options, 0);
+                html += `
+                    <tr class="bg-slate-900/60">
+                        <td colspan="9" class="py-2 px-1 font-bold text-purple-300 text-sm">
+                            <i class="fa-solid fa-building"></i> ${comp.name} <span class="text-slate-600 font-mono text-xs">(${comp.id})</span>
+                            <span class="text-slate-400 font-normal text-xs">- ${comp.grants.length} מענקים | סה"כ ${totalOptions.toLocaleString()} | הבשילו ${vestedOptions.toLocaleString()}</span>
+                        </td>
+                    </tr>
+                `;
+                html += comp.grants.map(g => `
+                    <tr class="hover:bg-slate-800/30">
+                        <td class="py-3 text-slate-300">${g.company_name || "-"}</td>
+                        <td class="py-3 text-white">${g.employee_name || "-"}</td>
+                        <td class="py-3 font-mono text-xs text-slate-400">${g.grant_id}</td>
+                        <td class="py-3">${g.total_options.toLocaleString()}</td>
+                        <td class="py-3 text-emerald-400">${g.vested_options.toLocaleString()}</td>
+                        <td class="py-3 font-mono text-xs">${g.trustee_deposit_date || "-"}</td>
+                        <td class="py-3 font-mono text-xs">${g.holding_period_end_date || "-"}</td>
+                        <td class="py-3">${holdingStatusHtml(g)}</td>
+                        <td class="py-3">
+                            <button onclick="openDepositModal('${g.grant_id}')" class="text-purple-400 hover:text-purple-300 text-xs"><i class="fa-solid fa-stamp"></i> אשר הפקדה</button>
+                        </td>
+                    </tr>
+                `).join("");
+            }
+            tbody.innerHTML = html;
+        }
+
+        function openDepositModal(grantId) {
+            document.getElementById("deposit-grant-id").textContent = grantId;
+            document.getElementById("deposit-date-input").value = new Date().toISOString().slice(0, 10);
+            document.getElementById("deposit-modal-error").classList.add("hidden");
+            document.getElementById("deposit-modal").classList.remove("hidden");
+            document.getElementById("deposit-modal").classList.add("flex");
+        }
+        function closeDepositModal() {
+            document.getElementById("deposit-modal").classList.add("hidden");
+            document.getElementById("deposit-modal").classList.remove("flex");
+        }
+
+        async function submitDeposit() {
+            const grantId = document.getElementById("deposit-grant-id").textContent;
+            const dateVal = document.getElementById("deposit-date-input").value;
+            const errBox = document.getElementById("deposit-modal-error");
+            const btn = document.getElementById("deposit-confirm-btn");
+            errBox.classList.add("hidden");
+            if (!dateVal) {
+                errBox.textContent = "יש לבחור תאריך";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/trustee/confirm-deposit/${grantId}?deposit_date=${dateVal}`, {
+                    method: "PATCH", headers: authHeaders()
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast("ההפקדה אושרה");
+                closeDepositModal();
+                loadPortfolio();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function loadRequests() {
+            const tbody = document.getElementById("requests-table-body");
+            try {
+                const reqs = await apiGet("/trustee/exercise-requests");
+                tbody.innerHTML = reqs.map(r => `
+                    <tr class="hover:bg-slate-800/30">
+                        <td class="py-3 font-mono text-xs text-slate-400">${r.request_id.slice(0,8)}...</td>
+                        <td class="py-3 font-mono text-xs">${r.grant_id}</td>
+                        <td class="py-3 font-mono text-xs">${r.employee_id}</td>
+                        <td class="py-3">${r.options_requested.toLocaleString()}</td>
+                        <td class="py-3"><span class="text-xs px-2 py-0.5 rounded ${r.status==='PENDING'?'bg-amber-500/10 text-amber-400':r.status==='APPROVED'?'bg-emerald-500/10 text-emerald-400':'bg-rose-500/10 text-rose-400'}">${r.status}</span></td>
+                        <td class="py-3">
+                            ${r.status === 'PENDING' ? `
+                                <button onclick="reviewRequest('${r.request_id}', true)" class="text-emerald-400 hover:text-emerald-300 text-xs ml-2"><i class="fa-solid fa-check"></i> אשר</button>
+                                <button onclick="reviewRequest('${r.request_id}', false)" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-solid fa-xmark"></i> דחה</button>
+                            ` : '<span class="text-slate-600 text-xs">-</span>'}
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="6" class="py-4 text-center text-slate-500">אין בקשות</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        async function reviewRequest(id, approve) {
+            try {
+                const res = await fetch(`${API}/trustee/exercise-requests/${id}`, {
+                    method: "PATCH", headers: authHeaders(),
+                    body: JSON.stringify({ approve })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                toast(approve ? "הבקשה אושרה" : "הבקשה נדחתה");
+                loadRequests();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        if (session) enterApp();
+    </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+    "sqltools.useNodeRuntime": true,
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "name": "ESOP_test",
+            "group": "tests",
+            "database": "${workspaceFolder:ESOP_test}/esop_database.db"
+        }
+    ]
+}

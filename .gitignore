@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+esop_database.db
+esop_database.db-wal
+esop_database.db-shm
+esop_database.*.db
