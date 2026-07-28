@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import (
-    Employee, EmployeeStatus, OptionPool, Grant, TaxRatesHistory, StockPricesHistory,
+    Employee, EmployeeStatus, OptionPool, Grant, StockPricesHistory,
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
     Company, AuditLog,
 )
@@ -16,13 +16,38 @@ from backend.app.schemas import (
     EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut,
     CompanyUpdateRequest, CompanyOut, GrantOut, PoolOut,
     TrusteePortfolioItem, ExerciseRequestCreate, ExerciseRequestReview, ExerciseRequestOut,
-    AuditLogOut,
+    AuditLogOut, SearchResultItem,
 )
 from backend.app.services.engine import DeterministicESOPEngine
+from backend.app.services.tax_engine import TaxCalculationEngine
+from backend.app.services.search_engine import SearchEngine
 from backend.app.services.audit import record_audit_event
 from backend.app.auth import hash_password, verify_password, create_session, get_current_user, require_roles
+from backend.app.version import get_version
 
 router = APIRouter()
+
+
+@router.get("/search", response_model=List[SearchResultItem])
+def search(q: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """חיפוש חופשי חכם (fuzzy) - כל תפקיד מחפש רק בתוך תחום ההרשאה שלו."""
+    if current_user.role == UserRole.COMPANY_ADMIN:
+        results = SearchEngine.search_for_admin(db, current_user.company_id, q)
+    elif current_user.role == UserRole.TRUSTEE:
+        results = SearchEngine.search_for_trustee(db, current_user.trustee_id, q)
+    else:
+        results = SearchEngine.search_for_employee(db, current_user.employee_id, q)
+
+    return [SearchResultItem(entity_type=r.entity_type, entity_id=r.entity_id,
+                              title=r.title, subtitle=r.subtitle, score=round(r.score, 3))
+            for r in results]
+
+
+@router.get("/version")
+def read_version():
+    """גרסת המערכת - ציבורי, בלי אימות, כדי ששלושת הפורטלים יוכלו להציג אותה.
+    נקרא מהקובץ מחדש בכל בקשה כדי שעדכון גרסה ישתקף מיד, בלי restart לשרת."""
+    return {"version": get_version()}
 
 
 # ===================================================================
@@ -288,7 +313,8 @@ def get_audit_log(entity_type: str, entity_id: str,
         emp = db.query(Employee).filter(Employee.employee_id == entity_id).first()
         if not emp or emp.company_id != current_user.company_id:
             raise HTTPException(status_code=403, detail="Not your company's employee")
-    elif entity_type == "Grant":
+    elif entity_type in ("Grant", "TaxSimulation"):
+        # TaxSimulation נרשם עם entity_id=grant_id (ראו simulate_exercise) - אותה בדיקת בעלות כמו Grant.
         grant = db.query(Grant).filter(Grant.grant_id == entity_id).first()
         pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first() if grant else None
         if not grant or not pool or pool.company_id != current_user.company_id:
@@ -546,21 +572,26 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
     latest_price = db.query(StockPricesHistory).filter(StockPricesHistory.company_id == grant.employee.company_id).order_by(StockPricesHistory.price_date.desc()).first()
     stock_price = latest_price.fmv_price if latest_price else grant.exercise_price
 
-    tax_rule = (
-        db.query(TaxRatesHistory)
-        .filter(
-            TaxRatesHistory.grant_type == grant.grant_type,
-            TaxRatesHistory.country_code == grant.employee.country_code,
-            TaxRatesHistory.effective_start_date <= payload.exercise_date,
-        )
-        .order_by(TaxRatesHistory.effective_start_date.desc())
-        .first()
-    )
-    tax_rate = tax_rule.capital_gains_rate if tax_rule else 0.25
-
     total_cost = payload.options_to_exercise * grant.exercise_price
     gain = max(0.0, (stock_price - grant.exercise_price) * payload.options_to_exercise)
-    estimated_tax = gain * tax_rate
+
+    tax_result = TaxCalculationEngine.calculate_tax(
+        db, grant.employee.country_code, grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type,
+        payload.exercise_date, gain,
+    )
+
+    # רישום audit לכל סימולציה - כדי שאפשר יהיה לבדוק בדיעבד בדיוק לפי איזו
+    # גרסת טבלת מס/מדרגות חושב סכום נתון (נדרש עבור תרחישי ביקורת עתידיים).
+    record_audit_event(
+        db, "TaxSimulation", grant.grant_id, "SIMULATE", current_user.user_id,
+        after={
+            "exercise_date": payload.exercise_date, "options_to_exercise": payload.options_to_exercise,
+            "gain": gain, "tax_method": tax_result.method, "tax_table_effective_date": tax_result.table_effective_date,
+            "effective_rate": tax_result.effective_rate, "tax_amount": tax_result.tax_amount,
+            "source": tax_result.source_url,
+        },
+    )
+    db.commit()
 
     return ExerciseSimulationResponse(
         grant_id=grant.grant_id,
@@ -568,9 +599,11 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
         holding_period_end_date=end_date,
         current_stock_price=stock_price,
         total_exercise_cost=total_cost,
-        estimated_tax_amount=estimated_tax,
-        applied_tax_rate=tax_rate,
-        tax_rule_source=tax_rule.official_source_url if tax_rule else "https://www.gov.il/he/departments/tax_authority",
+        estimated_tax_amount=tax_result.tax_amount,
+        applied_tax_rate=tax_result.effective_rate,
+        tax_rule_source=tax_result.source_url,
+        tax_calculation_method=tax_result.method,
+        tax_table_effective_date=tax_result.table_effective_date,
         is_within_post_termination_window=is_within_ptw,
         post_termination_exercise_deadline=ptw_deadline,
     )

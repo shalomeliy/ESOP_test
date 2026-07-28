@@ -75,9 +75,16 @@
             <header class="flex justify-between items-center mb-8 pb-4 border-b border-slate-800">
                 <div>
                     <h2 class="text-2xl font-black text-white" id="page-title">דאשבורד</h2>
-                    <p class="text-xs text-slate-400 mt-1">API: <code class="text-indigo-400">http://127.0.0.1:8000</code></p>
+                    <p class="text-xs text-slate-400 mt-1">API: <code class="text-indigo-400">http://127.0.0.1:8000</code> <span id="app-version" class="text-slate-600">v...</span></p>
                 </div>
-                <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
+                <div class="flex items-center gap-3">
+                    <div class="relative">
+                        <input id="global-search" oninput="runGlobalSearch()" placeholder="חיפוש חופשי (עובד / מענק / בקשה)..."
+                               class="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm w-72 text-white focus:outline-none focus:border-indigo-500">
+                        <div id="search-results" class="hidden absolute left-0 right-0 mt-2 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl max-h-96 overflow-y-auto z-40"></div>
+                    </div>
+                    <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
+                </div>
             </header>
 
             <!-- DASHBOARD -->
@@ -634,6 +641,67 @@
                 loadCompany();
             } catch (err) { toast(err.message, true); }
         }
+
+        // חיפוש חופשי - debounce קצר כדי לא לירות בקשה על כל תו
+        let searchTimer = null;
+        function runGlobalSearch() {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(doGlobalSearch, 250);
+        }
+
+        async function doGlobalSearch() {
+            const q = document.getElementById("global-search").value.trim();
+            const box = document.getElementById("search-results");
+            if (q.length < 2) { box.classList.add("hidden"); return; }
+            try {
+                const results = await apiGet(`/search?q=${encodeURIComponent(q)}`);
+                if (!results.length) {
+                    box.innerHTML = `<div class="p-4 text-center text-slate-500 text-sm">לא נמצאו תוצאות</div>`;
+                } else {
+                    box.innerHTML = results.map(r => `
+                        <button onclick="jumpToResult('${r.entity_type}')" class="w-full text-right px-4 py-2.5 hover:bg-slate-900 border-b border-slate-800/50 last:border-0 block">
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">${r.entity_type}</span>
+                                <span class="text-white text-sm truncate">${r.title}</span>
+                            </div>
+                            <div class="text-xs text-slate-500 truncate mt-0.5">${r.subtitle}</div>
+                        </button>
+                    `).join("");
+                }
+                box.classList.remove("hidden");
+            } catch (err) { toast(err.message, true); }
+        }
+
+        function jumpToResult(entityType) {
+            document.getElementById("search-results").classList.add("hidden");
+            const tabByType = { Employee: "employees", Grant: "grants", ExerciseRequest: "requests" };
+            const tab = tabByType[entityType];
+            if (tab) switchTab(tab);
+        }
+
+        document.addEventListener("click", (e) => {
+            if (!e.target.closest("#global-search") && !e.target.closest("#search-results")) {
+                document.getElementById("search-results").classList.add("hidden");
+            }
+        });
+
+        // בודק גרסה מול השרת בטעינה וגם כל 30 שניות - כדי שכל הפורטלים תמיד
+        // יתכנסו לאותה גרסה בדיוק כמו השרת, בלי צורך ברענון ידני של הדף.
+        let lastKnownVersion = null;
+        async function loadVersion() {
+            try {
+                const res = await fetch(`${API}/version`);
+                if (!res.ok) return;
+                const data = await res.json();
+                document.getElementById("app-version").textContent = `v${data.version}`;
+                if (lastKnownVersion && lastKnownVersion !== data.version) {
+                    toast(`השרת עודכן לגרסה v${data.version} - מומלץ לרענן את הדף`);
+                }
+                lastKnownVersion = data.version;
+            } catch (err) { /* לא קריטי - משאירים את הערך האחרון שהוצג */ }
+        }
+        loadVersion();
+        setInterval(loadVersion, 30000);
 
         // רענון אוטומטי אם יש session שמור
         if (session) enterApp();

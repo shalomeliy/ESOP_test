@@ -22,6 +22,8 @@ class ExerciseSimulationResponse(BaseModel):
     estimated_tax_amount: float
     applied_tax_rate: float
     tax_rule_source: str
+    tax_calculation_method: str
+    tax_table_effective_date: Optional[date] = None
     is_within_post_termination_window: bool
     post_termination_exercise_deadline: Optional[date] = None
 
@@ -159,6 +161,18 @@ class TrusteePortfolioItem(BaseModel):
     trustee_deposit_date: Optional[date] = None
     holding_period_end_date: Optional[date] = None
     is_trustee_holding_period_met: bool
+
+
+# ===================================================================
+# Search
+# ===================================================================
+
+class SearchResultItem(BaseModel):
+    entity_type: str
+    entity_id: str
+    title: str
+    subtitle: str
+    score: float
 
 
 # ===================================================================

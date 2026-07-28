@@ -116,6 +116,23 @@ class TaxRatesHistory(Base):
     capital_gains_rate = Column(Float, nullable=False)
     official_source_url = Column(String, nullable=False)
 
+class IncomeTaxBracket(Base):
+    # מדרגות מס פרוגרסיביות, versioned לפי (country_code, grant_type,
+    # effective_start_date) - כל שורות עם אותה שלישייה שייכות לאותה "גרסה" של
+    # טבלת המדרגות. רלוונטי בעיקר ל-IL_102_WORK_INCOME (מוסה כהכנסת עבודה,
+    # לא capital gains שטוח). *** נתוני דמו לתרגול QA בלבד - לא חוק מס אמיתי ***
+    __tablename__ = "income_tax_brackets"
+    bracket_id = Column(String, primary_key=True, default=generate_uuid)
+    country_code = Column(String, nullable=False, index=True)
+    grant_type = Column(String, nullable=False, index=True)
+    effective_start_date = Column(Date, nullable=False, index=True)
+    bracket_order = Column(Integer, nullable=False)
+    min_amount = Column(Float, nullable=False)
+    # max_amount=None = המדרגה העליונה הפתוחה (בלי תקרה)
+    max_amount = Column(Float, nullable=True)
+    rate = Column(Float, nullable=False)
+    official_source_url = Column(String, nullable=False)
+
 class StockPricesHistory(Base):
     __tablename__ = "stock_prices_history"
     price_id = Column(String, primary_key=True, default=generate_uuid)

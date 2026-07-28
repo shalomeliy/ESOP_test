@@ -952,7 +952,82 @@ def seed_database():
         db.commit()
 
         # -------------------------------------------------------------
-        # 17. יצירת משתמשי התחברות (Users) לשלושת הפורטלים - כניסה אחת לכל
+        # 17. טבלאות מס versioned לפי תאריך - *** נתוני דמו לתרגול QA בלבד,
+        # לא חוק מס אמיתי (ראו official_source_url="DEMO-NOT-REAL-TAX-LAW") ***
+        # שיעור שטוח (TaxRatesHistory) לכל הסוגים מלבד IL_102_WORK_INCOME, ו-2
+        # גרסאות לכל שילוב (תאריכי תחולה שונים) כדי שבחירת הגרסה הנכונה לפי
+        # תאריך המימוש תהיה ניתנת לבדיקה בפועל. + מדרגות פרוגרסיביות אמיתיות
+        # (IncomeTaxBracket) ל-IL_102_WORK_INCOME, גם הן ב-2 גרסאות.
+        # -------------------------------------------------------------
+        print("🧾 יוצר טבלאות מס versioned (דמו בלבד)...")
+        DEMO_SOURCE = "DEMO-NOT-REAL-TAX-LAW"
+
+        flat_tax_rows = [
+            ("IL_102_CAPITAL_GAINS", "IL", date(2020, 1, 1), 0.25),
+            ("IL_102_CAPITAL_GAINS", "IL", date(2025, 1, 1), 0.28),
+            ("US_ISO", "US", date(2020, 1, 1), 0.20),
+            ("US_ISO", "US", date(2025, 1, 1), 0.22),
+            ("US_NSO", "US", date(2020, 1, 1), 0.30),
+            ("US_NSO", "US", date(2025, 1, 1), 0.32),
+        ]
+        for grant_type, country, eff_date, rate in flat_tax_rows:
+            db.add(models.TaxRatesHistory(
+                tax_rule_id=f"TAX-{grant_type}-{country}-{eff_date.isoformat()}",
+                country_code=country, grant_type=grant_type, effective_start_date=eff_date,
+                capital_gains_rate=rate, official_source_url=DEMO_SOURCE,
+            ))
+
+        bracket_versions = [
+            (date(2020, 1, 1), [
+                (0, 0, 75000, 0.10), (1, 75000, 150000, 0.20), (2, 150000, 300000, 0.30), (3, 300000, None, 0.40),
+            ]),
+            (date(2025, 1, 1), [
+                (0, 0, 80000, 0.10), (1, 80000, 160000, 0.22), (2, 160000, 320000, 0.32), (3, 320000, None, 0.42),
+            ]),
+        ]
+        for eff_date, brackets in bracket_versions:
+            for order, min_amt, max_amt, rate in brackets:
+                db.add(models.IncomeTaxBracket(
+                    bracket_id=f"BRACKET-IL_102_WORK_INCOME-IL-{eff_date.isoformat()}-{order}",
+                    country_code="IL", grant_type="IL_102_WORK_INCOME", effective_start_date=eff_date,
+                    bracket_order=order, min_amount=min_amt, max_amount=max_amt, rate=rate,
+                    official_source_url=DEMO_SOURCE,
+                ))
+        db.commit()
+
+        # מחיר מניה עדכני ל-COMP-001, גבוה משמעותית ממחירי המימוש הקיימים - בלי
+        # זה כל "הרווח" בסימולציות תמיד יוצא 0 (fallback ל-exercise_price עצמו).
+        db.add(models.StockPricesHistory(
+            price_id="PRICE-COMP-001-1", company_id="COMP-001", price_date=today, fmv_price=50.0, currency="ILS",
+        ))
+
+        # עובד ייעודי ל-IL_102_WORK_INCOME, מבשיל מלא, כדי שאפשר לבדוק את מדרגות
+        # המס בפועל על גרסאות שונות (exercise_date לפני/אחרי 2025-01-01).
+        work_income_grant_date = shift_months(today, -60)
+        emp_work_income = models.Employee(
+            employee_id="EMP-TAX-WORKINCOME-1", company_id="COMP-001",
+            first_name="מסלול", last_name="הכנסת-עבודה", email="tax.workincome@company.com",
+            country_code="IL", status=models.EmployeeStatus.ACTIVE,
+            hire_date=shift_months(work_income_grant_date, -3), birth_date=shift_months(today, -34 * 12),
+        )
+        db.add(emp_work_income)
+        db.flush()
+        grant_work_income = models.Grant(
+            grant_id="G-TAX-WORKINCOME-1", employee_id=emp_work_income.employee_id, pool_id="POOL-2021",
+            trustee_id="TRUSTEE-001", grant_date=work_income_grant_date,
+            grant_type=models.GrantType.IL_102_WORK_INCOME, total_options=10000, exercise_price=1.0,
+            currency="ILS", trustee_deposit_date=shift_months(work_income_grant_date, 1),
+        )
+        db.add(grant_work_income)
+        pool.allocated_shares += 10000
+        pool.unallocated_shares -= 10000
+        db.flush()
+        db.add(models.VestingSchedule(schedule_id="VS-TAX-WORKINCOME-1", grant_id=grant_work_income.grant_id,
+                                       start_date=work_income_grant_date, cliff_months=12, total_months=48))
+        db.commit()
+
+        # -------------------------------------------------------------
+        # 18. יצירת משתמשי התחברות (Users) לשלושת הפורטלים - כניסה אחת לכל
         # חברה (COMPANY_ADMIN), כניסה אחת לכל נאמן (TRUSTEE), וכניסה לקבוצת
         # עובדים מייצגת (EMPLOYEE) לצורך בדיקות. אותה סיסמת דמו לכולם.
         # -------------------------------------------------------------
@@ -985,6 +1060,8 @@ def seed_database():
             "EMP-GRANT-TERM1M-1", "EMP-DEC-PRECLIFF-1", "EMP-DEC-INTRUSTEE-1", "EMP-NOCOMPANY-1",
             # תרחישי באג ייעודיים (COMP-BUGS) - ראו סעיף 16 למעלה:
             "EMP-BUG-OVERVEST-1", "EMP-BUG-DUPLICATE-1", "EMP-BUG-EARLYHOLD-1", "EMP-BUG-FEB29-1",
+            # מדרגות מס פרוגרסיביות (IL_102_WORK_INCOME) - ראו סעיף 17 למעלה:
+            "EMP-TAX-WORKINCOME-1",
         ]
         for emp_id in demo_employee_ids:
             emp = db.query(models.Employee).filter(models.Employee.employee_id == emp_id).first()
