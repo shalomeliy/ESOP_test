@@ -21,12 +21,36 @@ def shift_months(d: date, months: int) -> date:
     return date(year, month, day)
 
 
+def stamp_alembic_head() -> None:
+    """מסמן את ה-DB שזה עתה נבנה ב-create_all כגרסת Alembic העדכנית (head).
+
+    ה-seed בונה סכימה ישירות מהמודלים ולא דרך מיגרציות, ולכן בלי stamp נשאר DB
+    בלי טבלת alembic_version - וכל `alembic upgrade head` עתידי ינסה להריץ את
+    מיגרציית ה-baseline על טבלאות שכבר קיימות וייפול. stamp רק כותב את מספר
+    הגרסה ולא מריץ שום DDL. כישלון כאן אינו קריטי ל-seed עצמו, ולכן רק אזהרה.
+    """
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+        cfg = Config(str(alembic_ini))
+        # ה-URL נלקח מה-engine שהרגע בנה את הטבלאות ולא מ-alembic.ini (שמכיל נתיב
+        # יחסי ל-cwd) - כדי שה-stamp ייכתב תמיד לאותו קובץ DB שנוצר בפועל.
+        cfg.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
+        command.stamp(cfg, "head")
+        print("🏷️ ה-DB סומן ב-Alembic (stamp head).")
+    except Exception as exc:
+        print(f"⚠️ אזהרה: לא בוצע stamp ל-Alembic ({exc}). הריצו ידנית: alembic stamp head")
+
+
 def seed_database():
     print("🧹 מוחק טבלאות קיימות...")
     Base.metadata.drop_all(bind=engine)
 
     print("🏗️ בונה טבלאות מחדש...")
     Base.metadata.create_all(bind=engine)
+    stamp_alembic_head()
 
     db = SessionLocal()
     today = date.today()
