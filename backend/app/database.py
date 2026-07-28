@@ -1,8 +1,15 @@
+import os
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # שימוש ב-SQLite כ-Database מקומי לבדיקות וסביבת QA
-SQLALCHEMY_DATABASE_URL = "sqlite:///./esop_database.db"
+DEFAULT_DATABASE_URL = "sqlite:///./esop_database.db"
+
+# ניתן לעקוף את יעד ה-DB דרך משתנה סביבה, כדי שבדיקות ומיגרציות יוכלו לרוץ מול
+# קובץ זמני ולא מול esop_database.db החי (שמחזיק נתוני עבודה אמיתיים).
+# ללא המשתנה - ההתנהגות זהה לחלוטין למה שהיה קודם.
+SQLALCHEMY_DATABASE_URL = os.environ.get("ESOP_DATABASE_URL", DEFAULT_DATABASE_URL)
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
