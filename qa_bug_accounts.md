@@ -41,7 +41,8 @@
 | 17 | אישור בקשה מעל ה-vested | bug.overvest@buglab.example | vested=1300, בקשה PENDING על 4000 (REQ-BUG-OVERVEST-1) | admin מאשר בהצלחה (200) למרות שאין מספיק vested |
 | 18 | שתי בקשות PENDING חופפות | bug.duplicate@buglab.example | 2×2000 PENDING על grant של 3000 בסה"כ (REQ-BUG-DUPLICATE-1A/B) | admin מאשר את שתיהן (200+200), סה"כ מאושר 4000>3000 |
 | 19 | אישור לפני תום חסימת הנאמן | bug.earlyhold@buglab.example | הפקדה לפני 3 חודשים בלבד, בקשה PENDING על כל ה-vested (REQ-BUG-EARLYHOLD-1) | admin מאשר (200) למרות ש-`is_trustee_holding_period_met=false` עד 2028 |
-| 20 | קריסת 29 בפברואר | bug.feb29@buglab.example | לוח הבשלה עם start=29/2/2024, cliff=24 חודשים | `GET /employee/dashboard/EMP-BUG-FEB29-1` מחזיר **500** (נבדק ומאומת) |
+| 20 | קריסת 29 בפברואר (הבשלה) | bug.feb29@buglab.example | לוח הבשלה עם start=29/2/2024, cliff=24 חודשים | `GET /employee/dashboard/EMP-BUG-FEB29-1` מחזיר **500** (נבדק ומאומת) |
+| 21 | קריסת 29 בפברואר (**נאמנות**) | כל נאמן, למשל trustee@trustee-bugs.demo | `trustee_deposit_date = 2024-02-29` דרך אישור הפקדה | `check_trustee_holding_period` בונה `date(2026,2,29)` שלא קיים → `ValueError`. **אותה תבנית כמו #20 אבל בנקודת כניסה אחרת** (`engine.py:38` מול `engine.py:19`). התגלה ב-v0.4.0 ע"י סוויטת הבדיקות, לא היה מתוכנן במקור. מכוסה ב-`tests/test_intentional_bugs.py`. |
 
 הערה: אחרי שתאשר/תדחה בקשה מ-#17-19 היא כבר לא PENDING. כדי לקבל תרחיש נקי מחדש
 להדגמה נוספת, הרץ שוב `python backend/seed_data.py` (מוחק ובונה הכל מחדש מאפס).
