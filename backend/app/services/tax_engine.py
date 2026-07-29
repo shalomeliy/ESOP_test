@@ -11,6 +11,13 @@ from backend.app.models import TaxRatesHistory, IncomeTaxBracket
 _FALLBACK_RATE = 0.25
 
 
+def _round_money(amount: float) -> float:
+    """עיגול לאגורות/סנטים. כפל float גולמי מחזיר 28000.000000000004 במקום 28000.0,
+    וסכום מס שמוצג למשתמש חייב להיות סכום כסף חוקי - לא שארית ייצוג בינארי.
+    DeterministicESOPEngine כבר מעגל ל-2 ספרות; זה מיישר את מנוע המס לאותו כלל."""
+    return round(amount, 2)
+
+
 @dataclass
 class TaxCalculationResult:
     method: str  # "FLAT_RATE" | "PROGRESSIVE_BRACKETS" | "*_FALLBACK"
@@ -46,10 +53,10 @@ class TaxCalculationEngine:
             .first()
         )
         if not rule:
-            return TaxCalculationResult("FLAT_RATE_FALLBACK", gain * _FALLBACK_RATE, _FALLBACK_RATE,
+            return TaxCalculationResult("FLAT_RATE_FALLBACK", _round_money(gain * _FALLBACK_RATE), _FALLBACK_RATE,
                                          None, "NO_TAX_RULE_FOUND_FALLBACK")
 
-        return TaxCalculationResult("FLAT_RATE", gain * rule.capital_gains_rate, rule.capital_gains_rate,
+        return TaxCalculationResult("FLAT_RATE", _round_money(gain * rule.capital_gains_rate), rule.capital_gains_rate,
                                      rule.effective_start_date, rule.official_source_url)
 
     @staticmethod
@@ -68,7 +75,7 @@ class TaxCalculationEngine:
             .first()
         )
         if not latest_version:
-            return TaxCalculationResult("PROGRESSIVE_FALLBACK", gain * _FALLBACK_RATE, _FALLBACK_RATE,
+            return TaxCalculationResult("PROGRESSIVE_FALLBACK", _round_money(gain * _FALLBACK_RATE), _FALLBACK_RATE,
                                          None, "NO_TAX_BRACKETS_FOUND_FALLBACK")
         version_date = latest_version[0]
 
@@ -96,6 +103,7 @@ class TaxCalculationEngine:
             if remaining <= 0:
                 break
 
+        tax_amount = _round_money(tax_amount)
         effective_rate = (tax_amount / gain) if gain > 0 else 0.0
         source_url = brackets[0].official_source_url if brackets else "NO_SOURCE"
         return TaxCalculationResult("PROGRESSIVE_BRACKETS", tax_amount, effective_rate, version_date, source_url)
