@@ -1,0 +1,36 @@
+# ESOP Enterprise Engine & Testbed — תלויות הפרויקט
+#
+# מדיניות: נועצים **תלויות ישירות בלבד** (מה שהקוד מייבא בפועל או מה שמריץ את המערכת),
+# ולא pip freeze מלא. הסיבה: קובץ קריא שאפשר לתחזק ידנית. תלויות עקיפות
+# (starlette, pydantic-core, anyio, httpcore, greenlet, Mako) נגזרות מהחבילות שלמטה —
+# נעיצה כפולה שלהן רק תייצר קונפליקט גרסאות בכל שדרוג עתידי.
+#
+# כל הגרסאות מאומתות מול Python 3.14 ומול פתרון תלויות אמיתי (pip install --dry-run).
+# התקנה: pip install -r requirements.txt
+
+# ---------- Runtime ----------
+
+# שרת ה-API עצמו + שרת ה-ASGI שמריץ אותו (python -m uvicorn backend.app.main:app).
+fastapi==0.139.2
+uvicorn==0.51.0
+
+# ORM ומודל הנתונים. נעוץ ל-2.0.x כי models.py כתוב ב-SQLAlchemy 2.0 style;
+# ירידה ל-1.4 תשבור את המודלים, ו-Alembic מייצר מיגרציות מול אותו metadata.
+SQLAlchemy==2.0.51
+
+# נעוץ במפורש למרות ש-fastapi מושך אותו ממילא: schemas.py מייבא pydantic ישירות,
+# וסכמות ה-API הן חוזה חיצוני — לא רוצים שגרסת הוולידציה תזוז בשקט מתחתינו.
+pydantic==2.13.4
+
+# מיגרציות סכמה. הכרחי כי create_all() לא מוסיף עמודות לטבלה קיימת —
+# זה בדיוק מה שגרם בעבר לקריסות "no such column" מול esop_database.db הקיים.
+alembic==1.18.5
+
+# ---------- Dev / Test ----------
+
+# מריץ את חבילת tests/ (המנועים הדטרמיניסטיים: הבשלה, מס, חיפוש).
+pytest==9.1.1
+
+# נדרש על ידי TestClient של FastAPI/Starlette — ה-TestClient הוא עטיפה סביב לקוח httpx,
+# ובלעדיו כל בדיקת endpoint נופלת כבר בשלב ה-import.
+httpx==0.28.1
