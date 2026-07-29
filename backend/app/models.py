@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 from enum import Enum
-from sqlalchemy import Column, String, Float, Integer, Date, DateTime, Boolean, ForeignKey, Enum as SQLEnum, CheckConstraint
+from sqlalchemy import Column, String, Float, Integer, Date, DateTime, Boolean, ForeignKey, Enum as SQLEnum, CheckConstraint, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
@@ -202,3 +202,72 @@ class ExerciseRequest(Base):
     reviewed_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     review_notes = Column(String, nullable=True)
+
+
+# ===================================================================
+# Notification Center
+# ===================================================================
+# ההתראות עצמן *לא* נשמרות ב-DB - הן מחושבות בכל קריאה מ-DeterministicESOPEngine
+# מתוך הנתונים הקיימים (vesting, נאמנות, PTEW, בקשות ממתינות). לכן אין כאן טבלת
+# notifications: התראה מאוחסנת היא עותק שמתיישן ברגע שהמענק משתנה, ואז ה-feed
+# מציג מצב שקרי. מה שכן חייב להישמר זה רק מצב המשתמש - מה הוא ביקש לקבל ומה
+# הוא כבר סגר.
+
+# ברירות המחדל של מספר ימי ההתראה מראש לכל כלל. אלה החלטות מוצר (כמה מוקדם
+# להטריד את המשתמש) ולא כללי מס, ולכן מותר לשנות אותן בלי אימות מול חוק.
+# הן יושבות כאן ולא ב-service כדי שיהיה מקור אמת אחד: המפתחות של המילון הם
+# גם רשימת הכללים החוקיים היחידה עבור העמודה rule.
+NOTIFICATION_DEFAULT_LEAD_DAYS = {
+    "VESTING_EVENT_NEAR": 14,
+    "TRUSTEE_HOLDING_ENDING": 30,
+    "PTEW_CLOSING": 30,
+    "REQUEST_PENDING_TOO_LONG": 7,
+    "FULLY_VESTED_UNEXERCISED": 90,
+}
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+    __table_args__ = (
+        # שורה אחת בדיוק לכל (משתמש, כלל). בלי האילוץ הזה upsert שנכשל באמצע או
+        # שתי לשוניות פתוחות במקביל יכולים ליצור שתי שורות סותרות לאותו כלל -
+        # אחת enabled=1/lead_days=14 והשנייה enabled=0 - ואז ה-feed תלוי בסדר
+        # השורות שחזר מה-DB, כלומר ההתראות "נעלמות וחוזרות" בלי סיבה נראית לעין.
+        UniqueConstraint("user_id", "rule", name="uq_notification_preferences_user_rule"),
+    )
+    preference_id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    # אחד מהמפתחות של NOTIFICATION_DEFAULT_LEAD_DAYS. לא נאכף כ-CHECK ברמת ה-DB
+    # בכוונה: רשימת הכללים צפויה עוד לגדול בגרסה הזו, ו-CHECK על ערכי טקסט ב-SQLite
+    # דורש בנייה מחדש של הטבלה בכל תוספת כלל.
+    rule = Column(String, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    # nullable=False בלי ברירת מחדל ב-DB: הערך נקבע ב-backend מ-
+    # NOTIFICATION_DEFAULT_LEAD_DAYS, כדי ששינוי ברירת מחדל לא יחייב מיגרציה.
+    lead_days = Column(Integer, nullable=False)
+
+
+class NotificationDismissal(Base):
+    __tablename__ = "notification_dismissals"
+    __table_args__ = (
+        # אינדקס ייחודי אחד שממלא שני תפקידים בבת אחת:
+        # (1) אכיפה - סגירה חוזרת של אותה התראה היא idempotent ברמת ה-DB, כך
+        #     שה-endpoint יכול להישען על IntegrityError במקום לבדוק-ואז-להכניס
+        #     (בדיקה-ואז-הכנסה היא race שמייצרת כפילויות בדיוק בלחיצה כפולה).
+        # (2) ביצועים - זה ה-lookup החם: כל בקשת feed בודקת כל התראה מועמדת מול
+        #     (user_id, notification_key). UNIQUE רגיל היה יוצר כאן autoindex זהה,
+        #     ולכן אינדקס נפרד נוסף על אותן שתי עמודות היה כפילות שמייקרת כתיבות בלבד.
+        Index(
+            "ix_notification_dismissals_user_key",
+            "user_id",
+            "notification_key",
+            unique=True,
+        ),
+    )
+    dismissal_id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    # מפתח דטרמיניסטי "rule|entity_id|trigger_date" - הוא חייב להיות דטרמיניסטי
+    # כי ההתראה עצמה לא נשמרת: זה הדבר היחיד שמקשר סגירה שנעשתה אתמול להתראה
+    # שתיווצר מחדש מהמנוע היום.
+    notification_key = Column(String, nullable=False)
+    dismissed_at = Column(DateTime, default=datetime.utcnow)
