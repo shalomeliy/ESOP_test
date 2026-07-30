@@ -176,6 +176,42 @@ class SearchResultItem(BaseModel):
 
 
 # ===================================================================
+# Notifications
+# ===================================================================
+
+class NotificationItemOut(BaseModel):
+    key: str
+    rule: str
+    entity_type: str
+    entity_id: str
+    title: str
+    detail: str
+    trigger_date: Optional[date] = None
+    severity: str
+
+class NotificationFeedOut(BaseModel):
+    items: List[NotificationItemOut]
+    # ישויות שהמנוע התרסק עליהן (הבאגים המכוונים של 29/2) - מדווחות במפורש
+    # כדי שהפיד יחזיר 200 חלקי במקום 500, ושהמשתמש ידע שמשהו הושמט.
+    degraded_entities: List[str]
+    total: int
+
+class NotificationCountOut(BaseModel):
+    count: int
+
+class NotificationPreferenceItem(BaseModel):
+    rule: str
+    enabled: bool
+    lead_days: int
+
+class NotificationPreferencesOut(BaseModel):
+    preferences: List[NotificationPreferenceItem]
+
+class NotificationPreferencesUpdate(BaseModel):
+    preferences: List[NotificationPreferenceItem]
+
+
+# ===================================================================
 # Audit log
 # ===================================================================
 
