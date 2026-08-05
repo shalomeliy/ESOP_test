@@ -38,6 +38,33 @@
         </div>
     </div>
 
+    <!-- מוצג במקום main-app כשהחשבון עדיין על הסיסמה החד-פעמית שהוקצתה לו (v0.5.1).
+         אין דרך לדלג עליו: השרת חוסם כל endpoint עסקי עד שהסיסמה מוחלפת, אז מסך
+         שאפשר לעקוף אותו רק היה מבלבל - כאן הוא פשוט המסך היחיד הזמין. -->
+    <div id="force-password-change-screen" class="hidden flex items-center justify-center min-h-screen p-4 bg-slate-950">
+        <div class="w-full max-w-md bg-slate-900 border border-amber-500/30 rounded-2xl p-8 shadow-2xl">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-amber-600/20 text-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-amber-500/30">
+                    <i class="fa-solid text-3xl fa-key"></i>
+                </div>
+                <h1 class="text-xl font-bold text-white">יש להחליף סיסמה</h1>
+                <p class="text-slate-400 text-sm mt-1">זו הכניסה הראשונה שלך עם הסיסמה החד-פעמית שקיבלת. בחר סיסמה חדשה כדי להמשיך.</p>
+            </div>
+            <form onsubmit="handleForcedPasswordChange(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">הסיסמה החד-פעמית שקיבלת</label>
+                    <input type="password" id="fpc-current" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">סיסמה חדשה (לפחות 8 תווים)</label>
+                    <input type="password" id="fpc-new" required minlength="8" class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div id="fpc-error" class="hidden p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-sm text-center"></div>
+                <button type="submit" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3 rounded-xl transition">החלף סיסמה והמשך</button>
+            </form>
+        </div>
+    </div>
+
     <div id="main-app" class="hidden flex min-h-screen">
         <aside class="w-64 bg-slate-950 border-l border-slate-800 flex flex-col justify-between">
             <div>
@@ -241,16 +268,50 @@
             localStorage.removeItem("esop_employee_session");
             session = null;
             document.getElementById("main-app").classList.add("hidden");
+            document.getElementById("force-password-change-screen").classList.add("hidden");
             document.getElementById("login-screen").classList.remove("hidden");
         }
 
         function enterApp() {
             document.getElementById("login-screen").classList.add("hidden");
+
+            // חסימת ניווט אמיתית: השרת כבר דוחה כל endpoint עסקי כשה-flag דלוק
+            // (require_roles), וזה רק המסך שמתאים לזה בצד הלקוח - לא הגנה בפני
+            // עצמה. בלי זה המשתמש היה רואה 403 על כל דבר בלי לדעת למה.
+            if (session.must_change_password) {
+                document.getElementById("force-password-change-screen").classList.remove("hidden");
+                return;
+            }
+
             document.getElementById("main-app").classList.remove("hidden");
             document.getElementById("employee-profile-id").textContent = session.employee_id;
             ESOPNotifications.init({ api: API, authHeaders, toast,
                                      accentBtn: "bg-emerald-600 hover:bg-emerald-500" });
             switchTab("dashboard");
+        }
+
+        async function handleForcedPasswordChange(e) {
+            e.preventDefault();
+            const errBox = document.getElementById("fpc-error");
+            errBox.classList.add("hidden");
+            try {
+                const res = await fetch(`${API}/auth/change-password`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        current_password: document.getElementById("fpc-current").value,
+                        new_password: document.getElementById("fpc-new").value,
+                    })
+                });
+                if (!res.ok) throw new Error(await res.text() || `שגיאה ${res.status}`);
+
+                session.must_change_password = false;
+                localStorage.setItem("esop_employee_session", JSON.stringify(session));
+                document.getElementById("force-password-change-screen").classList.add("hidden");
+                enterApp();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            }
         }
 
         function switchTab(tabId) {

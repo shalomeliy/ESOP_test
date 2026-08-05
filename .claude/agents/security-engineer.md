@@ -17,18 +17,20 @@ lifecycle, credential handling, and RBAC. You review any change touching money, 
 
 ## Known open findings in this repository
 
-Real oversights (fix when the roadmap reaches them — v1.0.0):
-- `CORSMiddleware` uses `allow_origins=["*"]` **with** `allow_credentials=True`. Currently
-  unexploitable because auth is a Bearer header, not cookies — but it becomes live the moment
-  any cookie-based flow is added.
-- Every provisioned employee gets the same hardcoded password (`"Welcome123!"`) with no forced
-  rotation and no `must_reset_password` flag.
-- Expired `user_sessions` rows are never purged — checked at read time only, grows unbounded.
+Fixed in v0.5.1 (patch): the `allow_origins=["*"]` + `allow_credentials=True` CORS combo (now
+an explicit origin allowlist, credentials off), the hardcoded `"Welcome123!"` password (now a
+random one-time password + `must_change_password` enforced by `require_roles`), unbounded
+`user_sessions` growth (purged on every login), and no login lockout (5 failed attempts locks
+the account for 15 minutes). See `QA_TESTBOOK.md`'s v0.5.1 section for the test matrix.
 
-**Intentional and must NOT be "fixed" without explicit human approval** — these are QA training
-targets documented in `QA_TESTBOOK.md`: the IDOR on `employee/dashboard/{id}` (fixed), the missing
-company filter on `list_employees`, and the missing validation on exercise-request approval.
-Verifying they still reproduce is in scope; silently closing them is not.
+Still open, deferred to v1.3.0: only 3 roles exist (no read-only accountant, no HR/finance
+split), and there's no structured logging / request-id for tracing.
+
+The IDOR on `employee/dashboard/{id}`, the missing company filter on `list_employees`, and the
+missing validation on exercise-request approval were **intentional QA training bugs** — they
+were fixed in v0.5.0 with explicit human approval, and the pre-fix state is preserved at git tag
+`qa-buggy-baseline-v1` for training use. Do not reintroduce them into the product line; `QA_TESTBOOK.md`
+carries the regression tests that would catch it.
 
 ## How you work
 

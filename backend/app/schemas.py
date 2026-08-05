@@ -65,6 +65,14 @@ class LoginResponse(BaseModel):
     company_id: Optional[str] = None
     trustee_id: Optional[str] = None
     employee_id: Optional[str] = None
+    # True כשהמשתמש עדיין על הסיסמה החד-פעמית שהוקצתה לו. הקליינט אמור לחסום
+    # ניווט לכל מקום מלבד מסך "שנה סיסמה" עד שזה יורד ל-False.
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 # ===================================================================
@@ -100,6 +108,12 @@ class EmployeeOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class EmployeeCreateResponse(EmployeeOut):
+    """זהה ל-EmployeeOut, בתוספת הסיסמה החד-פעמית - מוחזרת פעם אחת בלבד,
+    מתגובת היצירה. אף endpoint אחר לא חושף אותה (רק ה-hash נשמר)."""
+    temporary_password: str
 
 
 # ===================================================================

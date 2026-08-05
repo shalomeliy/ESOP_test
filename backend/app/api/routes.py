@@ -15,7 +15,8 @@ from backend.app.models import (
 from backend.app.schemas import (
     EmployeeStatusUpdate, ExerciseSimulationRequest, ExerciseSimulationResponse,
     CreateGrantRequest, CreateGrantResponse, LoginRequest, LoginResponse,
-    EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut,
+    ChangePasswordRequest,
+    EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut, EmployeeCreateResponse,
     CompanyUpdateRequest, CompanyOut, GrantOut, PoolOut,
     TrusteePortfolioItem, ExerciseRequestCreate, ExerciseRequestReview, ExerciseRequestOut,
     AuditLogOut, SearchResultItem,
@@ -29,7 +30,11 @@ from backend.app.services.tax_engine import TaxCalculationEngine
 from backend.app.services.search_engine import SearchEngine
 from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
-from backend.app.auth import hash_password, verify_password, create_session, get_current_user, require_roles
+from backend.app.auth import (
+    hash_password, verify_password, create_session, get_current_user, require_roles,
+    generate_temporary_password, is_account_locked, register_failed_login,
+    register_successful_login, cleanup_expired_sessions,
+)
 from backend.app.version import get_version
 
 router = APIRouter()
@@ -217,10 +222,27 @@ def read_version():
 
 @router.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    # ניקוי session-ים שפגו: אין scheduler בפרויקט, אז נקודת הכניסה הבטוחה ביותר
+    # שתמיד נקראת היא ההתחברות עצמה (אותו רעיון כמו מרכז ההתראות - מחושב על
+    # קריאה ולא נשמר בנפרד).
+    cleanup_expired_sessions(db)
+
     user = db.query(User).filter(User.username == payload.username).first()
+
+    # נעילה נבדקת *לפני* אימות הסיסמה: משתמש נעול לא אמור לקבל עוד ניסיון בכלל,
+    # גם אם הזין את הסיסמה הנכונה במקרה.
+    if user and is_account_locked(user):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Account locked until {user.locked_until.isoformat()} due to repeated failed logins",
+        )
+
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash, user.password_salt):
+        if user and user.is_active:
+            register_failed_login(db, user)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
+    register_successful_login(db, user)
     token = create_session(db, user)
 
     display_name = user.username
@@ -244,7 +266,38 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         company_id=user.company_id,
         trustee_id=user.trustee_id,
         employee_id=user.employee_id,
+        must_change_password=user.must_change_password,
     )
+
+
+@router.post("/auth/change-password")
+def change_password(payload: ChangePasswordRequest, authorization: str = Header(None),
+                     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """זמין תמיד דרך get_current_user בלבד (לא require_roles) - אחרת משתמש עם
+    must_change_password=True לא היה יכול להגיע לכאן כדי לתקן את זה."""
+    if not verify_password(payload.current_password, current_user.password_hash, current_user.password_salt):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must differ from the current one")
+
+    pw_hash, salt = hash_password(payload.new_password)
+    current_user.password_hash, current_user.password_salt = pw_hash, salt
+    current_user.must_change_password = False
+
+    # מבטל כל session אחר של המשתמש הזה - אם הסיבה לשינוי הייתה חשד לחשיפת
+    # הסיסמה, ה-session שנחשף לא אמור להישאר תקף. ה-session הנוכחי (זה שביצע
+    # את הבקשה הזו) לא מבוטל, אחרת המשתמש היה מנותק מיד אחרי שינוי מוצלח.
+    current_token = authorization.split(" ", 1)[1] if authorization and authorization.startswith("Bearer ") else None
+    query = db.query(UserSession).filter(UserSession.user_id == current_user.user_id)
+    if current_token:
+        query = query.filter(UserSession.token != current_token)
+    query.delete(synchronize_session=False)
+
+    record_audit_event(db, "User", current_user.user_id, "PASSWORD_CHANGE", current_user.user_id)
+    db.commit()
+    return {"status": "password_changed"}
 
 
 @router.post("/auth/logout")
@@ -278,7 +331,7 @@ def list_employees(current_user: User = Depends(require_roles(UserRole.COMPANY_A
     return db.query(Employee).filter(Employee.company_id == current_user.company_id).all()
 
 
-@router.post("/admin/employees", response_model=EmployeeOut)
+@router.post("/admin/employees", response_model=EmployeeCreateResponse)
 def create_employee(payload: EmployeeCreateRequest, current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     existing = db.query(Employee).filter(Employee.email == payload.email).first()
     if existing:
@@ -297,15 +350,20 @@ def create_employee(payload: EmployeeCreateRequest, current_user: User = Depends
     db.add(emp)
     db.flush()
 
-    # פרובייז אוטומטי של חשבון כניסה לפורטל העובד עם סיסמת ברירת מחדל.
-    pw_hash, salt = hash_password("Welcome123!")
+    # פרובייז אוטומטי של חשבון כניסה עם סיסמה חד-פעמית מוגרלת - לא הקבועה
+    # Welcome123! שהייתה זהה לכל עובד חדש בכל חברה. must_change_password=True
+    # חוסם כל endpoint עסקי (require_roles) עד שהעובד יחליף אותה בעצמו.
+    temp_password = generate_temporary_password()
+    pw_hash, salt = hash_password(temp_password)
     new_user = User(username=emp.email, password_hash=pw_hash, password_salt=salt,
-                    role=UserRole.EMPLOYEE, employee_id=emp.employee_id)
+                    role=UserRole.EMPLOYEE, employee_id=emp.employee_id,
+                    must_change_password=True)
     db.add(new_user)
 
     db.commit()
     db.refresh(emp)
-    return emp
+    return EmployeeCreateResponse(**EmployeeOut.model_validate(emp).model_dump(),
+                                  temporary_password=temp_password)
 
 
 @router.put("/admin/employees/{employee_id}", response_model=EmployeeOut)
