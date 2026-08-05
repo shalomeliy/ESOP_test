@@ -1,31 +1,127 @@
 from datetime import date, datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import (
     Employee, EmployeeStatus, OptionPool, Grant, StockPricesHistory,
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
-    Company, AuditLog,
+    Company, AuditLog, NotificationPreference, NotificationDismissal,
+    NOTIFICATION_DEFAULT_LEAD_DAYS,
 )
 from backend.app.schemas import (
     EmployeeStatusUpdate, ExerciseSimulationRequest, ExerciseSimulationResponse,
     CreateGrantRequest, CreateGrantResponse, LoginRequest, LoginResponse,
-    EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut,
+    ChangePasswordRequest,
+    EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut, EmployeeCreateResponse,
     CompanyUpdateRequest, CompanyOut, GrantOut, PoolOut,
     TrusteePortfolioItem, ExerciseRequestCreate, ExerciseRequestReview, ExerciseRequestOut,
     AuditLogOut, SearchResultItem,
+    NotificationFeedOut, NotificationCountOut, NotificationPreferencesOut,
+    NotificationPreferencesUpdate,
 )
-from backend.app.services.engine import DeterministicESOPEngine
+from backend.app.services.engine import (
+    DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
+)
 from backend.app.services.tax_engine import TaxCalculationEngine
 from backend.app.services.search_engine import SearchEngine
+from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
-from backend.app.auth import hash_password, verify_password, create_session, get_current_user, require_roles
+from backend.app.auth import (
+    hash_password, verify_password, create_session, get_current_user, require_roles,
+    generate_temporary_password, is_account_locked, register_failed_login,
+    register_successful_login, cleanup_expired_sessions,
+)
 from backend.app.version import get_version
 
 router = APIRouter()
+
+
+# ===================================================================
+# ולידציות משותפות - יושבות כאן ולא בכל endpoint בנפרד, כי אותה בדיקה
+# חסרה קודם בשני נתיבי אישור שונים (admin ו-trustee) ובנתיב ההגשה.
+# ===================================================================
+
+# גיל מינימלי להענקת אופציות. ⚠️ ברירת מחדל שמרנית ברמת המערכת ולא כלל מאומת:
+# כשירות משפטית של קטין לחתום על כתב הענקה היא שאלה משפטית שטרם אומתה מול מקור.
+# הכיוון נבחר כך שהמערכת *חוסמת* במקום להעניק בשקט מענק שאולי אינו אכיף.
+MINIMUM_GRANT_AGE_YEARS = 18
+
+
+def _vested_at(grant: Grant, on_date: date) -> float:
+    """הבשלה בתאריך נתון, עם עצירה ביום העזיבה. נקודת הכניסה היחידה שאמורה
+    לשמש את ה-endpoints, כדי שאף נתיב לא ישכח את ה-cutoff."""
+    cutoff = DeterministicESOPEngine.vesting_cutoff_date(grant.employee, on_date)
+    return DeterministicESOPEngine.calculate_vested_options(grant, grant.vesting_schedule, cutoff)
+
+
+def _vested_or_conflict(grant: Grant, on_date: date) -> float:
+    """כמה הבשיל, או 409 כשאין לוח הבשלה בכלל.
+
+    409 ולא 500: המענק קיים ותקין, מה שחסר הוא נתון שבלעדיו אי אפשר להחליט.
+    התשובה הנכונה היא "לא ניתן להכריע", לא "0 הבשילו".
+    """
+    try:
+        return _vested_at(grant, on_date)
+    except MissingVestingScheduleError:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Grant {grant.grant_id} has no vesting schedule - the vested amount "
+                    "cannot be determined. Attach a vesting schedule before proceeding."),
+        )
+
+
+def _options_committed(db: Session, grant_id: str, statuses: tuple,
+                        exclude_request_id: str = None) -> float:
+    """סך האופציות שכבר "תפוסות" ע"י בקשות אחרות על אותו מענק."""
+    q = db.query(ExerciseRequest).filter(
+        ExerciseRequest.grant_id == grant_id,
+        ExerciseRequest.status.in_(statuses),
+    )
+    if exclude_request_id:
+        q = q.filter(ExerciseRequest.request_id != exclude_request_id)
+    return float(sum(r.options_requested for r in q.all()))
+
+
+def _assert_request_approvable(db: Session, req: ExerciseRequest, grant: Grant) -> None:
+    """שלוש בדיקות שקודם לא נעשו באף אחד משני נתיבי האישור.
+
+    כולן חוסמות ולא מתריעות: אישור שגוי כאן הוא מימוש שהחברה כבר אישרה, ואי אפשר
+    "לתקן אותו בדוח" בדיעבד.
+    """
+    if req.status != ExerciseRequestStatus.PENDING:
+        raise HTTPException(status_code=409,
+                            detail=f"Request is already {req.status.value}; only PENDING can be reviewed")
+
+    today = date.today()
+    vested = _vested_or_conflict(grant, today)
+
+    # רק APPROVED נחשב "תפוס" בשלב האישור - בקשות PENDING אחרות עדיין לא אושרו,
+    # והן נחסמות בתורן כשיגיע תורן (וזה מה שמונע את אישור שתי הבקשות החופפות).
+    already_approved = _options_committed(
+        db, grant.grant_id, (ExerciseRequestStatus.APPROVED,), exclude_request_id=req.request_id)
+
+    if req.options_requested + already_approved > vested:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Cannot approve {req.options_requested:.0f} options: only {vested:.0f} vested, "
+                    f"and {already_approved:.0f} already approved on this grant"),
+        )
+
+    if grant.trustee_id:
+        is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, today)
+        if not is_met:
+            # חסימה מוחלטת ולא אזהרה: שחרור מוקדם מנאמנות מפיל את המענק ממסלול
+            # רווח הון להכנסת עבודה. זרימת "שחרור מוקדם ביודעין" היא פיצ'ר נפרד
+            # שדורש אימות כלל מס לפני שיימומש - ולא ברירת מחדל שקטה.
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Trustee holding period (Section 102) is not met until {end_date}; "
+                        "approving before that date forfeits capital-gains treatment"),
+            )
 
 
 @router.get("/search", response_model=List[SearchResultItem])
@@ -43,6 +139,76 @@ def search(q: str, current_user: User = Depends(get_current_user), db: Session =
             for r in results]
 
 
+# ===================================================================
+# NOTIFICATIONS - מחושבות על קריאה, לא נשמרות. ראו services/notifications.py
+# ===================================================================
+
+def _feed_for(current_user: User, db: Session) -> "notif.NotificationFeed":
+    """הפניה לפי תפקיד. הסקופ נאכף בתוך services/notifications.py, שם הוא
+    נקבע מ-current_user בלבד - אין כאן פרמטר שהלקוח יכול לדרוס."""
+    if current_user.role == UserRole.COMPANY_ADMIN:
+        return notif.for_admin(db, current_user.company_id, current_user.user_id)
+    if current_user.role == UserRole.TRUSTEE:
+        return notif.for_trustee(db, current_user.trustee_id, current_user.user_id)
+    return notif.for_employee(db, current_user.employee_id, current_user.user_id)
+
+
+@router.get("/notifications", response_model=NotificationFeedOut)
+def list_notifications(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    feed = _feed_for(current_user, db)
+    return NotificationFeedOut(items=[vars(i) for i in feed.items],
+                                degraded_entities=feed.degraded_entities, total=feed.total)
+
+
+@router.get("/notifications/unread-count", response_model=NotificationCountOut)
+def notifications_unread_count(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # מדווח את הסך האמיתי ולא את הפיד הקטוע - אחרת התקרה נראית כמו העובדה.
+    return NotificationCountOut(count=_feed_for(current_user, db).total)
+
+
+@router.post("/notifications/{key:path}/dismiss", status_code=204)
+def dismiss_notification(key: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """idempotent: נשען על ה-unique index ברמת ה-DB במקום check-then-insert,
+    שהוא race שמייצר כפילויות בדיוק בלחיצה כפולה."""
+    db.add(NotificationDismissal(user_id=current_user.user_id, notification_key=key))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    return Response(status_code=204)
+
+
+@router.get("/notifications/preferences", response_model=NotificationPreferencesOut)
+def get_notification_preferences(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    effective = notif._effective_preferences(db, current_user.user_id)
+    return NotificationPreferencesOut(preferences=[
+        {"rule": rule, "enabled": cfg["enabled"], "lead_days": cfg["lead_days"]}
+        for rule, cfg in effective.items()
+    ])
+
+
+@router.put("/notifications/preferences", response_model=NotificationPreferencesOut)
+def update_notification_preferences(payload: NotificationPreferencesUpdate,
+                                     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    for item in payload.preferences:
+        if item.rule not in NOTIFICATION_DEFAULT_LEAD_DAYS:
+            raise HTTPException(status_code=400, detail=f"Unknown notification rule: {item.rule}")
+        if item.lead_days < 0:
+            raise HTTPException(status_code=400, detail="lead_days must not be negative")
+
+    for item in payload.preferences:
+        row = (db.query(NotificationPreference)
+               .filter(NotificationPreference.user_id == current_user.user_id,
+                       NotificationPreference.rule == item.rule).first())
+        if row:
+            row.enabled, row.lead_days = item.enabled, item.lead_days
+        else:
+            db.add(NotificationPreference(user_id=current_user.user_id, rule=item.rule,
+                                           enabled=item.enabled, lead_days=item.lead_days))
+    db.commit()
+    return get_notification_preferences(current_user, db)
+
+
 @router.get("/version")
 def read_version():
     """גרסת המערכת - ציבורי, בלי אימות, כדי ששלושת הפורטלים יוכלו להציג אותה.
@@ -56,10 +222,27 @@ def read_version():
 
 @router.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    # ניקוי session-ים שפגו: אין scheduler בפרויקט, אז נקודת הכניסה הבטוחה ביותר
+    # שתמיד נקראת היא ההתחברות עצמה (אותו רעיון כמו מרכז ההתראות - מחושב על
+    # קריאה ולא נשמר בנפרד).
+    cleanup_expired_sessions(db)
+
     user = db.query(User).filter(User.username == payload.username).first()
+
+    # נעילה נבדקת *לפני* אימות הסיסמה: משתמש נעול לא אמור לקבל עוד ניסיון בכלל,
+    # גם אם הזין את הסיסמה הנכונה במקרה.
+    if user and is_account_locked(user):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Account locked until {user.locked_until.isoformat()} due to repeated failed logins",
+        )
+
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash, user.password_salt):
+        if user and user.is_active:
+            register_failed_login(db, user)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
+    register_successful_login(db, user)
     token = create_session(db, user)
 
     display_name = user.username
@@ -83,7 +266,38 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         company_id=user.company_id,
         trustee_id=user.trustee_id,
         employee_id=user.employee_id,
+        must_change_password=user.must_change_password,
     )
+
+
+@router.post("/auth/change-password")
+def change_password(payload: ChangePasswordRequest, authorization: str = Header(None),
+                     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """זמין תמיד דרך get_current_user בלבד (לא require_roles) - אחרת משתמש עם
+    must_change_password=True לא היה יכול להגיע לכאן כדי לתקן את זה."""
+    if not verify_password(payload.current_password, current_user.password_hash, current_user.password_salt):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must differ from the current one")
+
+    pw_hash, salt = hash_password(payload.new_password)
+    current_user.password_hash, current_user.password_salt = pw_hash, salt
+    current_user.must_change_password = False
+
+    # מבטל כל session אחר של המשתמש הזה - אם הסיבה לשינוי הייתה חשד לחשיפת
+    # הסיסמה, ה-session שנחשף לא אמור להישאר תקף. ה-session הנוכחי (זה שביצע
+    # את הבקשה הזו) לא מבוטל, אחרת המשתמש היה מנותק מיד אחרי שינוי מוצלח.
+    current_token = authorization.split(" ", 1)[1] if authorization and authorization.startswith("Bearer ") else None
+    query = db.query(UserSession).filter(UserSession.user_id == current_user.user_id)
+    if current_token:
+        query = query.filter(UserSession.token != current_token)
+    query.delete(synchronize_session=False)
+
+    record_audit_event(db, "User", current_user.user_id, "PASSWORD_CHANGE", current_user.user_id)
+    db.commit()
+    return {"status": "password_changed"}
 
 
 @router.post("/auth/logout")
@@ -113,12 +327,11 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 @router.get("/admin/employees", response_model=List[EmployeeOut])
 def list_employees(current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
-    # הערה: מחזיר את כל העובדים במערכת ולא רק את אלו של current_user.company_id.
-    employees = db.query(Employee).all()
-    return employees
+    # סקופ לפי החברה של המשתמש. קודם הוחזרו כל העובדים בכל החברות (דליפה חוצת-לקוחות).
+    return db.query(Employee).filter(Employee.company_id == current_user.company_id).all()
 
 
-@router.post("/admin/employees", response_model=EmployeeOut)
+@router.post("/admin/employees", response_model=EmployeeCreateResponse)
 def create_employee(payload: EmployeeCreateRequest, current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     existing = db.query(Employee).filter(Employee.email == payload.email).first()
     if existing:
@@ -137,15 +350,20 @@ def create_employee(payload: EmployeeCreateRequest, current_user: User = Depends
     db.add(emp)
     db.flush()
 
-    # פרובייז אוטומטי של חשבון כניסה לפורטל העובד עם סיסמת ברירת מחדל.
-    pw_hash, salt = hash_password("Welcome123!")
+    # פרובייז אוטומטי של חשבון כניסה עם סיסמה חד-פעמית מוגרלת - לא הקבועה
+    # Welcome123! שהייתה זהה לכל עובד חדש בכל חברה. must_change_password=True
+    # חוסם כל endpoint עסקי (require_roles) עד שהעובד יחליף אותה בעצמו.
+    temp_password = generate_temporary_password()
+    pw_hash, salt = hash_password(temp_password)
     new_user = User(username=emp.email, password_hash=pw_hash, password_salt=salt,
-                    role=UserRole.EMPLOYEE, employee_id=emp.employee_id)
+                    role=UserRole.EMPLOYEE, employee_id=emp.employee_id,
+                    must_change_password=True)
     db.add(new_user)
 
     db.commit()
     db.refresh(emp)
-    return emp
+    return EmployeeCreateResponse(**EmployeeOut.model_validate(emp).model_dump(),
+                                  temporary_password=temp_password)
 
 
 @router.put("/admin/employees/{employee_id}", response_model=EmployeeOut)
@@ -290,9 +508,10 @@ def review_exercise_request_admin(request_id: str, payload: ExerciseRequestRevie
     if pool.company_id != current_user.company_id:
         raise HTTPException(status_code=403, detail="Not your company's grant")
 
-    # הערה: לא בודקים כאן שה-vested_options בפועל מכסה את options_requested, ולא
-    # בודקים אם כבר יש בקשות אחרות שאושרו לאותו grant, ולא בודקים
-    # is_trustee_holding_period_met לפני אישור.
+    # דחייה תמיד מותרת; רק אישור צריך לעמוד בשלוש הבדיקות.
+    if payload.approve:
+        _assert_request_approvable(db, req, grant)
+
     req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
     req.reviewed_by_user_id = current_user.user_id
     req.reviewed_at = datetime.utcnow()
@@ -350,21 +569,41 @@ def update_employee_status(employee_id: str, payload: EmployeeStatusUpdate,
         raise HTTPException(status_code=403, detail="Cannot modify an employee outside your company")
 
     before_status = employee.status
-    employee.status = payload.status
     returned_options = 0.0
 
     if payload.status == EmployeeStatus.TERMINATED:
-        employee.termination_date = payload.effective_date
-        if payload.return_unvested_to_pool:
+        # ההחזרה לפול מותרת רק במעבר *אמיתי* למצב עזיבה. קודם אותה קריאה פעמיים
+        # (או מעבר TERMINATED -> TERMINATED עם תאריך אחר) הזרימה את האופציות שלא
+        # הבשילו לפול שוב ושוב, וכל הרצה כזו הזיזה את יתרות הפול עוד צעד מהמענקים.
+        already_terminated = before_status in (EmployeeStatus.TERMINATED, EmployeeStatus.DECEASED)
+
+        if payload.return_unvested_to_pool and not already_terminated:
             for grant in employee.grants:
-                vested = DeterministicESOPEngine.calculate_vested_options(grant, grant.vesting_schedule, payload.effective_date)
+                try:
+                    vested = DeterministicESOPEngine.calculate_vested_options(
+                        grant, grant.vesting_schedule, payload.effective_date)
+                except MissingVestingScheduleError:
+                    # חוסם את כל הפעולה: בלי לוח הבשלה אין דרך לדעת מה הבשיל, וניחוש
+                    # כאן מזיז כספית גם את הפול וגם את זכויות העובד.
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(f"Grant {grant.grant_id} has no vesting schedule - cannot determine "
+                                "how many options to return to the pool. Attach a schedule first."),
+                    )
                 unvested = grant.total_options - vested
                 returned_options += unvested
 
                 pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first()
                 if pool:
+                    # allocated_shares מייצג את מה שמוקצה *בפועל* (outstanding), ולא את
+                    # סך מה שהוענק היסטורית - לכן הוא קטן מסך total_options של המענקים
+                    # אחרי עזיבה, וזה נכון ולא דריפט.
                     pool.unallocated_shares += unvested
                     pool.allocated_shares -= unvested
+
+        employee.termination_date = payload.effective_date
+
+    employee.status = payload.status
 
     record_audit_event(db, "Employee", employee_id, "STATUS_CHANGE", current_user.user_id,
                         before={"status": before_status.value if hasattr(before_status, "value") else before_status},
@@ -381,6 +620,22 @@ def create_grant(payload: CreateGrantRequest,
     employee = db.query(Employee).filter(Employee.employee_id == payload.employee_id).first()
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+
+    # בדיקת גיל במועד ההענקה. חסרה לגמרי קודם - אפשר היה להעניק אופציות לקטין.
+    # birth_date חסר נחסם גם הוא: "לא בדקנו" אינו "עבר את הבדיקה".
+    if employee.birth_date is None:
+        raise HTTPException(
+            status_code=400,
+            detail=("Employee birth_date is required to validate grant eligibility "
+                    f"(minimum age {MINIMUM_GRANT_AGE_YEARS})"),
+        )
+    eligible_from = shift_months(employee.birth_date, MINIMUM_GRANT_AGE_YEARS * 12)
+    if payload.grant_date < eligible_from:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Employee is under {MINIMUM_GRANT_AGE_YEARS} on the grant date "
+                    f"(eligible from {eligible_from})"),
+        )
 
     pool = db.query(OptionPool).filter(OptionPool.pool_id == payload.pool_id).first()
     if not pool:
@@ -460,7 +715,11 @@ def trustee_portfolio(current_user: User = Depends(require_roles(UserRole.TRUSTE
     result = []
     for g in grants:
         emp = g.employee
-        vested = DeterministicESOPEngine.calculate_vested_options(g, g.vesting_schedule, today)
+        try:
+            vested = _vested_at(g, today)
+            vesting_data_missing = False
+        except MissingVestingScheduleError:
+            vested, vesting_data_missing = None, True
         is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(g, today)
         result.append(TrusteePortfolioItem(
             grant_id=g.grant_id,
@@ -470,6 +729,7 @@ def trustee_portfolio(current_user: User = Depends(require_roles(UserRole.TRUSTE
             company_name=emp.company.name if (emp and emp.company) else None,
             total_options=g.total_options,
             vested_options=vested,
+            vesting_data_missing=vesting_data_missing,
             trustee_deposit_date=g.trustee_deposit_date,
             holding_period_end_date=end_date,
             is_trustee_holding_period_met=is_met,
@@ -492,6 +752,11 @@ def review_exercise_request_trustee(request_id: str, payload: ExerciseRequestRev
     grant = db.query(Grant).filter(Grant.grant_id == req.grant_id).first()
     if grant.trustee_id != current_user.trustee_id:
         raise HTTPException(status_code=403, detail="Not your trusteeship")
+
+    # אותן בדיקות בדיוק כמו בנתיב ה-admin. קודם הן לא היו כאן *וגם* לא שם, כלומר
+    # הנאמן - הצד שאמור לשמור על תנאי סעיף 102 - היה נתיב האישור הפרוץ יותר.
+    if payload.approve:
+        _assert_request_approvable(db, req, grant)
 
     req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
     req.reviewed_by_user_id = current_user.user_id
@@ -529,7 +794,10 @@ def confirm_trustee_deposit(grant_id: str, deposit_date: date,
 
 @router.get("/employee/dashboard/{employee_id}")
 def get_employee_dashboard(employee_id: str, current_user: User = Depends(require_roles(UserRole.EMPLOYEE)), db: Session = Depends(get_db)):
-    # הערה: לא בודקים כאן ש-employee_id שווה ל-current_user.employee_id.
+    # עובד רואה רק את עצמו. קודם כל employee_id היה נגיש לכל עובד מאומת (IDOR).
+    if employee_id != current_user.employee_id:
+        raise HTTPException(status_code=403, detail="You can only view your own dashboard")
+
     employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -538,16 +806,24 @@ def get_employee_dashboard(employee_id: str, current_user: User = Depends(requir
     today = date.today()
 
     for grant in employee.grants:
-        vested = DeterministicESOPEngine.calculate_vested_options(grant, grant.vesting_schedule, today)
         is_trustee_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, today)
         is_within_ptw, ptw_deadline = DeterministicESOPEngine.check_post_termination_exercise_window(
             grant, employee, today
         )
 
+        # מענק בלי לוח הבשלה מסומן במפורש כנתון חסר, ולא מוצג כ-vested=0. עובד
+        # שרואה 0 לא יכול להבחין בין "עוד לא הבשיל" לבין "חסר לנו הנתון".
+        try:
+            vested = _vested_at(grant, today)
+            vesting_data_missing = False
+        except MissingVestingScheduleError:
+            vested, vesting_data_missing = None, True
+
         grants_data.append({
             "grant_id": grant.grant_id,
             "total_options": grant.total_options,
             "vested_options": vested,
+            "vesting_data_missing": vesting_data_missing,
             "exercise_price": grant.exercise_price,
             "is_trustee_holding_period_met": is_trustee_met,
             "holding_period_end_date": str(end_date),
@@ -563,6 +839,11 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
     grant = db.query(Grant).filter(Grant.grant_id == payload.grant_id).first()
     if not grant:
         raise HTTPException(status_code=404, detail="Grant not found")
+    # בעלות. הבדיקה הזו לא הופיעה במפת הבאגים אבל חסרה כאן בפועל: כל עובד מאומת
+    # יכול היה להריץ סימולציית מס על מענק של עובד אחר ולראות ממנה את מחיר המימוש,
+    # את השווי ואת סכום המס שלו.
+    if grant.employee_id != current_user.employee_id:
+        raise HTTPException(status_code=403, detail="This grant does not belong to you")
 
     is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, payload.exercise_date)
     is_within_ptw, ptw_deadline = DeterministicESOPEngine.check_post_termination_exercise_window(
@@ -626,8 +907,24 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
             detail=f"Post-termination exercise window has closed (deadline was {ptw_deadline})",
         )
 
-    # הערה: לא בודקים כאן מול vested_options בפועל, ולא מול בקשות אחרות ל-grant הזה
-    # שכבר ב-PENDING/APPROVED - אפשר להגיש כמה בקשות שרוצים על אותו grant.
+    if payload.options_to_exercise <= 0:
+        raise HTTPException(status_code=400, detail="options_to_exercise must be positive")
+
+    # חסימה כבר בהגשה, ולא רק באישור: שתי בקשות חופפות שיושבות PENDING יחד מציגות
+    # לעובד תמונה שקרית (הוא "ביקש" יותר ממה שיש לו) ומעמיסות על המאשר את התפקיד
+    # שהמערכת אמורה למלא.
+    vested = _vested_or_conflict(grant, date.today())
+    committed = _options_committed(
+        db, grant.grant_id,
+        (ExerciseRequestStatus.PENDING, ExerciseRequestStatus.APPROVED))
+    if payload.options_to_exercise + committed > vested:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Requested {payload.options_to_exercise:.0f} options but only "
+                    f"{max(0.0, vested - committed):.0f} are available "
+                    f"({vested:.0f} vested, {committed:.0f} already requested or approved)"),
+        )
+
     req = ExerciseRequest(
         grant_id=grant.grant_id,
         employee_id=current_user.employee_id,

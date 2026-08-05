@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+import string
 from datetime import datetime, timedelta
 
 from fastapi import Depends, HTTPException, Header
@@ -8,6 +9,51 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app import models
+
+# נעילת חשבון אחרי כשלונות חוזרים (v0.5.1 - patch אבטחה). קבועים ולא הגדרת admin:
+# זו החלטת מוצר שמרנית, לא כלל מס - מותר לשנות בלי אימות חיצוני.
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION = timedelta(minutes=15)
+
+TEMP_PASSWORD_ALPHABET = string.ascii_letters + string.digits
+
+
+def generate_temporary_password(length: int = 14) -> str:
+    """סיסמה חד-פעמית מוגרלת, לא קבועה כמו ה-``Welcome123!`` הקודם.
+
+    מוחזרת פעם אחת בתגובת ה-API שיוצרת את המשתמש ולא נשמרת בשום מקום אחר (רק
+    ה-hash שלה) - האדמין חייב למסור אותה לעובד עכשיו, ואי אפשר לשלוף אותה שוב.
+    """
+    return "".join(secrets.choice(TEMP_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def is_account_locked(user: "models.User") -> bool:
+    return user.locked_until is not None and user.locked_until > datetime.utcnow()
+
+
+def register_failed_login(db: Session, user: "models.User") -> None:
+    """מעלה את המונה, ונועל את החשבון אם הגיע לסף. לא מאפסים את המונה עם הזמן -
+    רק כניסה מוצלחת מאפסת אותו, כדי שניסיונות מפוזרים על פני זמן עדיין ייספרו."""
+    user.failed_login_attempts += 1
+    if user.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+        user.locked_until = datetime.utcnow() + LOCKOUT_DURATION
+    db.commit()
+
+
+def register_successful_login(db: Session, user: "models.User") -> None:
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    db.commit()
+
+
+def cleanup_expired_sessions(db: Session) -> None:
+    """מוחק session-ים שפגו. נקרא על כל login ולא כ-job נפרד: אין scheduler
+    בפרויקט (אותה החלטה שכבר התקבלה במרכז ההתראות - מחושב על קריאה ולא
+    באחסון נפרד), ונקודת הכניסה היחידה שבטוח נקראת הרבה היא ההתחברות."""
+    db.query(models.UserSession).filter(
+        models.UserSession.expires_at < datetime.utcnow()
+    ).delete(synchronize_session=False)
+    db.commit()
 
 
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
@@ -54,5 +100,13 @@ def require_roles(*roles: "models.UserRole"):
     def _checker(current_user: models.User = Depends(get_current_user)) -> models.User:
         if current_user.role not in roles:
             raise HTTPException(status_code=403, detail="Insufficient permissions for this action")
+        if current_user.must_change_password:
+            # חוסם כל endpoint עסקי (admin/trustee/employee) עד שהסיסמה החד-פעמית
+            # הוחלפה. /search ו-/notifications עוברים דרך get_current_user בלבד
+            # ולא דרך require_roles, ולכן *לא* חסומים כרגע - ראו R-051 ב-QA_TESTBOOK.
+            raise HTTPException(
+                status_code=403,
+                detail="Password change required before continuing - call POST /auth/change-password",
+            )
         return current_user
     return _checker

@@ -18,7 +18,7 @@ what can actually break, with real data.
 ## Critical project-specific context
 
 This repository is a **QA training sandbox with deliberately seeded defects**. Some bugs are
-features. Before reporting a defect, check `qa_bug_accounts.md` — it maps each intentional bug
+features. Before reporting a defect, check `QA_TESTBOOK.md` — it maps each known bug
 to a dedicated login. Intentional (do NOT "fix", do test that they still reproduce):
 
 - `list_employees` returns employees of all companies (IDOR).

@@ -38,6 +38,33 @@
         </div>
     </div>
 
+    <!-- מוצג במקום main-app כשהחשבון עדיין על הסיסמה החד-פעמית שהוקצתה לו (v0.5.1).
+         אין דרך לדלג עליו: השרת חוסם כל endpoint עסקי עד שהסיסמה מוחלפת, אז מסך
+         שאפשר לעקוף אותו רק היה מבלבל - כאן הוא פשוט המסך היחיד הזמין. -->
+    <div id="force-password-change-screen" class="hidden flex items-center justify-center min-h-screen p-4 bg-slate-950">
+        <div class="w-full max-w-md bg-slate-900 border border-amber-500/30 rounded-2xl p-8 shadow-2xl">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-amber-600/20 text-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-amber-500/30">
+                    <i class="fa-solid text-3xl fa-key"></i>
+                </div>
+                <h1 class="text-xl font-bold text-white">יש להחליף סיסמה</h1>
+                <p class="text-slate-400 text-sm mt-1">זו הכניסה הראשונה שלך עם הסיסמה החד-פעמית שקיבלת. בחר סיסמה חדשה כדי להמשיך.</p>
+            </div>
+            <form onsubmit="handleForcedPasswordChange(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">הסיסמה החד-פעמית שקיבלת</label>
+                    <input type="password" id="fpc-current" required class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">סיסמה חדשה (לפחות 8 תווים)</label>
+                    <input type="password" id="fpc-new" required minlength="8" class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div id="fpc-error" class="hidden p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-sm text-center"></div>
+                <button type="submit" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3 rounded-xl transition">החלף סיסמה והמשך</button>
+            </form>
+        </div>
+    </div>
+
     <div id="main-app" class="hidden flex min-h-screen">
         <aside class="w-64 bg-slate-950 border-l border-slate-800 flex flex-col justify-between">
             <div>
@@ -79,22 +106,12 @@
                                class="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm w-64 text-white focus:outline-none focus:border-emerald-500">
                         <div id="search-results" class="hidden absolute left-0 right-0 mt-2 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl max-h-96 overflow-y-auto z-40"></div>
                     </div>
+                    <div id="notification-mount" class="relative"></div>
                     <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
                 </div>
             </header>
 
             <section id="tab-dashboard" class="space-y-8">
-                <details class="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl p-4 text-sm">
-                    <summary class="cursor-pointer font-medium"><i class="fa-solid fa-flask"></i> כלי בדיקה (QA) - שליפת דשבורד עבור employee_id אחר (לחץ להרחבה)</summary>
-                    <div class="flex items-center justify-between gap-4 mt-3">
-                        <div>שליפת דשבורד עבור employee_id כלשהו - כולל לא שלך. שימושי לבדיקות הרשאה (IDOR).</div>
-                        <div class="flex gap-2 shrink-0">
-                            <input type="text" id="qa-employee-id-input" placeholder="employee_id לבדיקה" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-sm w-48 text-white font-mono">
-                            <button onclick="fetchEmployeeDashboard()" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-xl text-sm transition">שלוף</button>
-                        </div>
-                    </div>
-                </details>
-
                 <div id="api-error-banner" class="hidden p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-2xl flex items-start gap-3">
                     <i class="fa-solid fa-triangle-exclamation text-xl mt-0.5"></i>
                     <div>
@@ -208,6 +225,7 @@
         </main>
     </div>
 
+    <script src="../shared/notifications.js"></script>
     <script>
         const API = "http://127.0.0.1:8000/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_employee_session") || "null");
@@ -246,18 +264,54 @@
         }
 
         function handleLogout() {
+            ESOPNotifications.stop();
             localStorage.removeItem("esop_employee_session");
             session = null;
             document.getElementById("main-app").classList.add("hidden");
+            document.getElementById("force-password-change-screen").classList.add("hidden");
             document.getElementById("login-screen").classList.remove("hidden");
         }
 
         function enterApp() {
             document.getElementById("login-screen").classList.add("hidden");
+
+            // חסימת ניווט אמיתית: השרת כבר דוחה כל endpoint עסקי כשה-flag דלוק
+            // (require_roles), וזה רק המסך שמתאים לזה בצד הלקוח - לא הגנה בפני
+            // עצמה. בלי זה המשתמש היה רואה 403 על כל דבר בלי לדעת למה.
+            if (session.must_change_password) {
+                document.getElementById("force-password-change-screen").classList.remove("hidden");
+                return;
+            }
+
             document.getElementById("main-app").classList.remove("hidden");
             document.getElementById("employee-profile-id").textContent = session.employee_id;
-            document.getElementById("qa-employee-id-input").value = session.employee_id;
+            ESOPNotifications.init({ api: API, authHeaders, toast,
+                                     accentBtn: "bg-emerald-600 hover:bg-emerald-500" });
             switchTab("dashboard");
+        }
+
+        async function handleForcedPasswordChange(e) {
+            e.preventDefault();
+            const errBox = document.getElementById("fpc-error");
+            errBox.classList.add("hidden");
+            try {
+                const res = await fetch(`${API}/auth/change-password`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        current_password: document.getElementById("fpc-current").value,
+                        new_password: document.getElementById("fpc-new").value,
+                    })
+                });
+                if (!res.ok) throw new Error(await res.text() || `שגיאה ${res.status}`);
+
+                session.must_change_password = false;
+                localStorage.setItem("esop_employee_session", JSON.stringify(session));
+                document.getElementById("force-password-change-screen").classList.add("hidden");
+                enterApp();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            }
         }
 
         function switchTab(tabId) {
@@ -276,7 +330,9 @@
         }
 
         async function fetchEmployeeDashboard() {
-            const empId = document.getElementById("qa-employee-id-input").value || session.employee_id;
+            // תמיד העובד המחובר. תיבת ה-QA שאיפשרה לשלוף employee_id אחר הוסרה יחד
+            // עם תיקון ה-IDOR: השרת מחזיר 403 לכל מזהה שאינו שלך.
+            const empId = session.employee_id;
             const errorBanner = document.getElementById("api-error-banner");
 
             try {
@@ -296,10 +352,18 @@
 
                 data.grants.forEach(grant => {
                     totalGrantsOptions += grant.total_options;
-                    totalVestedOptions += grant.vested_options;
                     lastStrike = grant.exercise_price;
 
-                    const pct = grant.total_options > 0 ? Math.round((grant.vested_options / grant.total_options) * 100) : 0;
+                    // vested_options=null כשחסר לוח הבשלה. "לא ידוע" לא נספר כאפס
+                    // ולא מוצג כאפס - אחרת העובד רואה מצב שקרי במקום נתון חסר.
+                    const missing = grant.vesting_data_missing;
+                    if (!missing) totalVestedOptions += grant.vested_options;
+
+                    const pct = (!missing && grant.total_options > 0)
+                        ? Math.round((grant.vested_options / grant.total_options) * 100) : 0;
+                    const vestedLabel = missing
+                        ? `<span class="text-xs text-amber-400" title="למענק אין לוח הבשלה במערכת">נתוני הבשלה חסרים</span>`
+                        : `<span class="text-xs text-slate-300">${grant.vested_options.toLocaleString()} / ${grant.total_options.toLocaleString()} (${pct}%)</span>`;
 
                     const trusteeStatusHtml = grant.is_trustee_holding_period_met
                         ? `<span class="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">שוחרר</span>`
@@ -317,7 +381,7 @@
                             <td class="py-3.5">
                                 <div class="flex items-center gap-2">
                                     <div class="w-24 h-2 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-emerald-500" style="width:${pct}%"></div></div>
-                                    <span class="text-xs text-slate-300">${grant.vested_options.toLocaleString()} / ${grant.total_options.toLocaleString()} (${pct}%)</span>
+                                    ${vestedLabel}
                                 </div>
                             </td>
                             <td class="py-3.5 text-blue-400">$${grant.exercise_price}</td>
@@ -356,7 +420,9 @@
                 return;
             }
             select.innerHTML = currentEmployeeData.grants.map(g =>
-                `<option value="${g.grant_id}">${g.grant_id} (הבשילו ${g.vested_options.toLocaleString()} מתוך ${g.total_options.toLocaleString()})</option>`
+                `<option value="${g.grant_id}">${g.grant_id} (${g.vesting_data_missing
+                    ? "נתוני הבשלה חסרים"
+                    : `הבשילו ${g.vested_options.toLocaleString()} מתוך ${g.total_options.toLocaleString()}`})</option>`
             ).join("");
             const dateInput = document.getElementById("sim-exercise-date");
             if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);

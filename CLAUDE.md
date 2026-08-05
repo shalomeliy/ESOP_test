@@ -30,15 +30,22 @@ A backend engine and testbed for managing, practicing, and simulating stock opti
 
 ## Definition of done
 
-There is no automated test suite yet (`requirements.txt` is currently empty and no `test_*.py` files exist) — verification today is manual: exercise the relevant endpoint via `/docs` or the matching `json_samples/*.json` payload, and check the three client portals if the change touches them. A feature is complete only when:
+Run `pytest` from the project root — it redirects itself to a temporary DB (see `tests/conftest.py`; never reorder the imports there). Manual verification runs against a **sandbox**, never `esop_database.db`:
 
+```bash
+export PYTHONIOENCODING=utf-8 && export ESOP_DATABASE_URL="sqlite:///./qa_sandbox.db"
+python -m backend.seed_data && python -m uvicorn backend.app.main:app --port 8001
+```
+
+A feature is complete only when:
+
+- `pytest` passes, and the new behaviour has a test that would fail without the change.
 - It solves the stated problem, checked against real request/response data (not just "the endpoint returns 200").
 - Tax/financial calculations are verified by hand against the specific track's real rule, with the worked example recorded somewhere reviewable.
 - The change respects existing DB constraints (nothing silently violates a check constraint or foreign key).
+- **`QA_TESTBOOK.md` is updated** — a version does not close without its own heading there, its test cases (with expected results), and its risk areas. This is the participant's testing document; leaving it stale is the one failure that compounds silently across versions.
 - The current git diff has received an independent review (`.claude/agents/change-reviewer.md`).
 - The participant can explain the decision, tradeoffs, and remaining risk.
-
-If you add the first real tests, also add the run command here (e.g. `pytest`) and update this section to require it going forward — don't leave this section stale once that infrastructure exists.
 
 ## Useful commands
 

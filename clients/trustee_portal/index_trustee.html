@@ -74,6 +74,7 @@
                                class="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm w-72 text-white focus:outline-none focus:border-purple-500">
                         <div id="search-results" class="hidden absolute left-0 right-0 mt-2 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl max-h-96 overflow-y-auto z-40"></div>
                     </div>
+                    <div id="notification-mount" class="relative"></div>
                     <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
                 </div>
             </header>
@@ -158,6 +159,7 @@
         </div>
     </div>
 
+    <script src="../shared/notifications.js"></script>
     <script>
         const API = "http://127.0.0.1:8000/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_trustee_session") || "null");
@@ -196,6 +198,7 @@
         }
 
         function handleLogout() {
+            ESOPNotifications.stop();
             localStorage.removeItem("esop_trustee_session");
             session = null;
             document.getElementById("main-app").classList.add("hidden");
@@ -207,6 +210,8 @@
             document.getElementById("main-app").classList.remove("hidden");
             document.getElementById("trustee-name-title").textContent = session.display_name;
             document.getElementById("trustee-id-badge").textContent = session.trustee_id;
+            ESOPNotifications.init({ api: API, authHeaders, toast,
+                                     accentBtn: "bg-purple-600 hover:bg-purple-500" });
             switchTab("portfolio");
         }
 
@@ -280,12 +285,15 @@
             let html = "";
             for (const comp of byCompany.values()) {
                 const totalOptions = comp.grants.reduce((s, g) => s + g.total_options, 0);
-                const vestedOptions = comp.grants.reduce((s, g) => s + g.vested_options, 0);
+                // מענק בלי לוח הבשלה מחזיר vested_options=null - לא נספר כאפס בסכום.
+                const vestedOptions = comp.grants.reduce((s, g) => s + (g.vested_options || 0), 0);
+                const missingCount = comp.grants.filter(g => g.vesting_data_missing).length;
                 html += `
                     <tr class="bg-slate-900/60">
                         <td colspan="9" class="py-2 px-1 font-bold text-purple-300 text-sm">
                             <i class="fa-solid fa-building"></i> ${comp.name} <span class="text-slate-600 font-mono text-xs">(${comp.id})</span>
-                            <span class="text-slate-400 font-normal text-xs">- ${comp.grants.length} מענקים | סה"כ ${totalOptions.toLocaleString()} | הבשילו ${vestedOptions.toLocaleString()}</span>
+                            <span class="text-slate-400 font-normal text-xs">- ${comp.grants.length} מענקים | סה"כ ${totalOptions.toLocaleString()} | הבשילו ${vestedOptions.toLocaleString()}${
+                                missingCount ? ` | <span class="text-amber-400">${missingCount} ללא נתוני הבשלה</span>` : ""}</span>
                         </td>
                     </tr>
                 `;
@@ -295,7 +303,8 @@
                         <td class="py-3 text-white">${g.employee_name || "-"}</td>
                         <td class="py-3 font-mono text-xs text-slate-400">${g.grant_id}</td>
                         <td class="py-3">${g.total_options.toLocaleString()}</td>
-                        <td class="py-3 text-emerald-400">${g.vested_options.toLocaleString()}</td>
+                        <td class="py-3 ${g.vesting_data_missing ? "text-amber-400" : "text-emerald-400"}">${
+                            g.vesting_data_missing ? "נתונים חסרים" : g.vested_options.toLocaleString()}</td>
                         <td class="py-3 font-mono text-xs">${g.trustee_deposit_date || "-"}</td>
                         <td class="py-3 font-mono text-xs">${g.holding_period_end_date || "-"}</td>
                         <td class="py-3">${holdingStatusHtml(g)}</td>
