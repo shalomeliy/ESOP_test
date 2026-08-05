@@ -83,6 +83,7 @@
                                class="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm w-72 text-white focus:outline-none focus:border-indigo-500">
                         <div id="search-results" class="hidden absolute left-0 right-0 mt-2 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl max-h-96 overflow-y-auto z-40"></div>
                     </div>
+                    <div id="notification-mount" class="relative"></div>
                     <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
                 </div>
             </header>
@@ -103,8 +104,8 @@
                         <h3 id="stat-pending" class="text-3xl font-black text-amber-400 mt-2">-</h3>
                     </div>
                 </div>
-                <div class="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl p-4 text-sm">
-                    <i class="fa-solid fa-flask"></i> טיפ בדיקה: בטאב "ניהול עובדים" יש עמודת <b>company_id</b> - שווה לבדוק אם כל השורות שם באמת שייכות לחברה שלך.
+                <div class="bg-slate-800/60 border border-slate-700 text-slate-400 rounded-2xl p-4 text-sm">
+                    <i class="fa-solid fa-shield-halved"></i> רשימת העובדים מוגבלת לחברה שלך בשרת. עמודת <b>company_id</b> נשארה לתצוגה: כל שורה בה מסומנת בירוק כשהיא תואמת את החברה שלך, ובכתום אם לא - כלומר כל שורה כתומה היא רגרסיה.
                 </div>
             </section>
 
@@ -281,6 +282,7 @@
         </div>
     </div>
 
+    <script src="../shared/notifications.js"></script>
     <script>
         const API = "http://127.0.0.1:8000/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_admin_session") || "null");
@@ -321,6 +323,7 @@
         }
 
         function handleLogout() {
+            ESOPNotifications.stop();
             localStorage.removeItem("esop_admin_session");
             session = null;
             document.getElementById("main-app").classList.add("hidden");
@@ -333,6 +336,8 @@
             document.getElementById("company-badge").textContent = session.company_id;
             document.getElementById("user-display-name").textContent = session.display_name;
             document.getElementById("user-username").textContent = session.company_id;
+            ESOPNotifications.init({ api: API, authHeaders, toast,
+                                     accentBtn: "bg-indigo-600 hover:bg-indigo-500" });
             switchTab("dashboard");
         }
 

@@ -84,6 +84,14 @@ def db_session(create_schema):
     מ-DB ריק בלי לשלם על drop/create בכל פעם."""
     connection = engine.connect()
     transaction = connection.begin()
+    # *** מגבלה מוכרת ***: ה-Session הזה לא עוטף את ה-commit של ה-endpoint בתוך
+    # savepoint. המשמעות: endpoint שעושה commit סוגר את הטרנזקציה החיצונית, ואם
+    # אחר כך הוא עושה rollback (למשל נתיב ה-IntegrityError של dismiss) הוא מוחק
+    # את ה-fixture באמצע הבדיקה. לכן בדיקה שעוברת בנתיב rollback של ה-endpoint
+    # לא אמורה לגשת ל-ORM אחריו - ראו tests/test_notifications.py.
+    # join_transaction_mode="create_savepoint" נראה כמו הפתרון אבל מייצר הפרעה
+    # בין בדיקות ב-SQLite (22 שגיאות בסוויטה, עוברות אחת-אחת) - לא לנסות שוב
+    # בלי לטפל בנעילות של SQLite.
     session = Session(bind=connection)
     try:
         yield session

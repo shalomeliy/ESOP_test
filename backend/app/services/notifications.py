@@ -42,15 +42,23 @@ class NotificationItem:
 @dataclass
 class NotificationFeed:
     items: list = field(default_factory=list)
-    # ישויות שהמנוע התרסק עליהן (למשל באגי 29/2 המכוונים #20/#21). מדווחות
-    # בנפרד במקום להפיל את כל הפיד ל-500 - התראות הן מסך משני, ולא סביר
-    # שבאג בעובד אחד יחסום את כל הרשימה של המשתמש.
+    # ישויות שהמנוע לא הצליח להעריך (למשל מענק בלי לוח הבשלה). מדווחות בנפרד
+    # במקום להפיל את כל הפיד ל-500 - התראות הן מסך משני, ולא סביר שנתון חסר
+    # במענק אחד יחסום את כל הרשימה של המשתמש.
     degraded_entities: list = field(default_factory=list)
     total: int = 0
 
 
 def _days_between(target: date, today: date) -> int:
     return (target - today).days
+
+
+def _vested(grant: Grant, on_date: date) -> float:
+    """הבשלה עם עצירה ביום העזיבה - אותה נקודת כניסה שה-endpoints משתמשים בה.
+    בלי ה-cutoff הכלל "אירוע הבשלה מתקרב" היה מבטיח לעובד שעזב אופציות נוספות
+    שלא יבשילו לו לעולם."""
+    cutoff = DeterministicESOPEngine.vesting_cutoff_date(grant.employee, on_date)
+    return DeterministicESOPEngine.calculate_vested_options(grant, grant.vesting_schedule, cutoff)
 
 
 def _severity_for(days_left: int) -> str:
@@ -93,13 +101,13 @@ def _rule_vesting_event_near(grant: Grant, today: date, lead_days: int) -> Optio
     schedule = grant.vesting_schedule
     if not schedule or not schedule.total_months:
         return None
-    vested_now = DeterministicESOPEngine.calculate_vested_options(grant, schedule, today)
+    vested_now = _vested(grant, today)
     if vested_now >= grant.total_options:
         return None
     # מחפש את היום הקרוב שבו הכמות שהבשילה גדלה - סורק קדימה עד חלון ההתרעה.
     for offset in range(1, lead_days + 1):
         future = date.fromordinal(today.toordinal() + offset)
-        if DeterministicESOPEngine.calculate_vested_options(grant, schedule, future) > vested_now:
+        if _vested(grant, future) > vested_now:
             return NotificationItem(
                 key=make_key("VESTING_EVENT_NEAR", grant.grant_id, future),
                 rule="VESTING_EVENT_NEAR", entity_type="Grant", entity_id=grant.grant_id,
@@ -148,14 +156,13 @@ def _rule_fully_vested_unexercised(grant: Grant, today: date, lead_days: int,
     schedule = grant.vesting_schedule
     if not schedule or has_request:
         return None
-    if DeterministicESOPEngine.calculate_vested_options(grant, schedule, today) < grant.total_options:
+    if _vested(grant, today) < grant.total_options:
         return None
     # מוצא את היום שבו הושלמה ההבשלה, כדי למדוד כמה זמן עבר מאז.
     lo, hi = schedule.start_date.toordinal(), today.toordinal()
     while lo < hi:
         mid = (lo + hi) // 2
-        if DeterministicESOPEngine.calculate_vested_options(
-                grant, schedule, date.fromordinal(mid)) >= grant.total_options:
+        if _vested(grant, date.fromordinal(mid)) >= grant.total_options:
             hi = mid
         else:
             lo = mid + 1
@@ -204,8 +211,8 @@ def _collect(db: Session, grants: list, requests: list, prefs: dict, today: date
         }
 
     for grant in grants:
-        # כל מענק מחושב בנפרד: הבאגים המכוונים של 29/2 (#20/#21) מפילים את
-        # המנוע ב-ValueError, ואסור שמענק אחד פגום יפיל את כל הפיד ל-500.
+        # כל מענק מחושב בנפרד: מענק עם נתונים חסרים מסומן כ-degraded ולא מפיל את
+        # כל הפיד ל-500. (קודם זה כיסה גם את קריסות 29/2 המכוונות, שתוקנו.)
         try:
             produced = []
             if prefs["VESTING_EVENT_NEAR"]["enabled"]:

@@ -36,7 +36,7 @@ decision is presented to the human for approval — you propose, they decide.
 - **Sequencing matters more than parallelism here.** `routes.py`, `models.py`, `schemas.py` and
   the three portals are touched by almost every feature. Specify explicit ordering when two
   agents would edit the same file, rather than assuming a clean merge.
-- **This is a QA training sandbox.** Some defects are intentional (`qa_bug_accounts.md`). Never
+- **This is a QA training sandbox.** Known bugs and risk areas live in `QA_TESTBOOK.md`. Never
   scope "fix the bugs" without confirming with the human which ones are meant to survive.
 
 ## Return

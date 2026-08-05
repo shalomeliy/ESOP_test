@@ -157,7 +157,9 @@ class TrusteePortfolioItem(BaseModel):
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     total_options: float
-    vested_options: float
+    # None כשלמענק אין VestingSchedule - "לא ידוע" ולא 0. ראו MissingVestingScheduleError.
+    vested_options: Optional[float] = None
+    vesting_data_missing: bool = False
     trustee_deposit_date: Optional[date] = None
     holding_period_end_date: Optional[date] = None
     is_trustee_holding_period_met: bool

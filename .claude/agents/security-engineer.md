@@ -26,7 +26,7 @@ Real oversights (fix when the roadmap reaches them — v1.0.0):
 - Expired `user_sessions` rows are never purged — checked at read time only, grows unbounded.
 
 **Intentional and must NOT be "fixed" without explicit human approval** — these are QA training
-targets documented in `qa_bug_accounts.md`: the IDOR on `employee/dashboard/{id}`, the missing
+targets documented in `QA_TESTBOOK.md`: the IDOR on `employee/dashboard/{id}` (fixed), the missing
 company filter on `list_employees`, and the missing validation on exercise-request approval.
 Verifying they still reproduce is in scope; silently closing them is not.
 
