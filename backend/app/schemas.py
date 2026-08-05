@@ -65,6 +65,14 @@ class LoginResponse(BaseModel):
     company_id: Optional[str] = None
     trustee_id: Optional[str] = None
     employee_id: Optional[str] = None
+    # True כשהמשתמש עדיין על הסיסמה החד-פעמית שהוקצתה לו. הקליינט אמור לחסום
+    # ניווט לכל מקום מלבד מסך "שנה סיסמה" עד שזה יורד ל-False.
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 # ===================================================================
@@ -100,6 +108,12 @@ class EmployeeOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class EmployeeCreateResponse(EmployeeOut):
+    """זהה ל-EmployeeOut, בתוספת הסיסמה החד-פעמית - מוחזרת פעם אחת בלבד,
+    מתגובת היצירה. אף endpoint אחר לא חושף אותה (רק ה-hash נשמר)."""
+    temporary_password: str
 
 
 # ===================================================================
@@ -157,7 +171,9 @@ class TrusteePortfolioItem(BaseModel):
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     total_options: float
-    vested_options: float
+    # None כשלמענק אין VestingSchedule - "לא ידוע" ולא 0. ראו MissingVestingScheduleError.
+    vested_options: Optional[float] = None
+    vesting_data_missing: bool = False
     trustee_deposit_date: Optional[date] = None
     holding_period_end_date: Optional[date] = None
     is_trustee_holding_period_met: bool
@@ -173,6 +189,42 @@ class SearchResultItem(BaseModel):
     title: str
     subtitle: str
     score: float
+
+
+# ===================================================================
+# Notifications
+# ===================================================================
+
+class NotificationItemOut(BaseModel):
+    key: str
+    rule: str
+    entity_type: str
+    entity_id: str
+    title: str
+    detail: str
+    trigger_date: Optional[date] = None
+    severity: str
+
+class NotificationFeedOut(BaseModel):
+    items: List[NotificationItemOut]
+    # ישויות שהמנוע התרסק עליהן (הבאגים המכוונים של 29/2) - מדווחות במפורש
+    # כדי שהפיד יחזיר 200 חלקי במקום 500, ושהמשתמש ידע שמשהו הושמט.
+    degraded_entities: List[str]
+    total: int
+
+class NotificationCountOut(BaseModel):
+    count: int
+
+class NotificationPreferenceItem(BaseModel):
+    rule: str
+    enabled: bool
+    lead_days: int
+
+class NotificationPreferencesOut(BaseModel):
+    preferences: List[NotificationPreferenceItem]
+
+class NotificationPreferencesUpdate(BaseModel):
+    preferences: List[NotificationPreferenceItem]
 
 
 # ===================================================================

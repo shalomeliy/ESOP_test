@@ -164,6 +164,15 @@ class User(Base):
     employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # נדלק על כל חשבון שסופק עם סיסמה חד-פעמית (ראו auth.generate_temporary_password) -
+    # לא על סיסמה שנבחרה ע"י המשתמש. require_roles חוסם כל endpoint עסקי עד שהדגל יורד
+    # דרך POST /auth/change-password. חשבונות QA שנזרעים ישירות (seed_data.py) לא מסמנים
+    # את זה - הם לא עוברים דרך "פרובייז לעובד חדש".
+    must_change_password = Column(Boolean, default=False, nullable=False)
+    # נעילת חשבון (ראו auth.MAX_FAILED_LOGIN_ATTEMPTS). שני שדות ולא טבלה נפרדת: אין
+    # צורך בהיסטוריה, רק במונה חי ובזמן שחרור.
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
 
 class UserSession(Base):
     __tablename__ = "user_sessions"

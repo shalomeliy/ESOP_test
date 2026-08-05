@@ -1079,7 +1079,7 @@ def seed_database():
             "EMP-RETIRE-IL-1", "EMP-RETIRE-US-1", "EMP-UNEXERCISED-1YEAR",
             "EMP-REHIRE-1", "EMP-COMP-007-1", "EMP-COMP-010-1", "EMP-COMP-013-1",
             # נציגים נוספים - כניסה ייעודית לכל תרחיש/באג בקטגוריה B, שלא היה
-            # להם login עד כה (ראו qa_bug_accounts.md לרשימה המלאה עם הסברים):
+            # להם login עד כה (ראו נספח א ב-QA_TESTBOOK.md לרשימה המלאה עם הסברים):
             "EMP-RETIRED-1", "EMP-DEC-BEFORE-1", "EMP-DEC-AFTER-1", "EMP-UNEXERCISED-1",
             "EMP-GRANT-TERM1M-1", "EMP-DEC-PRECLIFF-1", "EMP-DEC-INTRUSTEE-1", "EMP-NOCOMPANY-1",
             # תרחישי באג ייעודיים (COMP-BUGS) - ראו סעיף 16 למעלה:

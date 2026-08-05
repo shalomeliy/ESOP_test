@@ -83,6 +83,7 @@
                                class="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-sm w-72 text-white focus:outline-none focus:border-indigo-500">
                         <div id="search-results" class="hidden absolute left-0 right-0 mt-2 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl max-h-96 overflow-y-auto z-40"></div>
                     </div>
+                    <div id="notification-mount" class="relative"></div>
                     <div id="global-toast" class="hidden text-sm px-4 py-2 rounded-xl" role="status" aria-live="polite"></div>
                 </div>
             </header>
@@ -103,8 +104,8 @@
                         <h3 id="stat-pending" class="text-3xl font-black text-amber-400 mt-2">-</h3>
                     </div>
                 </div>
-                <div class="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl p-4 text-sm">
-                    <i class="fa-solid fa-flask"></i> טיפ בדיקה: בטאב "ניהול עובדים" יש עמודת <b>company_id</b> - שווה לבדוק אם כל השורות שם באמת שייכות לחברה שלך.
+                <div class="bg-slate-800/60 border border-slate-700 text-slate-400 rounded-2xl p-4 text-sm">
+                    <i class="fa-solid fa-shield-halved"></i> רשימת העובדים מוגבלת לחברה שלך בשרת. עמודת <b>company_id</b> נשארה לתצוגה: כל שורה בה מסומנת בירוק כשהיא תואמת את החברה שלך, ובכתום אם לא - כלומר כל שורה כתומה היא רגרסיה.
                 </div>
             </section>
 
@@ -232,6 +233,22 @@
         </div>
     </div>
 
+    <!-- Modal: One-time temporary password (shown once, right after employee creation) -->
+    <div id="temp-password-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
+        <div class="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-2"><i class="fa-solid fa-key text-amber-400"></i> סיסמה חד-פעמית</h3>
+            <p class="text-sm text-slate-400 mb-4">
+                העובד <span id="temp-password-email" class="text-white font-mono"></span> נוצר בהצלחה.
+                מסור לו את הסיסמה הבאה - <b>היא לא תוצג שוב</b>. הכניסה הראשונה תחייב אותו להחליף אותה.
+            </p>
+            <div class="flex items-center gap-2 bg-slate-950 border border-slate-700 rounded-xl px-4 py-3">
+                <code id="temp-password-value" class="flex-1 text-emerald-400 font-mono text-lg select-all"></code>
+                <button onclick="copyTempPassword()" title="העתק" class="text-slate-400 hover:text-white"><i class="fa-solid fa-copy"></i></button>
+            </div>
+            <button onclick="closeTempPasswordDialog()" class="w-full mt-5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2 rounded-xl transition">הבנתי, סגור</button>
+        </div>
+    </div>
+
     <!-- Modal: New Grant -->
     <div id="grant-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
@@ -281,6 +298,7 @@
         </div>
     </div>
 
+    <script src="../shared/notifications.js"></script>
     <script>
         const API = "http://127.0.0.1:8000/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_admin_session") || "null");
@@ -321,6 +339,7 @@
         }
 
         function handleLogout() {
+            ESOPNotifications.stop();
             localStorage.removeItem("esop_admin_session");
             session = null;
             document.getElementById("main-app").classList.add("hidden");
@@ -333,6 +352,8 @@
             document.getElementById("company-badge").textContent = session.company_id;
             document.getElementById("user-display-name").textContent = session.display_name;
             document.getElementById("user-username").textContent = session.company_id;
+            ESOPNotifications.init({ api: API, authHeaders, toast,
+                                     accentBtn: "bg-indigo-600 hover:bg-indigo-500" });
             switchTab("dashboard");
         }
 
@@ -421,6 +442,22 @@
         }
         function closeEmployeeModal() { document.getElementById("employee-modal").classList.remove("open"); }
 
+        function showTemporaryPasswordDialog(email, password) {
+            document.getElementById("temp-password-email").textContent = email;
+            document.getElementById("temp-password-value").textContent = password;
+            document.getElementById("temp-password-modal").classList.add("open");
+        }
+
+        function closeTempPasswordDialog() {
+            document.getElementById("temp-password-modal").classList.remove("open");
+            document.getElementById("temp-password-value").textContent = "";
+        }
+
+        function copyTempPassword() {
+            const value = document.getElementById("temp-password-value").textContent;
+            if (value) navigator.clipboard.writeText(value).then(() => toast("הועתק ללוח"));
+        }
+
         async function submitEmployeeModal() {
             const editId = document.getElementById("employee-edit-id").value;
             const errBox = document.getElementById("employee-modal-error");
@@ -428,6 +465,7 @@
             errBox.classList.add("hidden");
             btn.disabled = true;
             try {
+                let createdWithTempPassword = null;
                 if (editId) {
                     const res = await fetch(`${API}/admin/employees/${editId}`, {
                         method: "PUT", headers: authHeaders(),
@@ -454,10 +492,17 @@
                         })
                     });
                     if (!res.ok) throw new Error(await res.text());
-                    toast("העובד נוצר בהצלחה (סיסמת ברירת מחדל: Welcome123!)");
+                    createdWithTempPassword = await res.json();
                 }
                 closeEmployeeModal();
                 loadEmployees();
+                // הסיסמה החד-פעמית מוחזרת רק בתגובת היצירה ולא נשלפת שוב משום
+                // מקום - מוצגת במודאל ולא רק ב-toast חולף, כדי שהאדמין יוכל להעתיק
+                // ולמסור אותה לעובד. עדכון (editId) כבר הציג toast משלו למעלה.
+                if (createdWithTempPassword) {
+                    showTemporaryPasswordDialog(createdWithTempPassword.email,
+                                                createdWithTempPassword.temporary_password);
+                }
             } catch (err) {
                 errBox.textContent = err.message;
                 errBox.classList.remove("hidden");
