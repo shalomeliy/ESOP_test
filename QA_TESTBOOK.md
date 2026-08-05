@@ -48,6 +48,45 @@ python -m uvicorn backend.app.main:app --port 8001
 | P3 | **ולידציה קיימת בנתיב אחד וחסרה בשני** | אישור בקשת מימוש: כל הבדיקות חסרו גם ב-admin וגם ב-trustee |
 | P4 | **נתון חסר מוצג כערך עסקי** — `None` שהופך ל-0 | מענק בלי `VestingSchedule` הציג `vested=0` לצמיתות |
 | P5 | **כתיבה לא אידמפוטנטית** — אותה פעולה פעמיים משנה מצב פעמיים | החזרת אופציות לפול בפיטורים, אישור חוזר של בקשה שכבר טופלה |
+| P6 | **נאמנות טיפוסים בין כתיבה לקריאה** — JSON אין לו סוג תאריך; בלי פענוח מפורש, תאריך חוזר כמחרוזת ולא כ-`date` | `project()` על שדה תאריך, ראו v0.6.0 למטה |
+
+---
+
+# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלב 1 מתוך 5 — בפיתוח)
+
+**מטרה:** מצב עסקי הופך מ"שדה שמישהו עורך" ל*תוצר חישוב* מרצף אירועים
+append-only. קריטריונים 1–3 ב-`GOAL.md`. **שלב 1 בלבד** מתועד כאן: סכמה,
+מיגרציה, גיבוי (backfill), ושכבת קיפול (fold). חיווט חמש נקודות המוטציה
+הקיימות, שכבת השאילתה הבי-טמפורלית, המסכים והקפאת ההבשלה — שלבים 2–5, עוד
+לא מתועדים כאן.
+
+## (א) מקרי בדיקה — שלב 1
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-01 | **Replay-equivalence על כל הדאטה האמיתי** | גיבוי + קיפול על עותק מלא של `esop_database.db` (19 פולים, 260 עובדים, 251 מענקים, 247 לוחות הבשלה, 4 בקשות) | 0 אי-התאמות מול העמודות המוטטות בפועל | אומת ידנית מול עותק חי — ראו `test_replay_equivalence_for_every_aggregate_type` לגרסה הממוסמכת ב-pytest |
+| QA-060-02 | קיפול פול: בסיס + שתי דלתאות | `POOL_BALANCE_ESTABLISHED` ואז `POOL_ALLOCATED`/`POOL_UNVEST_RETURNED` | סכום נכון של allocated/unallocated | `test_pool_projection_folds_established_then_deltas` |
+| QA-060-03 | קיפול עובד: עזיבה דורסת בסיס | `EMPLOYEE_STATE_ESTABLISHED` ואז `EMPLOYEE_TERMINATED` | status/termination_date מהאירוע האחרון | `test_employee_projection_terminated_overrides_established` |
+| QA-060-04 | קיפול מענק: הפקדת נאמן אחרי יצירה | `GRANT_CREATED` ואז `TRUSTEE_DEPOSIT_CONFIRMED` | `trustee_deposit_date` מעודכן, כ-`date` ולא מחרוזת | `test_grant_projection_deposit_confirmed_after_creation` |
+| QA-060-05 | ישות בלי אירועים בכלל | `project_option_pool([])` | `None`, לא קריסה ולא 0 | `test_missing_aggregate_projects_to_none` |
+| QA-060-06 | `append_event` דוחה סוג אירוע/צובר לא מוכר | `event_type`/`aggregate_type` לא ב-`LEDGER_EVENT_TYPES`/`LEDGER_AGGREGATE_TYPES` | `UnknownLedgerEventType`/`UnknownLedgerAggregateType` | `test_append_event_rejects_unknown_event_type`, `test_append_event_rejects_unknown_aggregate_type` |
+| QA-060-07 | רצף (sequence_no) עולה לפי ישות | שני אירועים על אותה `aggregate_id` | `1, 2` בסדר | `test_append_event_assigns_increasing_sequence_per_aggregate` |
+| QA-060-08 | `LedgerOwnership` נקבע פעם אחת, immutable | קריאה שנייה ל-`record_ownership` עם ערך אחר | הערך הראשון נשאר | `test_record_ownership_is_set_once_and_immutable` |
+| QA-060-09 | **הגנת שינוי אמיתית** — UPDATE/DELETE נדחים ברמת ה-DB | טריגרים שנבנים בבדיקה עצמה (create_all לא מריץ CREATE TRIGGER) | `IntegrityError` על שני הניסיונות | `test_ledger_events_reject_update_at_the_db_level`, `test_ledger_events_reject_delete_at_the_db_level` — **אומת גם ידנית** מול עותק חי עם `sqlite3` גולמי |
+| QA-060-10 | שאילתה על ידיעה שלפני רגע הגיבוי | `as_of_knowledge_date` לפני `run_at` | `None` — לא מתחזה לידע שאין | `test_query_before_backfill_knowledge_date_returns_no_history` |
+| QA-060-11 | **דוגמה מחושבת ביד: bitemporal אמיתי** | הפקדת נאמן 20 יום אחרי יצירת מענק; קיפול לפני/אחרי | לפני ההפקדה: `None`; אחריה: `2021-01-20` — שתי תשובות נכונות לאותה שאלה | `test_bitemporal_query_before_and_after_deposit_confirmation_differ` |
+| QA-060-12 | גיבוי לא רץ פעמיים | `python -m backend.backfill_ledger` פעם שנייה | מסרב, לא כותב כפילויות | אומת ידנית מול עותק חי |
+
+## (ב) אזורי סיכון — שלב 1
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-01 | **`sequence_no` מניח כותב יחיד** | `_next_sequence_no` הוא query+increment בלי נעילה - שני writers מקבילים על אותה ישות עלולים להתנגש. SQLite חד-תהליכי מקטין את הסיכון אבל לא מבטל אותו | אם אי-פעם יתווסף כותב מקביל אמיתי (worker נפרד) - לחזק ל-transaction עם retry, לא רק constraint |
+| R-060-02 | **נאמנות טיפוסים JSON↔Python** | תאריך שנכתב כ-ISO string וחוזר כמחרוזת בלי `_parse_date` מפורש - **נתפס בפועל** באמצע הפיתוח (`test_replay_equivalence_for_every_aggregate_type` נכשל על `termination_date`), לא רק תיאורטי | כל שדה תאריך חדש בפרויקטור עתידי (שלב 3+) חייב לעבור דרך `_parse_date` באותה צורה |
+| R-060-03 | `ledger_events`/`ledger_ownership` לא קיימים בסכמת ה-`create_all` של הבדיקות עם הטריגרים | `Base.metadata.create_all` יוצר את הטבלאות (דרך המודלים) אבל **לא** את ה-triggers (הם raw SQL במיגרציה בלבד) - QA-060-09 בונה אותם ידנית בבדיקה עצמה | אם המיגרציה תשתנה, לוודא שהבדיקה עדיין תואמת את ה-SQL בפועל |
+| R-060-04 | סדר הכנסה (flush) בין `Grant` ל-`ExerciseRequest` לא תמיד נכון כשמצרפים הרבה אובייקטים תלויים בפלאש אחד | אין `relationship()` מוצהר בין השניים ב-`models.py` - עובדה קיימת בסכמה, לא באג חדש. **נתפס בפועל** בזמן כתיבת `seeded_world` fixture | fixtures עתידיים שמכניסים דאטה תלוי דרך כמה טבלאות צריכים פלאש ביניים, לא פלאש אחד בסוף |
+| R-060-05 | **גיבוי לא משחזר היסטוריית ביניים אמיתית** — `POOL_BALANCE_ESTABLISHED` הוא snapshot של המצב הנוכחי, לא רצף האירועים האמיתי שהוביל אליו | אי אפשר לשחזר את זה מ-`AuditLog` (JSON טקסטואלי, לא מובטח שלם) - הוחלט במפורש לא לנסות | שאילתת "מה חשבנו" לפני רגע הגיבוי חייבת להחזיר "אין נתון" (QA-060-10), לא לנחש היסטוריה שאין |
+| R-060-06 | חיווט חמש נקודות המוטציה החיות עדיין לא קיים (שלב 3) | `POOL_ALLOCATED`, `POOL_UNVEST_RETURNED`, `EMPLOYEE_TERMINATED` מוגדרים ב-`LEDGER_EVENT_TYPES` אבל אין endpoint שיוצר אותם עדיין | הגרסה לא נסגרת עד ששלבים 2–5 יושלמו ותועדו כאן |
 
 ---
 

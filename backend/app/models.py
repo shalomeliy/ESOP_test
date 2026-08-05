@@ -280,3 +280,94 @@ class NotificationDismissal(Base):
     # שתיווצר מחדש מהמנוע היום.
     notification_key = Column(String, nullable=False)
     dismissed_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ===================================================================
+# Ledger מבוסס-אירועים (v0.6.0)
+# ===================================================================
+# מצב עסקי (יתרת פול, סטטוס עובד, תאריך הפקדת נאמן וכו') הופך מ"שדה שמישהו
+# עורך" ל-*תוצר חישוב* מרצף אירועים append-only. העמודות המוטטות הקיימות
+# (OptionPool.allocated_shares וכו') נשארות בשלב זה כ"פרויקציה מחושבת" -
+# נכתבות באותה טרנזקציה שמוסיפה את האירוע - כדי ש-ck_option_pools_shares_balance
+# ואילוצי ה-DB האחרים ימשיכו להיאכף בלי שינוי (SQLite לא יודע לאכוף שוויון
+# מול ערך משוחזר מאירועים, רק מול עמודות בפועל).
+
+# רשימת סוגי האירועים החוקיים. עמודה String רגילה ולא SQLEnum/CHECK בכוונה -
+# אותה החלטה בדיוק כמו NotificationPreference.rule למעלה: הרשימה צפויה לגדול
+# עם כל שלב עתידי (POOL_ALLOCATED/EMPLOYEE_TERMINATED בשלב 3, VESTING_PAUSE_*
+# בשלב 5), ו-CHECK על ערכי טקסט ב-SQLite דורש בנייה מחדש של הטבלה בכל תוספת.
+# "ESTABLISHED" = אירוע בסיס (snapshot) שממנו מתחיל ה-replay; כל שאר הסוגים הם
+# דלתא שמצטברת מעליו. גם אירוע גיבוי (source=BACKFILL) וגם אירוע חי (source=LIVE)
+# עתידי משתמשים באותם סוגי אירועים בדיוק - ה-source הוא מה שמבדיל ביניהם, לא
+# סוג האירוע.
+LEDGER_EVENT_TYPES = {
+    "POOL_BALANCE_ESTABLISHED",     # בסיס: יתרת פול כפי שהיא ידועה כרגע
+    "POOL_ALLOCATED",               # דלתא: הקצאה בעת יצירת מענק (שלב 3)
+    "POOL_UNVEST_RETURNED",         # דלתא: החזרה לפול בעת עזיבה (שלב 3)
+    "EMPLOYEE_STATE_ESTABLISHED",   # בסיס: סטטוס עובד כפי שהוא ידוע כרגע
+    "EMPLOYEE_TERMINATED",          # דלתא: עזיבה (שלב 3)
+    "GRANT_CREATED",                # בסיס וגם דלתא חיה: יצירת מענק
+    "TRUSTEE_DEPOSIT_CONFIRMED",    # בסיס וגם דלתא חיה: אישור הפקדה אצל נאמן
+    "VESTING_SCHEDULE_ESTABLISHED", # בסיס: לוח הבשלה כפי שהוא ידוע כרגע
+    "VESTING_PAUSE_STARTED",        # דלתא: תחילת הקפאה (שלב 5)
+    "VESTING_PAUSE_ENDED",          # דלתא: סיום הקפאה (שלב 5)
+    "EXERCISE_REQUEST_SUBMITTED",   # בסיס וגם דלתא חיה: הגשת בקשת מימוש
+    "EXERCISE_REQUEST_DECIDED",     # דלתא: אישור/דחייה
+}
+
+LEDGER_AGGREGATE_TYPES = {"OptionPool", "Employee", "Grant", "VestingSchedule", "ExerciseRequest"}
+
+# מקור האירוע - נדרש כעמודה בסכמה (לא הערה בקוד): אירוע גיבוי חייב להיות מובחן
+# לצמיתות מאירוע אמיתי, כדי שמסך "מה חשבנו בתאריך X" לעולם לא יתחזה לידע
+# שאין למערכת (ראו GOAL.md, "אין מספר בלי שרשור מקורות").
+LEDGER_SOURCE_LIVE = "LIVE"
+LEDGER_SOURCE_BACKFILL = "BACKFILL_v0.6.0"
+
+
+class LedgerEvent(Base):
+    __tablename__ = "ledger_events"
+    __table_args__ = (
+        # (aggregate_id, sequence_no) הוא סדר הקיפול (fold) הקנוני בתוך אותה
+        # ישות, כששני אירועים חולקים את אותו effective_date - recorded_at לבדו
+        # לא מספיק כי backfill מדביק את כולם לאותה שנייה בדיוק (ראו backfill_ledger.py).
+        UniqueConstraint("aggregate_id", "sequence_no", name="uq_ledger_events_aggregate_seq"),
+        Index("ix_ledger_events_aggregate", "aggregate_type", "aggregate_id"),
+        Index("ix_ledger_events_effective_date", "effective_date"),
+        Index("ix_ledger_events_recorded_at", "recorded_at"),
+    )
+    event_id = Column(String, primary_key=True, default=generate_uuid)
+    event_type = Column(String, nullable=False, index=True)
+    aggregate_type = Column(String, nullable=False)
+    aggregate_id = Column(String, nullable=False)
+    # עובדה טיפוסית כ-JSON טקסטואלי - אותה מוסכמה כמו AuditLog.before_value/after_value.
+    payload = Column(String, nullable=False)
+    # ציר זמן #1: מתי העובדה נכונה *בעולם*.
+    effective_date = Column(Date, nullable=False)
+    # ציר זמן #2: מתי המערכת למדה אותה. immutable לאחר הכתיבה - זו בדיוק הסיבה
+    # שהטריגר במיגרציה חוסם UPDATE על הטבלה הזו כולה.
+    recorded_at = Column(DateTime, nullable=False)
+    # nullable כדי לאפשר אירועי גיבוי/מערכת - לעולם לא משויכים למשתמש אמיתי
+    # שלא ביצע את הפעולה בפועל (ראו backfill_ledger.py).
+    actor_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
+    sequence_no = Column(Integer, nullable=False)
+    # מצביע על האירוע שהוא מתקן, ולעולם לא מוחק/עורך אותו. הסכמה מוכנה מהיום
+    # הראשון; אין עדיין endpoint שיוצר תיקון - זה מתוכנן לגרסה הבאה, ראו
+    # ההחלטה המפורשת ב-FEATURE_SPEC.md ("אין maker-checker לתיקונים בגרסה הזו").
+    corrects_event_id = Column(String, ForeignKey("ledger_events.event_id"), nullable=True)
+    schema_version = Column(Integer, nullable=False, default=1)
+    # LEDGER_SOURCE_LIVE / LEDGER_SOURCE_BACKFILL - ראו הערה למעלה.
+    source = Column(String, nullable=False)
+
+
+class LedgerOwnership(Base):
+    """אינדקס בעלות נפרד ולא-חוזר, לצורך הרשאות בלבד - לעולם לא נשען על דאטה
+    משוחזר/מוקרן. נקבע פעם אחת ביצירת הישות ונחשב immutable בהיקף v0.6.0 (מענק
+    שעובר בין חברות הוא v1.4.0/M&A, לא כאן). זו בדיוק ההגנה מפני חזרה של דפוס
+    ה-IDOR שכבר תוקן פעמיים: מסכי v0.6.0 מאשרים גישה מול הטבלה הזו, לא מול
+    אירועים ששוחזרו."""
+    __tablename__ = "ledger_ownership"
+    aggregate_id = Column(String, primary_key=True)
+    aggregate_type = Column(String, nullable=False)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
+    trustee_id = Column(String, ForeignKey("trustees.trustee_id"), nullable=True, index=True)
+    employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True, index=True)
