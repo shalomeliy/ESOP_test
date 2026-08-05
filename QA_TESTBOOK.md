@@ -52,13 +52,13 @@ python -m uvicorn backend.app.main:app --port 8001
 
 ---
 
-# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלב 1 מתוך 5 — בפיתוח)
+# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלבים 1–2 מתוך 5 — בפיתוח)
 
 **מטרה:** מצב עסקי הופך מ"שדה שמישהו עורך" ל*תוצר חישוב* מרצף אירועים
-append-only. קריטריונים 1–3 ב-`GOAL.md`. **שלב 1 בלבד** מתועד כאן: סכמה,
-מיגרציה, גיבוי (backfill), ושכבת קיפול (fold). חיווט חמש נקודות המוטציה
-הקיימות, שכבת השאילתה הבי-טמפורלית, המסכים והקפאת ההבשלה — שלבים 2–5, עוד
-לא מתועדים כאן.
+append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיגרציה, גיבוי
+(backfill), ושכבת קיפול (fold). **שלב 2**: חיווט חמש נקודות המוטציה החיות,
+איחוד שני נתיבי אישור בקשת המימוש, ותיקון backdating בהפקדת נאמן. שכבת
+השאילתה הבי-טמפורלית, המסכים והקפאת ההבשלה — שלבים 3–5, עוד לא מתועדים כאן.
 
 ## (א) מקרי בדיקה — שלב 1
 
@@ -66,7 +66,7 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. **שלב 1 בלבד** מת
 |---|---|---|---|---|
 | QA-060-01 | **Replay-equivalence על כל הדאטה האמיתי** | גיבוי + קיפול על עותק מלא של `esop_database.db` (19 פולים, 260 עובדים, 251 מענקים, 247 לוחות הבשלה, 4 בקשות) | 0 אי-התאמות מול העמודות המוטטות בפועל | אומת ידנית מול עותק חי — ראו `test_replay_equivalence_for_every_aggregate_type` לגרסה הממוסמכת ב-pytest |
 | QA-060-02 | קיפול פול: בסיס + שתי דלתאות | `POOL_BALANCE_ESTABLISHED` ואז `POOL_ALLOCATED`/`POOL_UNVEST_RETURNED` | סכום נכון של allocated/unallocated | `test_pool_projection_folds_established_then_deltas` |
-| QA-060-03 | קיפול עובד: עזיבה דורסת בסיס | `EMPLOYEE_STATE_ESTABLISHED` ואז `EMPLOYEE_TERMINATED` | status/termination_date מהאירוע האחרון | `test_employee_projection_terminated_overrides_established` |
+| QA-060-03 | קיפול עובד: שינוי סטטוס דורס בסיס | `EMPLOYEE_STATE_ESTABLISHED` ואז `EMPLOYEE_STATUS_CHANGED` | status/termination_date מהאירוע האחרון | `test_employee_projection_terminated_overrides_established` |
 | QA-060-04 | קיפול מענק: הפקדת נאמן אחרי יצירה | `GRANT_CREATED` ואז `TRUSTEE_DEPOSIT_CONFIRMED` | `trustee_deposit_date` מעודכן, כ-`date` ולא מחרוזת | `test_grant_projection_deposit_confirmed_after_creation` |
 | QA-060-05 | ישות בלי אירועים בכלל | `project_option_pool([])` | `None`, לא קריסה ולא 0 | `test_missing_aggregate_projects_to_none` |
 | QA-060-06 | `append_event` דוחה סוג אירוע/צובר לא מוכר | `event_type`/`aggregate_type` לא ב-`LEDGER_EVENT_TYPES`/`LEDGER_AGGREGATE_TYPES` | `UnknownLedgerEventType`/`UnknownLedgerAggregateType` | `test_append_event_rejects_unknown_event_type`, `test_append_event_rejects_unknown_aggregate_type` |
@@ -86,7 +86,36 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. **שלב 1 בלבד** מת
 | R-060-03 | `ledger_events`/`ledger_ownership` לא קיימים בסכמת ה-`create_all` של הבדיקות עם הטריגרים | `Base.metadata.create_all` יוצר את הטבלאות (דרך המודלים) אבל **לא** את ה-triggers (הם raw SQL במיגרציה בלבד) - QA-060-09 בונה אותם ידנית בבדיקה עצמה | אם המיגרציה תשתנה, לוודא שהבדיקה עדיין תואמת את ה-SQL בפועל |
 | R-060-04 | סדר הכנסה (flush) בין `Grant` ל-`ExerciseRequest` לא תמיד נכון כשמצרפים הרבה אובייקטים תלויים בפלאש אחד | אין `relationship()` מוצהר בין השניים ב-`models.py` - עובדה קיימת בסכמה, לא באג חדש. **נתפס בפועל** בזמן כתיבת `seeded_world` fixture | fixtures עתידיים שמכניסים דאטה תלוי דרך כמה טבלאות צריכים פלאש ביניים, לא פלאש אחד בסוף |
 | R-060-05 | **גיבוי לא משחזר היסטוריית ביניים אמיתית** — `POOL_BALANCE_ESTABLISHED` הוא snapshot של המצב הנוכחי, לא רצף האירועים האמיתי שהוביל אליו | אי אפשר לשחזר את זה מ-`AuditLog` (JSON טקסטואלי, לא מובטח שלם) - הוחלט במפורש לא לנסות | שאילתת "מה חשבנו" לפני רגע הגיבוי חייבת להחזיר "אין נתון" (QA-060-10), לא לנחש היסטוריה שאין |
-| R-060-06 | חיווט חמש נקודות המוטציה החיות עדיין לא קיים (שלב 3) | `POOL_ALLOCATED`, `POOL_UNVEST_RETURNED`, `EMPLOYEE_TERMINATED` מוגדרים ב-`LEDGER_EVENT_TYPES` אבל אין endpoint שיוצר אותם עדיין | הגרסה לא נסגרת עד ששלבים 2–5 יושלמו ותועדו כאן |
+| R-060-06 | ~~חיווט חמש נקודות המוטציה החיות עדיין לא קיים~~ | **נסגר בשלב 2** — ראו למטה | — |
+
+## (א) מקרי בדיקה — שלב 2
+
+הבדיקות עוברות דרך ה-API האמיתי (`client` fixture), לא קוראות ל-`append_event`
+ישירות — כדי להוכיח שהחיווט ב-`routes.py` עובד, לא רק שהשירות עצמו עובד.
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-20 | `create_grant` מייצר שלושה אירועי בסיס | `POST /admin/grants` | `GRANT_CREATED` + `POOL_ALLOCATED` + `VESTING_SCHEDULE_ESTABLISHED`, ושלושתם ברשומת `LedgerOwnership` נכונה | `test_create_grant_appends_baseline_events_and_ownership` |
+| QA-060-21 | פרויקציית הפול נכונה אחרי כמה מענקים | שני `POST /admin/grants` על אותו פול | `project()` == עמודות הפול בפועל | `test_create_grant_projection_matches_pool_after_two_grants` |
+| QA-060-22 | **תיקון באג אמיתי**: מענק עם `grant_date` ישן מ-`pool.created_at` | מענק עם תאריך מ-2015 מול פול שנוצר "עכשיו" | `POOL_ALLOCATED` מקופל נכון ולא מתעלם | `test_pool_projection_still_correct_when_grant_predates_pool_row_creation` — **נמצא ותוקן באימות ידני מול עותק חי**, ראו R-060-07 |
+| QA-060-23 | עזיבה (legacy status endpoint) עם החזרה לפול | `PATCH /admin/employees/{id}/status`, `TERMINATED`+`return_unvested_to_pool` | `EMPLOYEE_STATUS_CHANGED` + `POOL_UNVEST_RETURNED` אחד; `project()` תואם | `test_employee_termination_appends_status_event_and_pool_return_events` |
+| QA-060-24 | עזיבה כפולה לא מכפילה אירועי החזרה | אותה קריאה פעמיים | אירוע `POOL_UNVEST_RETURNED` **אחד** בלבד; `EMPLOYEE_STATUS_CHANGED` נרשם בכל פעם | `test_terminating_twice_does_not_duplicate_pool_return_events` |
+| QA-060-25 | מחיקה רכה (soft-delete) מייצרת אירוע סטטוס משלה | `DELETE /admin/employees/{id}` עם היסטוריית מענקים | `EMPLOYEE_STATUS_CHANGED` אחד — נתיב שלא עובר דרך `update_employee_status` | `test_soft_delete_appends_status_event_too` |
+| QA-060-26 | עובד חדש מקבל אירוע בסיס | `POST /admin/employees` | `EMPLOYEE_STATE_ESTABLISHED`; `project()` == `{status: ACTIVE, termination_date: None}` | `test_create_employee_appends_baseline_event` |
+| QA-060-27 | בקשת מימוש חדשה מקבלת אירוע בסיס | `POST /employee/exercise-requests` | `EXERCISE_REQUEST_SUBMITTED` | `test_create_exercise_request_appends_baseline_event` |
+| QA-060-28 | אישור admin מייצר `EXERCISE_REQUEST_DECIDED` | `PATCH /admin/exercise-requests/{id}`, `approve=true` | רצף `SUBMITTED→DECIDED`; `project()["status"]=="APPROVED"` | `test_admin_approval_appends_decided_event` |
+| QA-060-29 | דחיית נאמן — **אותה נקודת כתיבה** כמו admin | `PATCH /trustee/exercise-requests/{id}`, `approve=false` | `EXERCISE_REQUEST_DECIDED` יחיד; `project()["status"]=="REJECTED"` | `test_trustee_rejection_appends_decided_event_via_the_same_shared_function` |
+| QA-060-30 | הפקדת נאמן מייצרת אירוע | `PATCH /trustee/confirm-deposit/{id}` | `TRUSTEE_DEPOSIT_CONFIRMED`; `project()` תואם `grant.trustee_deposit_date` | `test_confirm_deposit_appends_event` |
+| QA-060-31 | **תיקון backdating**: הפקדה לפני תאריך המענק נחסמת | `deposit_date < grant.grant_date` | `400` · `"...cannot precede the grant date..."`; **אין** אירוע נכתב | `test_confirm_deposit_before_grant_date_is_rejected` |
+| QA-060-32 | גבול הבדיקה: הפקדה *באותו* תאריך של המענק מותרת | `deposit_date == grant.grant_date` | `200` | `test_confirm_deposit_on_the_grant_date_itself_is_allowed` |
+
+## (ב) אזורי סיכון — שלב 2
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-07 | **`POOL_BALANCE_ESTABLISHED` עם `effective_date` שגוי — תוקן** | הגרסה המקורית (שלב 1) השתמשה ב-`pool.created_at.date()`: זמן יצירת השורה ב-DB, לא עובדה היסטורית. מענק חי עם `grant_date` ישן ממנו (המצב הנפוץ) "הקדים" את הבסיס בקיפול, וה-`POOL_ALLOCATED` שלו התעלם בשקט - **נמצא באימות ידני מול עותק חי**, לא בבדיקה. תוקן ל-`LEDGER_EPOCH` (`date.min`) - הבסיס תמיד ראשון | `test_pool_projection_still_correct_when_grant_predates_pool_row_creation` (QA-060-22) הוא בדיקת הרגרסיה |
+| R-060-08 | אין endpoint ל-`OptionPool` חדש | `create_grant` מריץ `record_ownership` הגנתי לפול, אבל אם הפול לא קיים ב-`ledger_ownership`/ללא `POOL_BALANCE_ESTABLISHED` (למשל DB חדש לגמרי בלי גיבוי), `project()` יחזיר `None` ו-`POOL_ALLOCATED` יתעלם בשקט - בדיוק R-060-07 מחדש, בהקשר אחר | להריץ `backfill_ledger.py` **תמיד** לפני live traffic ראשון בסביבה חדשה; לתעד את סדר הפעולות (מיגרציה → גיבוי → שרת) |
+| R-060-09 | ולידציית ה-backdating בודקת רק `deposit_date >= grant.grant_date` | ⚠️ אין אימות חיצוני לכלל הזה - זו הכרעת מערכת שמרנית (למנוע ניצול מוקדם של מסלול רווח הון), לא כלל מס מאומת. ראו החלטת האבטחה בתכנון v0.6.0 | אם יתגלה כלל רשמי אחר - לעדכן כאן ובקוד יחד |
 
 ---
 

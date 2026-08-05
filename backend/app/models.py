@@ -294,7 +294,7 @@ class NotificationDismissal(Base):
 
 # רשימת סוגי האירועים החוקיים. עמודה String רגילה ולא SQLEnum/CHECK בכוונה -
 # אותה החלטה בדיוק כמו NotificationPreference.rule למעלה: הרשימה צפויה לגדול
-# עם כל שלב עתידי (POOL_ALLOCATED/EMPLOYEE_TERMINATED בשלב 3, VESTING_PAUSE_*
+# עם כל שלב עתידי (POOL_ALLOCATED/EMPLOYEE_STATUS_CHANGED בשלב 2, VESTING_PAUSE_*
 # בשלב 5), ו-CHECK על ערכי טקסט ב-SQLite דורש בנייה מחדש של הטבלה בכל תוספת.
 # "ESTABLISHED" = אירוע בסיס (snapshot) שממנו מתחיל ה-replay; כל שאר הסוגים הם
 # דלתא שמצטברת מעליו. גם אירוע גיבוי (source=BACKFILL) וגם אירוע חי (source=LIVE)
@@ -305,7 +305,10 @@ LEDGER_EVENT_TYPES = {
     "POOL_ALLOCATED",               # דלתא: הקצאה בעת יצירת מענק (שלב 3)
     "POOL_UNVEST_RETURNED",         # דלתא: החזרה לפול בעת עזיבה (שלב 3)
     "EMPLOYEE_STATE_ESTABLISHED",   # בסיס: סטטוס עובד כפי שהוא ידוע כרגע
-    "EMPLOYEE_TERMINATED",          # דלתא: עזיבה (שלב 3)
+    # דלתא: כל שינוי סטטוס (לא רק עזיבה - update_employee_status מקבל כל
+    # EmployeeStatus) - שם אחד גנרי ולא EMPLOYEE_TERMINATED, כי הקוד עצמו
+    # מבצע השמה גנרית ל-status ולא ענף ייעודי לעזיבה בלבד.
+    "EMPLOYEE_STATUS_CHANGED",
     "GRANT_CREATED",                # בסיס וגם דלתא חיה: יצירת מענק
     "TRUSTEE_DEPOSIT_CONFIRMED",    # בסיס וגם דלתא חיה: אישור הפקדה אצל נאמן
     "VESTING_SCHEDULE_ESTABLISHED", # בסיס: לוח הבשלה כפי שהוא ידוע כרגע

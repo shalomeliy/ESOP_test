@@ -25,6 +25,16 @@ from backend.app.models import (
 )
 
 
+# "לפני כל דבר אחר" - עוגן לאירועי בסיס שמייצגים תוצאה מצטברת ולא עובדה
+# היסטורית בודדת (OptionPool: היתרה הנוכחית היא נטו של כמות לא-ידועה של הענקות
+# עבר, ואין לה תאריך "נכון" יחיד). *** נמצא בפועל ***: backfill_ledger.py
+# תיעד קודם effective_date=pool.created_at.date() - זמן יצירת השורה ב-DB, לא
+# עובדה אמיתית - ומענק חי עם grant_date ישן מ-created_at (המצב הנפוץ) "הקדים"
+# את הבסיס בקיפול, וה-POOL_ALLOCATED שלו התעלם בשקט (state עדיין None באותו
+# רגע במיון). LEDGER_EPOCH מבטיח שהבסיס תמיד ראשון, בלי תלות בזמן יצירת השורה.
+LEDGER_EPOCH = date.min
+
+
 class UnknownLedgerEventType(ValueError):
     pass
 
@@ -163,9 +173,9 @@ def project_employee(events: list) -> Optional[dict]:
         p = json.loads(e.payload)
         if e.event_type == "EMPLOYEE_STATE_ESTABLISHED":
             state = {"status": p["status"], "termination_date": _parse_date(p.get("termination_date"))}
-        elif e.event_type == "EMPLOYEE_TERMINATED" and state is not None:
+        elif e.event_type == "EMPLOYEE_STATUS_CHANGED" and state is not None:
             state["status"] = p["status"]
-            state["termination_date"] = _parse_date(p["termination_date"])
+            state["termination_date"] = _parse_date(p.get("termination_date"))
     return state
 
 

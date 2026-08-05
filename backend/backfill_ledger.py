@@ -22,7 +22,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from backend.app.database import SessionLocal
 import backend.app.models as models
-from backend.app.services.ledger import append_event, record_ownership
+from backend.app.services.ledger import LEDGER_EPOCH, append_event, record_ownership
 from backend.app.models import LEDGER_SOURCE_BACKFILL, LedgerEvent
 
 
@@ -38,13 +38,17 @@ def backfill(db, run_at: datetime) -> dict:
     for pool in db.query(models.OptionPool).all():
         record_ownership(db, aggregate_id=pool.pool_id, aggregate_type="OptionPool",
                          company_id=pool.company_id)
+        # LEDGER_EPOCH ולא pool.created_at.date() - ראו ההערה ליד LEDGER_EPOCH
+        # ב-ledger.py. pool.created_at הוא זמן יצירת השורה ב-DB (למשל, מתי
+        # seed_data.py רץ), לא עובדה היסטורית אמיתית - ומענק חי עם grant_date
+        # ישן ממנו (המצב הנפוץ) היה "מקדים" את הבסיס ומאבד את הדלתא שלו בשקט.
         append_event(
             db, event_type="POOL_BALANCE_ESTABLISHED", aggregate_type="OptionPool",
             aggregate_id=pool.pool_id,
             payload={"allocated_shares": pool.allocated_shares,
                     "unallocated_shares": pool.unallocated_shares,
                     "total_shares": pool.total_shares},
-            effective_date=(pool.created_at or run_at).date(),
+            effective_date=LEDGER_EPOCH,
             recorded_at=run_at, source=LEDGER_SOURCE_BACKFILL,
         )
         counts["pools"] += 1

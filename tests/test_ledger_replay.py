@@ -50,7 +50,7 @@ def test_employee_projection_terminated_overrides_established():
     events = [
         _event("EMPLOYEE_STATE_ESTABLISHED", {"status": "ACTIVE", "termination_date": None},
               date(2020, 1, 1), sequence_no=1),
-        _event("EMPLOYEE_TERMINATED", {"status": "TERMINATED", "termination_date": "2026-01-01"},
+        _event("EMPLOYEE_STATUS_CHANGED", {"status": "TERMINATED", "termination_date": "2026-01-01"},
               date(2026, 1, 1), sequence_no=2),
     ]
     assert project_employee(events) == {"status": "TERMINATED", "termination_date": date(2026, 1, 1)}
