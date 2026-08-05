@@ -1,5 +1,6 @@
+import json
 from datetime import date, datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from sqlalchemy.exc import IntegrityError
@@ -10,7 +11,7 @@ from backend.app.models import (
     Employee, EmployeeStatus, OptionPool, Grant, StockPricesHistory,
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
     Company, AuditLog, NotificationPreference, NotificationDismissal,
-    NOTIFICATION_DEFAULT_LEAD_DAYS,
+    NOTIFICATION_DEFAULT_LEAD_DAYS, LedgerOwnership, LEDGER_AGGREGATE_TYPES,
 )
 from backend.app.schemas import (
     EmployeeStatusUpdate, ExerciseSimulationRequest, ExerciseSimulationResponse,
@@ -21,7 +22,7 @@ from backend.app.schemas import (
     TrusteePortfolioItem, ExerciseRequestCreate, ExerciseRequestReview, ExerciseRequestOut,
     AuditLogOut, SearchResultItem,
     NotificationFeedOut, NotificationCountOut, NotificationPreferencesOut,
-    NotificationPreferencesUpdate,
+    NotificationPreferencesUpdate, LedgerEventOut, LedgerProjectionOut,
 )
 from backend.app.services.engine import (
     DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
@@ -30,7 +31,7 @@ from backend.app.services.tax_engine import TaxCalculationEngine
 from backend.app.services.search_engine import SearchEngine
 from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
-from backend.app.services.ledger import append_event, record_ownership
+from backend.app.services.ledger import append_event, events_for, project, record_ownership
 from backend.app.auth import (
     hash_password, verify_password, create_session, get_current_user, require_roles,
     generate_temporary_password, is_account_locked, register_failed_login,
@@ -595,6 +596,60 @@ def get_audit_log(entity_type: str, entity_id: str,
         .order_by(AuditLog.occurred_at.desc())
         .all()
     )
+
+
+# ===================================================================
+# LEDGER (v0.6.0 שלב 3) - ציר זמן ושאילתה בי-טמפורלית. admin-only (דרך א' -
+# הבוס הקיים מקבל גישה, לא נוצר תפקיד "מבקר" חדש - ראו GOAL.md/FEATURE_SPEC.md).
+# ===================================================================
+
+def _assert_ledger_ownership(db: Session, aggregate_id: str, current_user: User) -> None:
+    """מאשר גישה מול ledger_ownership - אינדקס נפרד ולא-חוזר, לעולם לא מול
+    דאטה משוחזר/מוקרן (project()). זו בדיוק ההגנה מפני IDOR שחוזר בצורה חדשה
+    במסכי v0.6.0, שהוזכרה בסקירת האבטחה בתכנון: מסך חדש שמאשר גישה מול
+    הפרויקציה עצמה היה חוזר על אותו דפוס שכבר תוקן פעמיים (list_employees,
+    employee/dashboard/{id})."""
+    ownership = db.get(LedgerOwnership, aggregate_id)
+    if not ownership or ownership.company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="Not your company's data")
+
+
+@router.get("/admin/ledger/{aggregate_type}/{aggregate_id}/events", response_model=List[LedgerEventOut])
+def get_ledger_timeline(aggregate_type: str, aggregate_id: str,
+                         current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                         db: Session = Depends(get_db)):
+    """ציר הזמן המלא של ישות אחת - "מה קרה ומתי", בסדר הקיפול הקנוני."""
+    if aggregate_type not in LEDGER_AGGREGATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
+    _assert_ledger_ownership(db, aggregate_id, current_user)
+
+    events = events_for(db, aggregate_id)
+    return [
+        LedgerEventOut(event_id=e.event_id, event_type=e.event_type,
+                      effective_date=e.effective_date, recorded_at=e.recorded_at,
+                      source=e.source, payload=json.loads(e.payload),
+                      corrects_event_id=e.corrects_event_id)
+        for e in events
+    ]
+
+
+@router.get("/admin/ledger/{aggregate_type}/{aggregate_id}/as-of", response_model=LedgerProjectionOut)
+def get_ledger_as_of(aggregate_type: str, aggregate_id: str,
+                     effective_date: Optional[date] = None, knowledge_date: Optional[datetime] = None,
+                     current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                     db: Session = Depends(get_db)):
+    """שאילתה בי-טמפורלית: 'מה חשבנו נכון' לפי כל אחד משני צירי הזמן בנפרד.
+    שני הפרמטרים None => כל ההיסטוריה, כלומר "מה נכון עכשיו". state=None
+    כשאין אירועים עד לחתך המבוקש - "אין נתון", לא 0/ריק."""
+    if aggregate_type not in LEDGER_AGGREGATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
+    _assert_ledger_ownership(db, aggregate_id, current_user)
+
+    state = project(db, aggregate_type, aggregate_id,
+                    as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date)
+    return LedgerProjectionOut(aggregate_type=aggregate_type, aggregate_id=aggregate_id,
+                               as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date,
+                               state=state)
 
 
 # --- COMPANY ADMIN PORTAL ENDPOINTS (legacy) ---

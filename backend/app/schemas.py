@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import date, datetime
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from backend.app.models import EmployeeStatus, GrantType
 
 class EmployeeStatusUpdate(BaseModel):
@@ -270,3 +270,27 @@ class ExerciseRequestOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ===================================================================
+# Ledger (v0.6.0 שלב 3) - ציר זמן ושאילתה בי-טמפורלית
+# ===================================================================
+
+class LedgerEventOut(BaseModel):
+    event_id: str
+    event_type: str
+    effective_date: date
+    recorded_at: datetime
+    source: str
+    payload: Dict[str, Any]
+    corrects_event_id: Optional[str] = None
+
+
+class LedgerProjectionOut(BaseModel):
+    aggregate_type: str
+    aggregate_id: str
+    as_of_effective_date: Optional[date] = None
+    as_of_knowledge_date: Optional[datetime] = None
+    # None משמעו "אין אירועים בכלל עד לחתך הזה" - לא 0/ריק, אלא היעדר ידיעה
+    # אמיתי. ראו GOAL.md: אין מספר בלי שרשור מקורות.
+    state: Optional[Dict[str, Any]] = None

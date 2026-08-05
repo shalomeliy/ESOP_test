@@ -52,13 +52,15 @@ python -m uvicorn backend.app.main:app --port 8001
 
 ---
 
-# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלבים 1–2 מתוך 5 — בפיתוח)
+# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלבים 1–3 מתוך 4 — בפיתוח)
 
 **מטרה:** מצב עסקי הופך מ"שדה שמישהו עורך" ל*תוצר חישוב* מרצף אירועים
 append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיגרציה, גיבוי
-(backfill), ושכבת קיפול (fold). **שלב 2**: חיווט חמש נקודות המוטציה החיות,
-איחוד שני נתיבי אישור בקשת המימוש, ותיקון backdating בהפקדת נאמן. שכבת
-השאילתה הבי-טמפורלית, המסכים והקפאת ההבשלה — שלבים 3–5, עוד לא מתועדים כאן.
+(backfill), ושכבת קיפול (fold). שלב 2: חיווט חמש נקודות המוטציה החיות, איחוד
+שני נתיבי אישור בקשת המימוש, ותיקון backdating בהפקדת נאמן. **שלב 3**: שכבת
+השאילתה הבי-טמפורלית + שני מסכים ב-admin portal (ציר זמן, שחזור לתאריך) -
+דרך א' שהוחלטה: הבוס הקיים (`COMPANY_ADMIN`) מקבל גישה, בלי תפקיד "מבקר" חדש.
+הקפאת הבשלה (leave-of-absence) - שלב 4, עוד לא מתועד כאן.
 
 ## (א) מקרי בדיקה — שלב 1
 
@@ -116,6 +118,29 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיג
 | R-060-07 | **`POOL_BALANCE_ESTABLISHED` עם `effective_date` שגוי — תוקן** | הגרסה המקורית (שלב 1) השתמשה ב-`pool.created_at.date()`: זמן יצירת השורה ב-DB, לא עובדה היסטורית. מענק חי עם `grant_date` ישן ממנו (המצב הנפוץ) "הקדים" את הבסיס בקיפול, וה-`POOL_ALLOCATED` שלו התעלם בשקט - **נמצא באימות ידני מול עותק חי**, לא בבדיקה. תוקן ל-`LEDGER_EPOCH` (`date.min`) - הבסיס תמיד ראשון | `test_pool_projection_still_correct_when_grant_predates_pool_row_creation` (QA-060-22) הוא בדיקת הרגרסיה |
 | R-060-08 | אין endpoint ל-`OptionPool` חדש | `create_grant` מריץ `record_ownership` הגנתי לפול, אבל אם הפול לא קיים ב-`ledger_ownership`/ללא `POOL_BALANCE_ESTABLISHED` (למשל DB חדש לגמרי בלי גיבוי), `project()` יחזיר `None` ו-`POOL_ALLOCATED` יתעלם בשקט - בדיוק R-060-07 מחדש, בהקשר אחר | להריץ `backfill_ledger.py` **תמיד** לפני live traffic ראשון בסביבה חדשה; לתעד את סדר הפעולות (מיגרציה → גיבוי → שרת) |
 | R-060-09 | ולידציית ה-backdating בודקת רק `deposit_date >= grant.grant_date` | ⚠️ אין אימות חיצוני לכלל הזה - זו הכרעת מערכת שמרנית (למנוע ניצול מוקדם של מסלול רווח הון), לא כלל מס מאומת. ראו החלטת האבטחה בתכנון v0.6.0 | אם יתגלה כלל רשמי אחר - לעדכן כאן ובקוד יחד |
+
+## (א) מקרי בדיקה — שלב 3
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-40 | ציר הזמן מחזיר אירועים בסדר, עם payload מפוענח | `GET /admin/ledger/Grant/{id}/events` | רשימת אירועים ממוינת; `payload` הוא `dict`, לא מחרוזת JSON גולמית | `test_timeline_returns_events_in_order_with_parsed_payload` |
+| QA-060-41 | `aggregate_type` לא מוכר נדחה | `GET .../ledger/NotAThing/{id}/events` | `400` · `Unsupported aggregate_type` | `test_timeline_rejects_unknown_aggregate_type` |
+| QA-060-42 | **IDOR חוצה-חברות נחסם** | אדמין של חברה B מבקש ציר זמן של מענק בחברה A | `403` | `test_timeline_blocks_cross_company_access` — **אומת גם ידנית בדפדפן** |
+| QA-060-43 | ישות שלא קיימת ב-`ledger_ownership` בכלל | `aggregate_id` שאינו קיים | `403`, לא `200` עם רשימה ריקה (כדי לא להבחין בין "קיים אבל לא שלי" ל"לא קיים") | `test_timeline_for_unknown_aggregate_id_is_also_blocked_not_leaked_as_empty` |
+| QA-060-44 | `as-of` בלי פרמטרים = המצב הנוכחי | `GET .../as-of` | תואם את `grant.trustee_deposit_date` בפועל | `test_as_of_with_no_params_returns_current_state` — **אומת בדפדפן** |
+| QA-060-45 | **דוגמה מחושבת ביד, חיה**: יום לפני הפקדה | `effective_date` יום לפני `trustee_deposit_date` | `trustee_deposit_date: null` | `test_as_of_effective_date_before_deposit_shows_no_deposit_yet` — **אומת בדפדפן**: 2021-01-20→`null` |
+| QA-060-46 | אותה דוגמה, ביום ההפקדה עצמו | `effective_date == trustee_deposit_date` | `trustee_deposit_date` מוצג | `test_as_of_effective_date_on_and_after_deposit_shows_it` — **אומת בדפדפן**: 2021-02-01→`"2021-02-01"` |
+| QA-060-47 | שאילתת ידיעה לפני שהמענק בכלל נוצר | `knowledge_date` 10 שנים אחורה | `state: null` — "אין נתון", לא מתחזה | `test_as_of_knowledge_date_before_backfill_or_creation_returns_no_data` — **אומת בדפדפן** |
+| QA-060-48 | `as-of` דוחה `aggregate_type` לא מוכר | כמו QA-060-41 | `400` | `test_as_of_rejects_unknown_aggregate_type` |
+| QA-060-49 | `as-of` חוסם חוצה-חברות | כמו QA-060-42 | `403` | `test_as_of_blocks_cross_company_access` |
+
+## (ב) אזורי סיכון — שלב 3
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-10 | אימות ההרשאה במסכי v0.6.0 עובר דרך `LedgerOwnership` ולא דרך `project()` | בכוונה: מאשרים גישה מול אינדקס בעלות שנקבע פעם אחת ביצירה, לא מול דאטה משוחזר - ההגנה שסקירת האבטחה דרשה בתכנון (מסך שמאשר מול הפרויקציה עצמה חוזר על דפוס IDOR שכבר תוקן פעמיים) | כל endpoint עתידי שקורא ל-`project()` חייב לבדוק `_assert_ledger_ownership` **קודם**, לא במקום |
+| R-060-11 | ה-UI מציג `payload` גולמי (JSON) בציר הזמן, לא מנוסח לפי סוג אירוע | מספיק לשלב 3 (שקוף, אמין) אבל לא "יפה" - שיפור עתידי אפשרי, לא חוסם | אין השפעה על נכונות, רק על חוויית משתמש |
+| R-060-12 | `knowledge_date` מהדפדפן מגיע כ-`type="date"` (יום בלבד), בלי שעה | תואם למה שה-API כבר תומך בו (Pydantic הופך תאריך בלי שעה לחצות), אבל מגביל את הדיוק שהמשתמש יכול לבדוק בו דרך ה-UI ל-24 שעות | אם יידרש דיוק לשעה - להוסיף שדה שעה נפרד, לא לשנות את ה-API |
 
 ---
 
