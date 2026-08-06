@@ -4,3 +4,17 @@ esop_database.db
 esop_database.db-wal
 esop_database.db-shm
 esop_database.*.db
+document_store/
+.codegraph/
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+qa_sandbox.db*
+.env
+.env.*
+
+# קבצי גיבוי/סריקה מקומיים - git עצמו הוא הגיבוי (ההיסטוריה), אין טעם לשמור
+# עותק .bak בתוך הריפו; _skills_audit* הוא כלי מקומי חד-פעמי, לא קוד פרויקט.
+*.bak
+_skills_audit.*

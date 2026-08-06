@@ -64,6 +64,10 @@ class Employee(Base):
     hire_date = Column(Date, nullable=False)
     termination_date = Column(Date, nullable=True)
     birth_date = Column(Date, nullable=True)
+    # v0.9.0: נדרש למסמכים (כתב הענקה/נספח 102) שמזהים את העובד באופן רשמי.
+    # nullable + טקסט חופשי בכוונה - בלי ולידציית פורמט לפי מדינה (מחוץ להיקף
+    # v0.9.0); עובדים קיימים שלא הוזן להם הערך פשוט לא יוצג להם ב-PDF.
+    national_id = Column(String, nullable=True)
 
     company = relationship("Company", back_populates="employees")
     grants = relationship("Grant", back_populates="employee")
@@ -431,3 +435,55 @@ class LedgerOwnership(Base):
     company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
     trustee_id = Column(String, ForeignKey("trustees.trustee_id"), nullable=True, index=True)
     employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True, index=True)
+
+
+# ===================================================================
+# מסמכים ו"אישור קבלה" פנימי (v0.9.0)
+#
+# *** במכוון לא "חתימה"/signature בשום מקום - לא בקוד, לא ב-API, לא ב-UI ***.
+# למערכת הזו אין אימות זהות, הצפנה או גורם שלישי מאשר - "חתימה דיגיטלית" היה
+# מתחזה לתוקף משפטי שאין לו. זו אותה הפרת "לא ממציאים סמכות" כמו כלל מס בדוי
+# (GOAL.md חוק ברזל 1), רק על מסמך משפטי במקום שיעור מס. ראו DocumentStatus.
+# ===================================================================
+
+# String חופשי (לא SQLEnum) - אותה מוסכמה כמו TAX_CALCULATION_METHODS/
+# LEDGER_EVENT_TYPES: אוצר מילים סגור שנבדק באפליקציה, לא באילוץ DB, כי
+# תבניות חדשות (v0.9.0 שלב 2) יתווספו בלי מיגרציה.
+DOCUMENT_TEMPLATE_TYPES = {"GRANT_LETTER", "SECTION_102_APPENDIX", "TRUSTEE_DEPOSIT_CONFIRMATION"}
+
+
+class DocumentStatus(str, Enum):
+    DRAFT = "DRAFT"
+    SENT = "SENT"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    DECLINED = "DECLINED"
+    EXPIRED = "EXPIRED"
+
+
+class Document(Base):
+    # company_id/employee_id/trustee_id מוכפלים כאן (לא רק דרך grant_id), אותה
+    # סיבה בדיוק כמו LedgerOwnership - בדיקת הרשאה חייבת להיות השוואת עמודה
+    # ישירה וזולה על השורה עצמה, לא join שסומך על grant_id בלי לאמת אותו בנפרד.
+    __tablename__ = "documents"
+    document_id = Column(String, primary_key=True, default=generate_uuid)
+    template_type = Column(String, nullable=False)
+    grant_id = Column(String, ForeignKey("grants.grant_id"), nullable=False, index=True)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=False, index=True)
+    trustee_id = Column(String, ForeignKey("trustees.trustee_id"), nullable=True, index=True)
+    status = Column(SQLEnum(DocumentStatus), default=DocumentStatus.DRAFT, nullable=False)
+    # גרסה: שינוי בנתוני המענק אחרי שהמסמך נוצר מייצר גרסה חדשה, לא דריסה -
+    # ההחלטה המפורשת בתכנון v0.9.0 (מקביל לעיקרון הבי-טמפורלי מ-v0.6.0: אסור
+    # לאבד את מה שאושר בעבר, גם אם המקור השתנה אחר כך).
+    version = Column(Integer, nullable=False, default=1)
+    is_latest = Column(Boolean, nullable=False, default=True)
+    # נתיב יחסי בתוך document_store/ (לא מוחלט - כמו sqlite:///./esop_database.db,
+    # כדי שהתיקייה תישאר ניידת בין מחשבים). לעולם לא מוגש כקובץ סטטי ישירות -
+    # רק דרך endpoint מאומת שמפעיל את בדיקת הבעלות.
+    file_path = Column(String, nullable=False)
+    file_sha256 = Column(String, nullable=False)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledged_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
+    created_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)

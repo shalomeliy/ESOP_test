@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,7 @@ from backend.app.models import (
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
     Company, AuditLog, NotificationPreference, NotificationDismissal,
     NOTIFICATION_DEFAULT_LEAD_DAYS, LedgerOwnership, LEDGER_AGGREGATE_TYPES,
+    Document, DocumentStatus, DOCUMENT_TEMPLATE_TYPES, generate_uuid,
 )
 from backend.app.schemas import (
     EmployeeStatusUpdate, ExerciseSimulationRequest, ExerciseSimulationResponse,
@@ -24,6 +26,7 @@ from backend.app.schemas import (
     NotificationFeedOut, NotificationCountOut, NotificationPreferencesOut,
     NotificationPreferencesUpdate, LedgerEventOut, LedgerProjectionOut,
     VestingPauseRequest, VestingPauseResponse,
+    GenerateDocumentRequest, DocumentOut,
 )
 from backend.app.services.engine import (
     DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
@@ -33,6 +36,10 @@ from backend.app.services.search_engine import SearchEngine
 from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
 from backend.app.services.ledger import append_event, events_for, project, record_ownership
+from backend.app.services.documents import (
+    build_grant_letter, MissingDocumentDataError, DOCUMENT_STORE_DIR,
+)
+from backend.app.services.document_access import assert_document_access
 from backend.app.auth import (
     hash_password, verify_password, create_session, get_current_user, require_roles,
     generate_temporary_password, is_account_locked, register_failed_login,
@@ -1189,3 +1196,84 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
 @router.get("/employee/exercise-requests", response_model=List[ExerciseRequestOut])
 def list_my_exercise_requests(current_user: User = Depends(require_roles(UserRole.EMPLOYEE)), db: Session = Depends(get_db)):
     return db.query(ExerciseRequest).filter(ExerciseRequest.employee_id == current_user.employee_id).all()
+
+
+# ===================================================================
+# מסמכים ואישור קבלה פנימי (v0.9.0 שלב 1) - כתב הענקה בלבד, admin-only.
+# *** לא חתימה - ראו הערת models.py.Document ***
+# ===================================================================
+
+@router.post("/admin/documents", response_model=DocumentOut)
+def generate_document(payload: GenerateDocumentRequest,
+                      current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                      db: Session = Depends(get_db)):
+    if payload.template_type not in DOCUMENT_TEMPLATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported template_type: {payload.template_type}")
+    # שלב 1 בלבד: שתי התבניות הנוספות (נספח 102, אישור הפקדת נאמן) מגיעות בשלב 2.
+    if payload.template_type != "GRANT_LETTER":
+        raise HTTPException(status_code=400,
+                            detail=f"Template type {payload.template_type} is not implemented yet")
+
+    grant = db.query(Grant).filter(Grant.grant_id == payload.grant_id).first()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Grant not found")
+
+    company_id = _company_id_of_grant(db, grant)
+    if company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="Cannot generate a document for a grant outside your company")
+
+    employee = db.query(Employee).filter(Employee.employee_id == grant.employee_id).first()
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    trustee = db.query(Trustee).filter(Trustee.trustee_id == grant.trustee_id).first() if grant.trustee_id else None
+
+    # גרסה: אם כבר קיים מסמך "אחרון" מאותו סוג לאותו מענק, הוא מפסיק להיות
+    # is_latest (לא נמחק, לא נדרס) - החלטת התכנון המפורשת של v0.9.0.
+    previous_latest = (
+        db.query(Document)
+        .filter(Document.grant_id == grant.grant_id, Document.template_type == payload.template_type,
+                Document.is_latest == True)  # noqa: E712
+        .first()
+    )
+    next_version = (previous_latest.version + 1) if previous_latest else 1
+
+    document_id = generate_uuid()
+
+    try:
+        relative_path, file_hash = build_grant_letter(grant, employee, company, trustee, document_id, next_version)
+    except MissingDocumentDataError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    if previous_latest:
+        previous_latest.is_latest = False
+
+    doc = Document(
+        document_id=document_id, template_type=payload.template_type, grant_id=grant.grant_id,
+        company_id=company_id, employee_id=grant.employee_id, trustee_id=grant.trustee_id,
+        status=DocumentStatus.DRAFT, version=next_version, is_latest=True,
+        file_path=relative_path, file_sha256=file_hash, created_by_user_id=current_user.user_id,
+    )
+    db.add(doc)
+    record_audit_event(db, "Document", document_id, "GENERATED", current_user.user_id,
+                       after={"template_type": payload.template_type, "grant_id": grant.grant_id,
+                             "version": next_version, "file_sha256": file_hash})
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+@router.get("/admin/documents/{document_id}/download")
+def download_document(document_id: str, current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                      db: Session = Depends(get_db)):
+    document = db.query(Document).filter(Document.document_id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    assert_document_access(document, current_user)
+
+    full_path = DOCUMENT_STORE_DIR / document.file_path
+    if not full_path.exists():
+        raise HTTPException(status_code=500, detail="Document file is missing from storage")
+
+    record_audit_event(db, "Document", document_id, "DOWNLOADED", current_user.user_id, after={})
+    db.commit()
+    return FileResponse(str(full_path), media_type="application/pdf",
+                        filename=f"{document.template_type}_{document.grant_id}_v{document.version}.pdf")

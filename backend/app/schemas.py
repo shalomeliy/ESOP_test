@@ -311,3 +311,27 @@ class VestingPauseResponse(BaseModel):
     schedule_id: str
     days_added: int
     paused_days_total: int
+
+
+# ===================================================================
+# מסמכים ואישור קבלה פנימי (v0.9.0 שלב 1: כתב הענקה בלבד)
+#
+# *** לא חתימה - ראו models.py. שום שדה כאן לא נקרא signature/signed. ***
+# ===================================================================
+
+class GenerateDocumentRequest(BaseModel):
+    grant_id: str
+    template_type: str
+
+class DocumentOut(BaseModel):
+    document_id: str
+    template_type: str
+    grant_id: str
+    status: str
+    version: int
+    is_latest: bool
+    file_sha256: str
+    generated_at: datetime
+
+    class Config:
+        from_attributes = True

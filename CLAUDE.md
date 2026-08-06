@@ -43,9 +43,15 @@ A feature is complete only when:
 - It solves the stated problem, checked against real request/response data (not just "the endpoint returns 200").
 - Tax/financial calculations are verified by hand against the specific track's real rule, with the worked example recorded somewhere reviewable.
 - The change respects existing DB constraints (nothing silently violates a check constraint or foreign key).
-- **`QA_TESTBOOK.md` is updated** — a version does not close without its own heading there, its test cases (with expected results), and its risk areas. This is the participant's testing document; leaving it stale is the one failure that compounds silently across versions.
+- **The version's QA file is updated** — `docs/qa/<version>.md` (start from `docs/qa/_TEMPLATE.md`), listing its test cases with expected results and its risk areas, and linked from the table in `QA_TESTBOOK.md`. This is the participant's testing document; leaving it stale is the one failure that compounds silently across versions. Read only the active version's file — the archived ones are for historical bug triage, not routine work.
 - The current git diff has received an independent review (`.claude/agents/change-reviewer.md`).
 - The participant can explain the decision, tradeoffs, and remaining risk.
+
+## Context discipline
+
+- `QA_TESTBOOK.md` is an index only; the test cases live in `docs/qa/<version>.md`. Never read the archived version files or re-merge them into one file.
+- Prefer a subagent for read-only exploration ("where is X used", "does Y exist") so its reading stays out of this conversation's context.
+- Don't dump whole files or full command output into the transcript when a targeted range or a count answers the question.
 
 ## Useful commands
 
