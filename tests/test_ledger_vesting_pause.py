@@ -12,7 +12,7 @@ import pytest
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, Grant, GrantType, LedgerEvent, OptionPool,
-    User, UserRole, UserSession, VestingSchedule,
+    Trustee, User, UserRole, UserSession, VestingSchedule,
 )
 from backend.app.services.engine import DeterministicESOPEngine
 from backend.app.services.ledger import project
@@ -53,6 +53,7 @@ def world(db_session):
     db.flush()
     db.add(OptionPool(pool_id="P-A", company_id="C-A", total_shares=100000.0,
                       allocated_shares=0.0, unallocated_shares=100000.0))
+    db.add(Trustee(trustee_id="T-1", company_id="C-A", name="Trustee Ltd", registration_number="1"))
     db.add(Employee(employee_id="E-1", company_id="C-A", first_name="Yossi", last_name="Cohen",
                     email="e1@alpha.example", country_code="IL", status=EmployeeStatus.ACTIVE,
                     hire_date=date(2020, 1, 1), birth_date=date(1990, 1, 1)))
@@ -60,8 +61,11 @@ def world(db_session):
 
     admin_a = _user(db, "U-ADMIN-A", UserRole.COMPANY_ADMIN, company_id="C-A")
     admin_b = _user(db, "U-ADMIN-B", UserRole.COMPANY_ADMIN, company_id="C-B")
+    trustee_a = _user(db, "U-TRUSTEE-A", UserRole.TRUSTEE, trustee_id="T-1")
+    employee_a = _user(db, "U-EMPLOYEE-A", UserRole.EMPLOYEE, employee_id="E-1")
     from types import SimpleNamespace
-    return SimpleNamespace(db=db, admin_a=_token(db, admin_a), admin_b=_token(db, admin_b))
+    return SimpleNamespace(db=db, admin_a=_token(db, admin_a), admin_b=_token(db, admin_b),
+                           trustee_a=_token(db, trustee_a), employee_a=_token(db, employee_a))
 
 
 @pytest.fixture
@@ -183,6 +187,15 @@ def test_grant_without_vesting_schedule_returns_409(client, world):
 
 def test_cross_company_grant_is_blocked(client, world, grant_id):
     response = client.post(f"{API}/admin/grants/{grant_id}/vesting-pause", headers=world.admin_b,
+                           json={"start_date": str(_months_ago(5)), "end_date": str(_months_ago(4))})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("role_header", ["trustee_a", "employee_a"])
+def test_non_admin_roles_are_rejected(client, world, grant_id, role_header):
+    """הפיצ'ר admin-only בלבד - לא רק בקוד (require_roles), גם בפועל."""
+    response = client.post(f"{API}/admin/grants/{grant_id}/vesting-pause",
+                           headers=getattr(world, role_header),
                            json={"start_date": str(_months_ago(5)), "end_date": str(_months_ago(4))})
     assert response.status_code == 403
 

@@ -604,14 +604,18 @@ def get_audit_log(entity_type: str, entity_id: str,
 # הבוס הקיים מקבל גישה, לא נוצר תפקיד "מבקר" חדש - ראו GOAL.md/FEATURE_SPEC.md).
 # ===================================================================
 
-def _assert_ledger_ownership(db: Session, aggregate_id: str, current_user: User) -> None:
+def _assert_ledger_ownership(db: Session, aggregate_type: str, aggregate_id: str, current_user: User) -> None:
     """מאשר גישה מול ledger_ownership - אינדקס נפרד ולא-חוזר, לעולם לא מול
     דאטה משוחזר/מוקרן (project()). זו בדיוק ההגנה מפני IDOR שחוזר בצורה חדשה
     במסכי v0.6.0, שהוזכרה בסקירת האבטחה בתכנון: מסך חדש שמאשר גישה מול
     הפרויקציה עצמה היה חוזר על אותו דפוס שכבר תוקן פעמיים (list_employees,
-    employee/dashboard/{id})."""
+    employee/dashboard/{id}).
+
+    בודק גם ש-aggregate_type בכתובת תואם לסוג האמיתי שנשמר - אחרת מזהה תקין
+    של ישות אחת (למשל מענק) עם aggregate_type של ישות אחרת (למשל עובד) היה
+    עובר את בדיקת ה-company_id ומופעל מול הפרויקטור הלא נכון."""
     ownership = db.get(LedgerOwnership, aggregate_id)
-    if not ownership or ownership.company_id != current_user.company_id:
+    if not ownership or ownership.company_id != current_user.company_id or ownership.aggregate_type != aggregate_type:
         raise HTTPException(status_code=403, detail="Not your company's data")
 
 
@@ -622,7 +626,7 @@ def get_ledger_timeline(aggregate_type: str, aggregate_id: str,
     """ציר הזמן המלא של ישות אחת - "מה קרה ומתי", בסדר הקיפול הקנוני."""
     if aggregate_type not in LEDGER_AGGREGATE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
-    _assert_ledger_ownership(db, aggregate_id, current_user)
+    _assert_ledger_ownership(db, aggregate_type, aggregate_id, current_user)
 
     events = events_for(db, aggregate_id)
     return [
@@ -644,7 +648,7 @@ def get_ledger_as_of(aggregate_type: str, aggregate_id: str,
     כשאין אירועים עד לחתך המבוקש - "אין נתון", לא 0/ריק."""
     if aggregate_type not in LEDGER_AGGREGATE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
-    _assert_ledger_ownership(db, aggregate_id, current_user)
+    _assert_ledger_ownership(db, aggregate_type, aggregate_id, current_user)
 
     state = project(db, aggregate_type, aggregate_id,
                     as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date)

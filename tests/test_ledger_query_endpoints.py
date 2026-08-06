@@ -67,8 +67,11 @@ def world(db_session):
 
     admin_a = _user(db, "U-ADMIN-A", UserRole.COMPANY_ADMIN, company_id="C-A")
     admin_b = _user(db, "U-ADMIN-B", UserRole.COMPANY_ADMIN, company_id="C-B")
+    trustee_a = _user(db, "U-TRUSTEE-A", UserRole.TRUSTEE, trustee_id="T-1")
+    employee_a = _user(db, "U-EMPLOYEE-A", UserRole.EMPLOYEE, employee_id="E-1")
     from types import SimpleNamespace
-    return SimpleNamespace(db=db, admin_a=_token(db, admin_a), admin_b=_token(db, admin_b))
+    return SimpleNamespace(db=db, admin_a=_token(db, admin_a), admin_b=_token(db, admin_b),
+                           trustee_a=_token(db, trustee_a), employee_a=_token(db, employee_a))
 
 
 @pytest.fixture
@@ -185,4 +188,42 @@ def test_as_of_rejects_unknown_aggregate_type(client, world, grant_with_deposit)
 def test_as_of_blocks_cross_company_access(client, world, grant_with_deposit):
     response = client.get(f"{API}/admin/ledger/Grant/{grant_with_deposit}/as-of",
                           headers=world.admin_b)
+    assert response.status_code == 403
+
+
+# ===================================================================
+# תפקידים - שני מסכי v0.6.0 הם admin-only (דרך א'), לא רק בקוד אלא גם בפועל.
+# ===================================================================
+
+@pytest.mark.parametrize("role_header", ["trustee_a", "employee_a"])
+def test_timeline_rejects_non_admin_roles(client, world, grant_with_deposit, role_header):
+    response = client.get(f"{API}/admin/ledger/Grant/{grant_with_deposit}/events",
+                          headers=getattr(world, role_header))
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("role_header", ["trustee_a", "employee_a"])
+def test_as_of_rejects_non_admin_roles(client, world, grant_with_deposit, role_header):
+    response = client.get(f"{API}/admin/ledger/Grant/{grant_with_deposit}/as-of",
+                          headers=getattr(world, role_header))
+    assert response.status_code == 403
+
+
+# ===================================================================
+# aggregate_type חייב לתאום לסוג האמיתי שנשמר ב-ledger_ownership, לא רק
+# ל-company_id - אחרת מזהה תקין של ישות אחת "מתחזה" לישות אחרת מאותה חברה.
+# ===================================================================
+
+def test_timeline_rejects_mismatched_aggregate_type_even_same_company(client, world, grant_with_deposit):
+    """grant_with_deposit רשום ב-ledger_ownership עם aggregate_type='Grant'.
+    בקשה לאותו aggregate_id תחת aggregate_type='Employee' (סוג תקין, חברה
+    נכונה) חייבת להיחסם - לא לעבור בשקט מול הפרויקטור הלא נכון."""
+    response = client.get(f"{API}/admin/ledger/Employee/{grant_with_deposit}/events",
+                          headers=world.admin_a)
+    assert response.status_code == 403
+
+
+def test_as_of_rejects_mismatched_aggregate_type_even_same_company(client, world, grant_with_deposit):
+    response = client.get(f"{API}/admin/ledger/Employee/{grant_with_deposit}/as-of",
+                          headers=world.admin_a)
     assert response.status_code == 403

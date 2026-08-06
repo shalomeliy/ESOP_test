@@ -135,12 +135,16 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיג
 | QA-060-47 | שאילתת ידיעה לפני שהמענק בכלל נוצר | `knowledge_date` 10 שנים אחורה | `state: null` — "אין נתון", לא מתחזה | `test_as_of_knowledge_date_before_backfill_or_creation_returns_no_data` — **אומת בדפדפן** |
 | QA-060-48 | `as-of` דוחה `aggregate_type` לא מוכר | כמו QA-060-41 | `400` | `test_as_of_rejects_unknown_aggregate_type` |
 | QA-060-49 | `as-of` חוסם חוצה-חברות | כמו QA-060-42 | `403` | `test_as_of_blocks_cross_company_access` |
+| QA-060-50 | **תיקון מ-change-reviewer**: תפקידי TRUSTEE/EMPLOYEE נחסמים בפועל מציר הזמן, לא רק לפי קריאת קוד | `GET .../events` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_timeline_rejects_non_admin_roles` (parametrized) |
+| QA-060-51 | אותו דבר עבור `as-of` | `GET .../as-of` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_as_of_rejects_non_admin_roles` (parametrized) |
+| QA-060-52 | **תיקון באג אמיתי מ-change-reviewer**: `aggregate_type` לא תואם ל-`aggregate_type` האמיתי שנשמר, אותה חברה | מענק אמיתי (aggregate_type="Grant") מבוקש דרך `GET /admin/ledger/Employee/{grant_id}/events` | `403` — לא עובר בשקט מול פרויקטור לא נכון | `test_timeline_rejects_mismatched_aggregate_type_even_same_company` |
+| QA-060-53 | אותו דבר עבור `as-of` | כמו QA-060-52, על `/as-of` | `403` | `test_as_of_rejects_mismatched_aggregate_type_even_same_company` |
 
 ## (ב) אזורי סיכון — שלב 3
 
 | מזהה | הסיכון | למה | מה לבדוק |
 |---|---|---|---|
-| R-060-10 | אימות ההרשאה במסכי v0.6.0 עובר דרך `LedgerOwnership` ולא דרך `project()` | בכוונה: מאשרים גישה מול אינדקס בעלות שנקבע פעם אחת ביצירה, לא מול דאטה משוחזר - ההגנה שסקירת האבטחה דרשה בתכנון (מסך שמאשר מול הפרויקציה עצמה חוזר על דפוס IDOR שכבר תוקן פעמיים) | כל endpoint עתידי שקורא ל-`project()` חייב לבדוק `_assert_ledger_ownership` **קודם**, לא במקום |
+| R-060-10 | ~~אימות ההרשאה במסכי v0.6.0 בדק רק `company_id`, לא `aggregate_type`~~ **נסגר** | `_assert_ledger_ownership` עבר דרך `LedgerOwnership` (לא `project()`) מההתחלה - זו הייתה ההגנה הנכונה מפני IDOR. אבל **נמצא ב-change-reviewer**: מזהה תקין של ישות אחת (למשל מענק) עם `aggregate_type` של ישות אחרת מאותה חברה היה עובר את הבדיקה ומופעל מול הפרויקטור הלא נכון. תוקן: הבדיקה כוללת עכשיו גם `ownership.aggregate_type == aggregate_type` | QA-060-52/53 הן בדיקות הרגרסיה |
 | R-060-11 | ה-UI מציג `payload` גולמי (JSON) בציר הזמן, לא מנוסח לפי סוג אירוע | מספיק לשלב 3 (שקוף, אמין) אבל לא "יפה" - שיפור עתידי אפשרי, לא חוסם | אין השפעה על נכונות, רק על חוויית משתמש |
 | R-060-12 | `knowledge_date` מהדפדפן מגיע כ-`type="date"` (יום בלבד), בלי שעה | תואם למה שה-API כבר תומך בו (Pydantic הופך תאריך בלי שעה לחצות), אבל מגביל את הדיוק שהמשתמש יכול לבדוק בו דרך ה-UI ל-24 שעות | אם יידרש דיוק לשעה - להוסיף שדה שעה נפרד, לא לשנות את ה-API |
 
@@ -163,6 +167,7 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיג
 | QA-060-67 | **IDOR חוצה-חברות נחסם** | אדמין של חברה B מנסה להקפיא מענק בחברה A | `403` | `test_cross_company_grant_is_blocked` |
 | QA-060-68 | מענק לא קיים | `grant_id` שאינו קיים | `404` | `test_unknown_grant_returns_404` |
 | QA-060-69 | **החישוב בפועל משתנה, לא רק העמודה** | הקפאה של 60 יום נרשמת, ואז `DeterministicESOPEngine.calculate_vested_options` נקרא שוב לאותו תאריך בדיקה | ההבשלה המחושבת **קטנה** אחרי ההקפאה (ה-cliff נדחה) - לא בדיקת מתמטיקה חדשה, רק שהעמודה שה-endpoint מעדכן היא בדיוק מה שהמנוע הקיים כבר קורא | `test_pause_actually_shifts_the_cliff_in_the_existing_engine` |
+| QA-060-70 | **תיקון מ-change-reviewer**: תפקידי TRUSTEE/EMPLOYEE נחסמים בפועל מהקפאת הבשלה, לא רק לפי קריאת קוד | `POST /vesting-pause` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_non_admin_roles_are_rejected` (parametrized) |
 
 ## (ב) אזורי סיכון — שלב 4
 
@@ -171,6 +176,7 @@ append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיג
 | R-060-13 | חפיפה נבדקת רק מול הקפאות **קיימות באותו לוח הבשלה**, לא מול טווחי תאריכים אחרים על אותו עובד/מענק | `events_for(db, schedule.schedule_id)` מסונן לפי `aggregate_id` יחיד - זה בדיוק ההיקף הנכון (הקפאה שייכת ללוח הבשלה אחד), לא באג | אם אי-פעם יתווסף מושג "הקפאה חוצת-מענקים" לאותו עובד - זו נקודת ההרחבה |
 | R-060-14 | אין הגבלה עסקית על סך ימי ההקפאה המצטברים (`paused_days_total`) ביחס לאורך לוח ההבשלה כולו | הכרעת מערכת שמרנית: המנוע הדטרמיניסטי כבר מטפל נכון בכל ערך חיובי (דוחה את ה-cliff/ההבשלה בהתאם), ואין כלל מס שמגביל את זה - לא הומצא כלל שלא קיים | אם יתגלה כלל רשמי (למשל תקרת חופשה מוכרת) - להוסיף ולידציה כאן ובקוד יחד |
 | R-060-15 | ה-endpoint לא מייצר `POOL_UNVEST_RETURNED` או משנה יתרות פול | נכון בכוונה: הקפאה רק דוחה את לוח הזמנים, לא מבטלת אופציות שכבר הוקצו - שונה במהותו מעזיבת עובד (QA-060-23) | אין השפעה על יתרת הפול; אם ההנחה הזו תשתנה בעתיד (למשל הקפאה ארוכה מספיק שמבטלת חלק מהמענק) - זו החלטת מוצר חדשה, לא הרחבה טכנית |
+| R-060-16 | ~~UI: `LEDGER_EVENT_LABELS` הציג מחרוזת גולמית `VESTING_PAUSE_RECORDED` במקום תווית עברית~~ **נסגר** | המפה עדיין הכילה את שני המפתחות הישנים `VESTING_PAUSE_STARTED`/`VESTING_PAUSE_ENDED` מהתכנון הדו-שלבי שנדחה בתכנון שלב 4, בלי מפתח לאירוע היחיד שבאמת נכתב - **נמצא ב-change-reviewer**, לא בבדיקה אוטומטית (זה UI טקסטואלי בלבד) | תוקן ל-`VESTING_PAUSE_RECORDED: "הקפאת הבשלה נרשמה"`; אין בדיקה אוטומטית לתוכן התווית (ראו R-060-11) |
 
 ---
 
