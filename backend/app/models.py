@@ -146,7 +146,12 @@ class TaxRatesHistory(Base):
     official_source_url = Column(String, nullable=False)
     # nullable בכוונה: מתמלא ע"י backfill חד-פעמי על שורות קיימות, לא שדה
     # שנדרש בזמן יצירה - ראו backfill_tax_rule_packs.py.
-    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True)
+    # unique=True: **נמצא בסקירת קוד עצמאית** - היחס בין pack ל-TaxRatesHistory
+    # הוא 1:1 (בניגוד ל-IncomeTaxBracket, ששם כמה שורות *אמורות* לחלוק pack_id
+    # אחד - מדרגות אותה גרסה). בלי האילוץ, שתי שורות עם אותו pack_id היו יכולות
+    # להתקיים ו-tax_engine.py._calculate_flat (שמשתמש ב-.first()) היה בוחר
+    # ביניהן בלי סדר מובטח - בדיוק אותה מחלקת באג ש-v0.7.0 כולו נועד לסגור.
+    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True, unique=True)
 
     __table_args__ = (
         # נמצא בתכנון v0.7.0: בלי האילוץ הזה, שתי שורות עם אותו תאריך תוקף

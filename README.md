@@ -94,14 +94,14 @@ python -m uvicorn backend.app.main:app --reload
 
 **חובה להריץ `alembic stamp head` — ולעולם לא `alembic upgrade head`.**
 
-`esop_database.db` כבר מכיל את כל 13 הטבלאות (הן נבנו בזמנו ב-`create_all`), ולכן
-`upgrade` ינסה ליצור אותן שוב וייפול מיד על `table companies already exists`.
-`stamp` רק רושם את מספר הרוויזיה בטבלת `alembic_version` בלי להריץ שום DDL — כלומר
-"ה-DB הזה כבר נמצא ב-baseline".
+אם ה-`esop_database.db` שלכם נבנה לפני שהפרויקט עבר ל-Alembic (`create_all` ישן),
+הטבלאות הבסיסיות כבר קיימות בו, ולכן `upgrade` ינסה ליצור אותן שוב וייפול מיד על
+`table companies already exists`. `stamp` רק רושם את מספר הרוויזיה בטבלת
+`alembic_version` בלי להריץ שום DDL — כלומר "ה-DB הזה כבר נמצא ב-baseline".
 
 ```bash
 alembic stamp head    # פעם אחת בלבד, על DB קיים
-alembic current       # אימות: צריך להציג eca19ffceb4d (head)
+alembic current       # אימות: צריך להציג את אותו מזהה כמו `alembic heads` (ראו למטה) - לא מספר קבוע, הוא משתנה עם כל מיגרציה חדשה
 ```
 
 אחרי ה-stamp, `alembic upgrade head` הופך לבטוח ולא עושה כלום עד שתתווסף רוויזיה חדשה.
@@ -109,7 +109,7 @@ alembic current       # אימות: צריך להציג eca19ffceb4d (head)
 ### DB חדש לגמרי (מפתח חדש / סביבת בדיקות)
 
 ```bash
-alembic upgrade head          # בונה את כל 13 הטבלאות מאפס
+alembic upgrade head          # בונה את כל הטבלאות מאפס (המספר גדל עם כל גרסה - ראו migrations/versions/)
 python -m backend.seed_data   # נתוני דמו (אופציונלי)
 ```
 

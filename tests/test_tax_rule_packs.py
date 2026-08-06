@@ -68,6 +68,28 @@ def test_duplicate_tax_rates_history_same_key_is_rejected(db_session):
         db_session.flush()
 
 
+def test_two_tax_rates_history_rows_cannot_share_one_pack_id(db_session):
+    """נמצא בסקירת קוד עצמאית: היחס בין pack ל-TaxRatesHistory הוא 1:1 -
+    tax_engine.py._calculate_flat משתמש ב-.first(), אז שתי שורות עם אותו
+    pack_id היו נבחרות בלי סדר מובטח, בדיוק מחלקת הבאג ש-v0.7.0 סוגר."""
+    pack = TaxRulePack(country_code=COUNTRY, grant_type=FLAT_GRANT_TYPE,
+                       effective_start_date=date(2020, 1, 1),
+                       calculation_method="FLAT_RATE", official_source_url=SRC)
+    db_session.add(pack)
+    db_session.flush()
+
+    db_session.add(TaxRatesHistory(tax_rule_id="TAX-A", country_code=COUNTRY,
+                                   grant_type=FLAT_GRANT_TYPE, effective_start_date=date(2020, 1, 1),
+                                   capital_gains_rate=0.25, official_source_url=SRC, pack_id=pack.pack_id))
+    db_session.flush()
+
+    db_session.add(TaxRatesHistory(tax_rule_id="TAX-B", country_code=COUNTRY,
+                                   grant_type=FLAT_GRANT_TYPE, effective_start_date=date(2025, 1, 1),
+                                   capital_gains_rate=0.30, official_source_url=SRC, pack_id=pack.pack_id))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
 def test_duplicate_income_tax_bracket_same_key_and_order_is_rejected(db_session):
     db_session.add(IncomeTaxBracket(bracket_id="B-1", country_code=COUNTRY,
                                     grant_type=PROGRESSIVE_GRANT_TYPE, effective_start_date=date(2020, 1, 1),
