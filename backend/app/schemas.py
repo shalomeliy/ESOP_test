@@ -294,3 +294,17 @@ class LedgerProjectionOut(BaseModel):
     # None משמעו "אין אירועים בכלל עד לחתך הזה" - לא 0/ריק, אלא היעדר ידיעה
     # אמיתי. ראו GOAL.md: אין מספר בלי שרשור מקורות.
     state: Optional[Dict[str, Any]] = None
+
+
+# ===================================================================
+# Vesting pause / leave-of-absence (v0.6.0 שלב 4)
+# ===================================================================
+
+class VestingPauseRequest(BaseModel):
+    start_date: date
+    end_date: date
+
+class VestingPauseResponse(BaseModel):
+    schedule_id: str
+    days_added: int
+    paused_days_total: int

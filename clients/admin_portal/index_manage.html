@@ -287,6 +287,36 @@
         </div>
     </div>
 
+    <!-- Modal: Vesting pause / leave-of-absence (v0.6.0 שלב 4) -->
+    <div id="pause-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
+        <div class="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-md">
+            <div class="flex items-center justify-between mb-1">
+                <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-pause text-amber-400"></i> רישום חופשה ללא תשלום</h3>
+                <button onclick="closePauseModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-4 font-mono" id="pause-modal-grant-id">-</p>
+            <p class="text-xs text-slate-500 mb-4">
+                נרשם רק אחרי שהתקופה הסתיימה ושני התאריכים ידועים - לא "התחל" ו"סיים" בנפרד.
+                מספר הימים מצטבר לדחיית לוח ההבשלה של המענק הזה, אחורה מכאן.
+            </p>
+            <div class="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">תחילת החופשה</label>
+                    <input type="date" id="pause-start-date" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">סיום החופשה</label>
+                    <input type="date" id="pause-end-date" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
+                </div>
+            </div>
+            <div id="pause-modal-error" class="hidden mb-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3">
+                <button id="pause-submit-btn" onclick="submitPause()" class="flex-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium py-2 rounded-xl transition">רשום הקפאה</button>
+                <button onclick="closePauseModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal: New Grant -->
     <div id="grant-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
@@ -573,7 +603,10 @@
                         <td class="p-3 text-blue-400">${g.exercise_price}</td>
                         <td class="p-3 text-slate-400 font-mono text-xs">${g.grant_date}</td>
                         <td class="p-3 text-slate-400 text-xs">${g.post_termination_window_days} יום</td>
-                        <td class="p-3"><button onclick="openLedgerModal('${g.grant_id}')" title="ציר זמן ושחזור לתאריך" class="text-purple-400 hover:text-purple-300 text-xs"><i class="fa-solid fa-timeline"></i> ציר זמן</button></td>
+                        <td class="p-3 whitespace-nowrap">
+                            <button onclick="openLedgerModal('${g.grant_id}')" title="ציר זמן ושחזור לתאריך" class="text-purple-400 hover:text-purple-300 text-xs"><i class="fa-solid fa-timeline"></i> ציר זמן</button>
+                            <button onclick="openPauseModal('${g.grant_id}')" title="רישום חופשה ללא תשלום שהסתיימה" class="text-amber-400 hover:text-amber-300 text-xs mr-3"><i class="fa-solid fa-pause"></i> הקפאה</button>
+                        </td>
                     </tr>
                 `).join("") || `<tr><td colspan="8" class="p-4 text-center text-slate-500">אין מענקים</td></tr>`;
             } catch (err) {
@@ -668,6 +701,53 @@
                     <pre class="text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre-wrap">${JSON.stringify(data.state, null, 2)}</pre></div>`;
             } catch (err) {
                 resultEl.innerHTML = `<p class="text-sm text-red-400">${err.message}</p>`;
+            }
+        }
+
+        // v0.6.0 שלב 4 - הקפאת הבשלה (חופשה ללא תשלום). נרשמת רק אחרי שהתקופה
+        // הסתיימה - לא "התחל"/"סיים" כשתי פעולות נפרדות, ראו הערת ה-endpoint.
+        let pauseModalGrantId = null;
+
+        function openPauseModal(grantId) {
+            pauseModalGrantId = grantId;
+            document.getElementById("pause-modal-grant-id").textContent = grantId;
+            document.getElementById("pause-start-date").value = "";
+            document.getElementById("pause-end-date").value = "";
+            document.getElementById("pause-modal-error").classList.add("hidden");
+            document.getElementById("pause-modal").classList.add("open");
+        }
+
+        function closePauseModal() {
+            document.getElementById("pause-modal").classList.remove("open");
+            pauseModalGrantId = null;
+        }
+
+        async function submitPause() {
+            const errBox = document.getElementById("pause-modal-error");
+            const btn = document.getElementById("pause-submit-btn");
+            errBox.classList.add("hidden");
+            const start_date = document.getElementById("pause-start-date").value;
+            const end_date = document.getElementById("pause-end-date").value;
+            if (!start_date || !end_date) {
+                errBox.textContent = "יש למלא את שני התאריכים";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/grants/${pauseModalGrantId}/vesting-pause`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ start_date, end_date }),
+                });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                closePauseModal();
+                toast(`נרשמה הקפאה של ${data.days_added} ימים - סה"כ הקפאה מצטברת: ${data.paused_days_total} ימים`);
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
             }
         }
 

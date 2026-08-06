@@ -23,6 +23,7 @@ from backend.app.schemas import (
     AuditLogOut, SearchResultItem,
     NotificationFeedOut, NotificationCountOut, NotificationPreferencesOut,
     NotificationPreferencesUpdate, LedgerEventOut, LedgerProjectionOut,
+    VestingPauseRequest, VestingPauseResponse,
 )
 from backend.app.services.engine import (
     DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
@@ -842,6 +843,73 @@ def create_grant(payload: CreateGrantRequest,
         pool_allocated_shares=pool.allocated_shares,
         pool_unallocated_shares=pool.unallocated_shares,
     )
+
+
+@router.post("/admin/grants/{grant_id}/vesting-pause", response_model=VestingPauseResponse)
+def record_vesting_pause(grant_id: str, payload: VestingPauseRequest,
+                         current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                         db: Session = Depends(get_db)):
+    """v0.6.0 שלב 4: רושם תקופת חופשה ללא תשלום *שהסתיימה* על מענק קיים -
+    לא "התחל הקפאה"/"סיים הקפאה" כשני אירועים נפרדים. שום מקום אחר במערכת
+    לא עוקב אחרי "הקפאה פתוחה שטרם נסגרה" (בשונה מ-termination_date, שהוא
+    שדה עצמאי אמיתי) - אדמין רושם את התקופה אחרי שהיא כבר ידועה במלואה,
+    בדיוק כמו trustee_deposit_date. סוגר את הפער ב-VestingSchedule.paused_days_total
+    שלא הייתה לו שום דרך להיכתב לפני הגרסה הזו."""
+    grant = db.query(Grant).filter(Grant.grant_id == grant_id).first()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first()
+    if not pool or pool.company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="Cannot modify a grant outside your company")
+
+    schedule = grant.vesting_schedule
+    if not schedule:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Grant {grant_id} has no vesting schedule - attach one before recording a pause",
+        )
+
+    if payload.end_date <= payload.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be after start_date")
+
+    # מניעת חפיפה עם תקופת הקפאה שכבר נרשמה - אותו דפוס בדיוק כמו מניעת אישור
+    # כפול על בקשת מימוש (v0.5.0): לבדוק לפני שכותבים, לא לסמוך על כך שאף אחד
+    # לא ירשום פעמיים. חפיפת טווחים סטנדרטית: start_A < end_B וגם start_B < end_A.
+    for existing in events_for(db, schedule.schedule_id):
+        if existing.event_type != "VESTING_PAUSE_RECORDED":
+            continue
+        p = json.loads(existing.payload)
+        existing_start = date.fromisoformat(p["start_date"])
+        existing_end = date.fromisoformat(p["end_date"])
+        if payload.start_date < existing_end and existing_start < payload.end_date:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Overlaps an existing pause period ({existing_start} to {existing_end})",
+            )
+
+    days = (payload.end_date - payload.start_date).days
+    before_total = schedule.paused_days_total
+    schedule.paused_days_total += days
+
+    # הגנתי, כמו ב-create_grant: לוח הבשלה שאין לו רשומת בעלות (למשל, נוצר
+    # לפני v0.6.0 ולא עבר גיבוי) מקבל אחת עכשיו, ולא נשאר תקוע ב-403 בכל
+    # שאילתת ציר-זמן/as-of עתידית עליו.
+    record_ownership(db, aggregate_id=schedule.schedule_id, aggregate_type="VestingSchedule",
+                     company_id=pool.company_id, trustee_id=grant.trustee_id,
+                     employee_id=grant.employee_id)
+    append_event(db, event_type="VESTING_PAUSE_RECORDED", aggregate_type="VestingSchedule",
+                aggregate_id=schedule.schedule_id,
+                payload={"start_date": payload.start_date, "end_date": payload.end_date, "days": days},
+                effective_date=payload.end_date, actor_user_id=current_user.user_id)
+
+    record_audit_event(db, "VestingSchedule", schedule.schedule_id, "PAUSE_RECORDED", current_user.user_id,
+                        before={"paused_days_total": before_total},
+                        after={"paused_days_total": schedule.paused_days_total, "days_added": days})
+
+    db.commit()
+    db.refresh(schedule)
+    return VestingPauseResponse(schedule_id=schedule.schedule_id, days_added=days,
+                                paused_days_total=schedule.paused_days_total)
 
 
 # ===================================================================

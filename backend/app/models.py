@@ -293,17 +293,15 @@ class NotificationDismissal(Base):
 # מול ערך משוחזר מאירועים, רק מול עמודות בפועל).
 
 # רשימת סוגי האירועים החוקיים. עמודה String רגילה ולא SQLEnum/CHECK בכוונה -
-# אותה החלטה בדיוק כמו NotificationPreference.rule למעלה: הרשימה צפויה לגדול
-# עם כל שלב עתידי (POOL_ALLOCATED/EMPLOYEE_STATUS_CHANGED בשלב 2, VESTING_PAUSE_*
-# בשלב 5), ו-CHECK על ערכי טקסט ב-SQLite דורש בנייה מחדש של הטבלה בכל תוספת.
+# אותה החלטה בדיוק כמו NotificationPreference.rule למעלה: הרשימה צפויה לגדול,
+# ו-CHECK על ערכי טקסט ב-SQLite דורש בנייה מחדש של הטבלה בכל תוספת.
 # "ESTABLISHED" = אירוע בסיס (snapshot) שממנו מתחיל ה-replay; כל שאר הסוגים הם
 # דלתא שמצטברת מעליו. גם אירוע גיבוי (source=BACKFILL) וגם אירוע חי (source=LIVE)
-# עתידי משתמשים באותם סוגי אירועים בדיוק - ה-source הוא מה שמבדיל ביניהם, לא
-# סוג האירוע.
+# משתמשים באותם סוגי אירועים בדיוק - ה-source הוא מה שמבדיל ביניהם, לא סוג האירוע.
 LEDGER_EVENT_TYPES = {
     "POOL_BALANCE_ESTABLISHED",     # בסיס: יתרת פול כפי שהיא ידועה כרגע
-    "POOL_ALLOCATED",               # דלתא: הקצאה בעת יצירת מענק (שלב 3)
-    "POOL_UNVEST_RETURNED",         # דלתא: החזרה לפול בעת עזיבה (שלב 3)
+    "POOL_ALLOCATED",               # דלתא: הקצאה בעת יצירת מענק
+    "POOL_UNVEST_RETURNED",         # דלתא: החזרה לפול בעת עזיבה
     "EMPLOYEE_STATE_ESTABLISHED",   # בסיס: סטטוס עובד כפי שהוא ידוע כרגע
     # דלתא: כל שינוי סטטוס (לא רק עזיבה - update_employee_status מקבל כל
     # EmployeeStatus) - שם אחד גנרי ולא EMPLOYEE_TERMINATED, כי הקוד עצמו
@@ -312,8 +310,12 @@ LEDGER_EVENT_TYPES = {
     "GRANT_CREATED",                # בסיס וגם דלתא חיה: יצירת מענק
     "TRUSTEE_DEPOSIT_CONFIRMED",    # בסיס וגם דלתא חיה: אישור הפקדה אצל נאמן
     "VESTING_SCHEDULE_ESTABLISHED", # בסיס: לוח הבשלה כפי שהוא ידוע כרגע
-    "VESTING_PAUSE_STARTED",        # דלתא: תחילת הקפאה (שלב 5)
-    "VESTING_PAUSE_ENDED",          # דלתא: סיום הקפאה (שלב 5)
+    # דלתא (שלב 4): תקופת הקפאה שלמה שנרשמה - start_date+end_date+days בבת
+    # אחת, לא שני אירועים נפרדים "התחל"/"סיים". שום מקום אחר במערכת לא עוקב
+    # אחרי "הקפאה פתוחה שטרם נסגרה" (בניגוד ל-termination_date, שכן קיים כשדה
+    # עצמאי) - מוסכמת ברזל: לא לבנות מצב-ביניים שאין לו צרכן. אדמין רושם את
+    # התקופה אחרי שהיא כבר ידועה במלואה, בדיוק כמו trustee_deposit_date.
+    "VESTING_PAUSE_RECORDED",
     "EXERCISE_REQUEST_SUBMITTED",   # בסיס וגם דלתא חיה: הגשת בקשת מימוש
     "EXERCISE_REQUEST_DECIDED",     # דלתא: אישור/דחייה
 }

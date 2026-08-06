@@ -200,7 +200,7 @@ def project_vesting_schedule(events: list) -> Optional[dict]:
         if e.event_type == "VESTING_SCHEDULE_ESTABLISHED":
             state = {"start_date": _parse_date(p["start_date"]), "cliff_months": p["cliff_months"],
                      "total_months": p["total_months"], "paused_days_total": p["paused_days_total"]}
-        elif e.event_type == "VESTING_PAUSE_ENDED" and state is not None:
+        elif e.event_type == "VESTING_PAUSE_RECORDED" and state is not None:
             state["paused_days_total"] += p["days"]
     return state
 
