@@ -70,10 +70,13 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
 
 def create_session(db: Session, user: models.User) -> str:
     token = secrets.token_urlsafe(32)
+    # 30 יום לבקשת המשתמש (היה 12 שעות) - כדי שלא יצטרך להתחבר מחדש כל בדיקה
+    # ידנית. אין רענון/rotation לטוקן במערכת הזו, אז זו הרחבה מודעת של חלון
+    # הזמן שטוקן גנוב/דלוף נשאר תקף - קיבל אישור מפורש, לא ברירת מחדל.
     session = models.UserSession(
         token=token,
         user_id=user.user_id,
-        expires_at=datetime.utcnow() + timedelta(hours=12),
+        expires_at=datetime.utcnow() + timedelta(days=30),
     )
     db.add(session)
     db.commit()
