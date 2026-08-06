@@ -1,5 +1,6 @@
+import json
 from datetime import date, datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from sqlalchemy.exc import IntegrityError
@@ -10,7 +11,7 @@ from backend.app.models import (
     Employee, EmployeeStatus, OptionPool, Grant, StockPricesHistory,
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
     Company, AuditLog, NotificationPreference, NotificationDismissal,
-    NOTIFICATION_DEFAULT_LEAD_DAYS,
+    NOTIFICATION_DEFAULT_LEAD_DAYS, LedgerOwnership, LEDGER_AGGREGATE_TYPES,
 )
 from backend.app.schemas import (
     EmployeeStatusUpdate, ExerciseSimulationRequest, ExerciseSimulationResponse,
@@ -21,15 +22,17 @@ from backend.app.schemas import (
     TrusteePortfolioItem, ExerciseRequestCreate, ExerciseRequestReview, ExerciseRequestOut,
     AuditLogOut, SearchResultItem,
     NotificationFeedOut, NotificationCountOut, NotificationPreferencesOut,
-    NotificationPreferencesUpdate,
+    NotificationPreferencesUpdate, LedgerEventOut, LedgerProjectionOut,
+    VestingPauseRequest, VestingPauseResponse,
 )
 from backend.app.services.engine import (
     DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
 )
-from backend.app.services.tax_engine import TaxCalculationEngine
+from backend.app.services.tax_engine import TaxCalculationEngine, MissingTaxRuleError
 from backend.app.services.search_engine import SearchEngine
 from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
+from backend.app.services.ledger import append_event, events_for, project, record_ownership
 from backend.app.auth import (
     hash_password, verify_password, create_session, get_current_user, require_roles,
     generate_temporary_password, is_account_locked, register_failed_login,
@@ -72,6 +75,14 @@ def _vested_or_conflict(grant: Grant, on_date: date) -> float:
             detail=(f"Grant {grant.grant_id} has no vesting schedule - the vested amount "
                     "cannot be determined. Attach a vesting schedule before proceeding."),
         )
+
+
+def _company_id_of_grant(db: Session, grant: Grant) -> "str | None":
+    """גוזר company_id דרך grant.pool_id - Grant עצמו לא מחזיק את זה ישירות.
+    אותו דפוס בדיוק כמו backfill_ledger._company_id_of_pool, לצורך רישום
+    ledger_ownership על ישויות שנוצרות דרך grant (ExerciseRequest וכו')."""
+    pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first()
+    return pool.company_id if pool else None
 
 
 def _options_committed(db: Session, grant_id: str, statuses: tuple,
@@ -122,6 +133,28 @@ def _assert_request_approvable(db: Session, req: ExerciseRequest, grant: Grant) 
                 detail=(f"Trustee holding period (Section 102) is not met until {end_date}; "
                         "approving before that date forfeits capital-gains treatment"),
             )
+
+
+def _decide_exercise_request(db: Session, req: ExerciseRequest, payload: ExerciseRequestReview,
+                              actor_user_id: str) -> ExerciseRequest:
+    """נקודת כתיבה אחת ויחידה לשני נתיבי האישור (admin+trustee) - v0.6.0.
+
+    קודם כל נתיב שיכפל את השינוי בעצמו, וזה בדיוק דפוס P3 (QA_TESTBOOK.md):
+    ולידציה/לוגיקה שקיימת בנתיב אחד וחסרה/שונה בשני. חייבת להיקרא בתוך אותה
+    טרנזקציה כמו _assert_request_approvable (אם approve=True) ולא אחריה בנפרד -
+    אחרת יש חלון TOCTOU בין הבדיקה לכתיבה (ראו סקירת האבטחה לתכנון v0.6.0)."""
+    req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
+    req.reviewed_by_user_id = actor_user_id
+    req.reviewed_at = datetime.utcnow()
+    req.review_notes = payload.notes
+    record_audit_event(db, "ExerciseRequest", req.request_id,
+                        "APPROVE" if payload.approve else "REJECT", actor_user_id,
+                        before={"status": "PENDING"}, after={"status": req.status.value, "notes": payload.notes})
+    append_event(db, event_type="EXERCISE_REQUEST_DECIDED", aggregate_type="ExerciseRequest",
+                aggregate_id=req.request_id,
+                payload={"status": req.status.value, "notes": payload.notes},
+                effective_date=date.today(), actor_user_id=actor_user_id)
+    return req
 
 
 @router.get("/search", response_model=List[SearchResultItem])
@@ -350,6 +383,16 @@ def create_employee(payload: EmployeeCreateRequest, current_user: User = Depends
     db.add(emp)
     db.flush()
 
+    # v0.6.0: אירוע בסיס לעובד חדש - בלי זה, עובד שנוצר *אחרי* backfill_ledger.py
+    # לא יהיה לו שום אירוע לקפל, ו-EMPLOYEE_STATUS_CHANGED עתידי (עזיבה וכו')
+    # ייפול על state=None בלי אפקט (ראו project_employee).
+    record_ownership(db, aggregate_id=emp.employee_id, aggregate_type="Employee",
+                     company_id=emp.company_id, employee_id=emp.employee_id)
+    append_event(db, event_type="EMPLOYEE_STATE_ESTABLISHED", aggregate_type="Employee",
+                aggregate_id=emp.employee_id,
+                payload={"status": EmployeeStatus.ACTIVE.value, "termination_date": None},
+                effective_date=emp.hire_date, actor_user_id=current_user.user_id)
+
     # פרובייז אוטומטי של חשבון כניסה עם סיסמה חד-פעמית מוגרלת - לא הקבועה
     # Welcome123! שהייתה זהה לכל עובד חדש בכל חברה. must_change_password=True
     # חוסם כל endpoint עסקי (require_roles) עד שהעובד יחליף אותה בעצמו.
@@ -417,6 +460,10 @@ def delete_employee(employee_id: str, current_user: User = Depends(require_roles
         before_status = emp.status
         emp.status = EmployeeStatus.TERMINATED
         emp.termination_date = date.today()
+        append_event(db, event_type="EMPLOYEE_STATUS_CHANGED", aggregate_type="Employee",
+                    aggregate_id=employee_id,
+                    payload={"status": "TERMINATED", "termination_date": emp.termination_date},
+                    effective_date=emp.termination_date, actor_user_id=current_user.user_id)
         record_audit_event(db, "Employee", employee_id, "SOFT_DELETE_TERMINATE", current_user.user_id,
                             before={"status": before_status}, after={"status": "TERMINATED", "termination_date": emp.termination_date})
         db.commit()
@@ -512,13 +559,7 @@ def review_exercise_request_admin(request_id: str, payload: ExerciseRequestRevie
     if payload.approve:
         _assert_request_approvable(db, req, grant)
 
-    req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
-    req.reviewed_by_user_id = current_user.user_id
-    req.reviewed_at = datetime.utcnow()
-    req.review_notes = payload.notes
-    record_audit_event(db, "ExerciseRequest", request_id,
-                        "APPROVE" if payload.approve else "REJECT", current_user.user_id,
-                        before={"status": "PENDING"}, after={"status": req.status.value, "notes": payload.notes})
+    _decide_exercise_request(db, req, payload, current_user.user_id)
     db.commit()
     db.refresh(req)
     return req
@@ -556,6 +597,64 @@ def get_audit_log(entity_type: str, entity_id: str,
         .order_by(AuditLog.occurred_at.desc())
         .all()
     )
+
+
+# ===================================================================
+# LEDGER (v0.6.0 שלב 3) - ציר זמן ושאילתה בי-טמפורלית. admin-only (דרך א' -
+# הבוס הקיים מקבל גישה, לא נוצר תפקיד "מבקר" חדש - ראו GOAL.md/FEATURE_SPEC.md).
+# ===================================================================
+
+def _assert_ledger_ownership(db: Session, aggregate_type: str, aggregate_id: str, current_user: User) -> None:
+    """מאשר גישה מול ledger_ownership - אינדקס נפרד ולא-חוזר, לעולם לא מול
+    דאטה משוחזר/מוקרן (project()). זו בדיוק ההגנה מפני IDOR שחוזר בצורה חדשה
+    במסכי v0.6.0, שהוזכרה בסקירת האבטחה בתכנון: מסך חדש שמאשר גישה מול
+    הפרויקציה עצמה היה חוזר על אותו דפוס שכבר תוקן פעמיים (list_employees,
+    employee/dashboard/{id}).
+
+    בודק גם ש-aggregate_type בכתובת תואם לסוג האמיתי שנשמר - אחרת מזהה תקין
+    של ישות אחת (למשל מענק) עם aggregate_type של ישות אחרת (למשל עובד) היה
+    עובר את בדיקת ה-company_id ומופעל מול הפרויקטור הלא נכון."""
+    ownership = db.get(LedgerOwnership, aggregate_id)
+    if not ownership or ownership.company_id != current_user.company_id or ownership.aggregate_type != aggregate_type:
+        raise HTTPException(status_code=403, detail="Not your company's data")
+
+
+@router.get("/admin/ledger/{aggregate_type}/{aggregate_id}/events", response_model=List[LedgerEventOut])
+def get_ledger_timeline(aggregate_type: str, aggregate_id: str,
+                         current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                         db: Session = Depends(get_db)):
+    """ציר הזמן המלא של ישות אחת - "מה קרה ומתי", בסדר הקיפול הקנוני."""
+    if aggregate_type not in LEDGER_AGGREGATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
+    _assert_ledger_ownership(db, aggregate_type, aggregate_id, current_user)
+
+    events = events_for(db, aggregate_id)
+    return [
+        LedgerEventOut(event_id=e.event_id, event_type=e.event_type,
+                      effective_date=e.effective_date, recorded_at=e.recorded_at,
+                      source=e.source, payload=json.loads(e.payload),
+                      corrects_event_id=e.corrects_event_id)
+        for e in events
+    ]
+
+
+@router.get("/admin/ledger/{aggregate_type}/{aggregate_id}/as-of", response_model=LedgerProjectionOut)
+def get_ledger_as_of(aggregate_type: str, aggregate_id: str,
+                     effective_date: Optional[date] = None, knowledge_date: Optional[datetime] = None,
+                     current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                     db: Session = Depends(get_db)):
+    """שאילתה בי-טמפורלית: 'מה חשבנו נכון' לפי כל אחד משני צירי הזמן בנפרד.
+    שני הפרמטרים None => כל ההיסטוריה, כלומר "מה נכון עכשיו". state=None
+    כשאין אירועים עד לחתך המבוקש - "אין נתון", לא 0/ריק."""
+    if aggregate_type not in LEDGER_AGGREGATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
+    _assert_ledger_ownership(db, aggregate_type, aggregate_id, current_user)
+
+    state = project(db, aggregate_type, aggregate_id,
+                    as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date)
+    return LedgerProjectionOut(aggregate_type=aggregate_type, aggregate_id=aggregate_id,
+                               as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date,
+                               state=state)
 
 
 # --- COMPANY ADMIN PORTAL ENDPOINTS (legacy) ---
@@ -600,10 +699,22 @@ def update_employee_status(employee_id: str, payload: EmployeeStatusUpdate,
                     # אחרי עזיבה, וזה נכון ולא דריפט.
                     pool.unallocated_shares += unvested
                     pool.allocated_shares -= unvested
+                    append_event(db, event_type="POOL_UNVEST_RETURNED", aggregate_type="OptionPool",
+                                aggregate_id=pool.pool_id,
+                                payload={"amount": unvested, "grant_id": grant.grant_id,
+                                        "reason": "employee_terminated"},
+                                effective_date=payload.effective_date, actor_user_id=current_user.user_id)
 
         employee.termination_date = payload.effective_date
 
     employee.status = payload.status
+
+    # v0.6.0: אירוע לכל שינוי סטטוס, לא רק עזיבה - הקוד עצמו מבצע השמה גנרית.
+    append_event(db, event_type="EMPLOYEE_STATUS_CHANGED", aggregate_type="Employee",
+                aggregate_id=employee_id,
+                payload={"status": employee.status.value if hasattr(employee.status, "value") else employee.status,
+                        "termination_date": employee.termination_date},
+                effective_date=payload.effective_date, actor_user_id=current_user.user_id)
 
     record_audit_event(db, "Employee", employee_id, "STATUS_CHANGE", current_user.user_id,
                         before={"status": before_status.value if hasattr(before_status, "value") else before_status},
@@ -673,7 +784,7 @@ def create_grant(payload: CreateGrantRequest,
     pool.allocated_shares += payload.total_options
     pool.unallocated_shares -= payload.total_options
 
-    db.flush()
+    db.flush()  # grant.grant_id זמין מכאן
 
     schedule = VestingSchedule(
         grant_id=grant.grant_id,
@@ -682,6 +793,40 @@ def create_grant(payload: CreateGrantRequest,
         total_months=payload.total_months,
     )
     db.add(schedule)
+    db.flush()  # schedule.schedule_id זמין מכאן
+
+    # v0.6.0: שלושת אירועי הבסיס (ESTABLISHED/CREATED) לישויות שנוצרו הרגע -
+    # אותם סוגי אירוע בדיוק כמו backfill_ledger.py, כי זו אותה עובדה בדיוק,
+    # רק שמקורה חי (source=LIVE, ברירת המחדל של append_event) ולא גיבוי.
+    # record_ownership על הפול הוא הגנתי-בלבד: אין endpoint שיוצר פול, אז
+    # הבעלות שלו כבר אמורה להיקבע ע"י backfill - קריאה שנייה כאן לא עושה כלום
+    # אם היא כבר קיימת (ראו record_ownership).
+    record_ownership(db, aggregate_id=pool.pool_id, aggregate_type="OptionPool",
+                     company_id=pool.company_id)
+    record_ownership(db, aggregate_id=grant.grant_id, aggregate_type="Grant",
+                     company_id=pool.company_id, trustee_id=grant.trustee_id,
+                     employee_id=grant.employee_id)
+    record_ownership(db, aggregate_id=schedule.schedule_id, aggregate_type="VestingSchedule",
+                     company_id=pool.company_id, trustee_id=grant.trustee_id,
+                     employee_id=grant.employee_id)
+
+    append_event(db, event_type="GRANT_CREATED", aggregate_type="Grant", aggregate_id=grant.grant_id,
+                payload={"employee_id": grant.employee_id, "pool_id": grant.pool_id,
+                        "trustee_id": grant.trustee_id,
+                        "grant_type": grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type,
+                        "total_options": grant.total_options, "exercise_price": grant.exercise_price,
+                        "currency": grant.currency,
+                        "post_termination_window_days": grant.post_termination_window_days,
+                        "trustee_deposit_date": None},
+                effective_date=grant.grant_date, actor_user_id=current_user.user_id)
+    append_event(db, event_type="POOL_ALLOCATED", aggregate_type="OptionPool", aggregate_id=pool.pool_id,
+                payload={"amount": payload.total_options, "grant_id": grant.grant_id},
+                effective_date=grant.grant_date, actor_user_id=current_user.user_id)
+    append_event(db, event_type="VESTING_SCHEDULE_ESTABLISHED", aggregate_type="VestingSchedule",
+                aggregate_id=schedule.schedule_id,
+                payload={"start_date": schedule.start_date, "cliff_months": schedule.cliff_months,
+                        "total_months": schedule.total_months, "paused_days_total": schedule.paused_days_total},
+                effective_date=schedule.start_date, actor_user_id=current_user.user_id)
 
     record_audit_event(db, "Grant", grant.grant_id, "CREATE", current_user.user_id,
                         after={"employee_id": grant.employee_id, "pool_id": grant.pool_id,
@@ -702,6 +847,73 @@ def create_grant(payload: CreateGrantRequest,
         pool_allocated_shares=pool.allocated_shares,
         pool_unallocated_shares=pool.unallocated_shares,
     )
+
+
+@router.post("/admin/grants/{grant_id}/vesting-pause", response_model=VestingPauseResponse)
+def record_vesting_pause(grant_id: str, payload: VestingPauseRequest,
+                         current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                         db: Session = Depends(get_db)):
+    """v0.6.0 שלב 4: רושם תקופת חופשה ללא תשלום *שהסתיימה* על מענק קיים -
+    לא "התחל הקפאה"/"סיים הקפאה" כשני אירועים נפרדים. שום מקום אחר במערכת
+    לא עוקב אחרי "הקפאה פתוחה שטרם נסגרה" (בשונה מ-termination_date, שהוא
+    שדה עצמאי אמיתי) - אדמין רושם את התקופה אחרי שהיא כבר ידועה במלואה,
+    בדיוק כמו trustee_deposit_date. סוגר את הפער ב-VestingSchedule.paused_days_total
+    שלא הייתה לו שום דרך להיכתב לפני הגרסה הזו."""
+    grant = db.query(Grant).filter(Grant.grant_id == grant_id).first()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first()
+    if not pool or pool.company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="Cannot modify a grant outside your company")
+
+    schedule = grant.vesting_schedule
+    if not schedule:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Grant {grant_id} has no vesting schedule - attach one before recording a pause",
+        )
+
+    if payload.end_date <= payload.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be after start_date")
+
+    # מניעת חפיפה עם תקופת הקפאה שכבר נרשמה - אותו דפוס בדיוק כמו מניעת אישור
+    # כפול על בקשת מימוש (v0.5.0): לבדוק לפני שכותבים, לא לסמוך על כך שאף אחד
+    # לא ירשום פעמיים. חפיפת טווחים סטנדרטית: start_A < end_B וגם start_B < end_A.
+    for existing in events_for(db, schedule.schedule_id):
+        if existing.event_type != "VESTING_PAUSE_RECORDED":
+            continue
+        p = json.loads(existing.payload)
+        existing_start = date.fromisoformat(p["start_date"])
+        existing_end = date.fromisoformat(p["end_date"])
+        if payload.start_date < existing_end and existing_start < payload.end_date:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Overlaps an existing pause period ({existing_start} to {existing_end})",
+            )
+
+    days = (payload.end_date - payload.start_date).days
+    before_total = schedule.paused_days_total
+    schedule.paused_days_total += days
+
+    # הגנתי, כמו ב-create_grant: לוח הבשלה שאין לו רשומת בעלות (למשל, נוצר
+    # לפני v0.6.0 ולא עבר גיבוי) מקבל אחת עכשיו, ולא נשאר תקוע ב-403 בכל
+    # שאילתת ציר-זמן/as-of עתידית עליו.
+    record_ownership(db, aggregate_id=schedule.schedule_id, aggregate_type="VestingSchedule",
+                     company_id=pool.company_id, trustee_id=grant.trustee_id,
+                     employee_id=grant.employee_id)
+    append_event(db, event_type="VESTING_PAUSE_RECORDED", aggregate_type="VestingSchedule",
+                aggregate_id=schedule.schedule_id,
+                payload={"start_date": payload.start_date, "end_date": payload.end_date, "days": days},
+                effective_date=payload.end_date, actor_user_id=current_user.user_id)
+
+    record_audit_event(db, "VestingSchedule", schedule.schedule_id, "PAUSE_RECORDED", current_user.user_id,
+                        before={"paused_days_total": before_total},
+                        after={"paused_days_total": schedule.paused_days_total, "days_added": days})
+
+    db.commit()
+    db.refresh(schedule)
+    return VestingPauseResponse(schedule_id=schedule.schedule_id, days_added=days,
+                                paused_days_total=schedule.paused_days_total)
 
 
 # ===================================================================
@@ -753,18 +965,12 @@ def review_exercise_request_trustee(request_id: str, payload: ExerciseRequestRev
     if grant.trustee_id != current_user.trustee_id:
         raise HTTPException(status_code=403, detail="Not your trusteeship")
 
-    # אותן בדיקות בדיוק כמו בנתיב ה-admin. קודם הן לא היו כאן *וגם* לא שם, כלומר
-    # הנאמן - הצד שאמור לשמור על תנאי סעיף 102 - היה נתיב האישור הפרוץ יותר.
+    # אותן בדיקות בדיוק כמו בנתיב ה-admin, ואותה נקודת כתיבה (_decide_exercise_request) -
+    # קודם הנאמן היה נתיב האישור הפרוץ יותר כי שני הנתיבים כפלו את הלוגיקה בנפרד.
     if payload.approve:
         _assert_request_approvable(db, req, grant)
 
-    req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
-    req.reviewed_by_user_id = current_user.user_id
-    req.reviewed_at = datetime.utcnow()
-    req.review_notes = payload.notes
-    record_audit_event(db, "ExerciseRequest", request_id,
-                        "APPROVE" if payload.approve else "REJECT", current_user.user_id,
-                        before={"status": "PENDING"}, after={"status": req.status.value, "notes": payload.notes})
+    _decide_exercise_request(db, req, payload, current_user.user_id)
     db.commit()
     db.refresh(req)
     return req
@@ -779,10 +985,23 @@ def confirm_trustee_deposit(grant_id: str, deposit_date: date,
     if grant.trustee_id != current_user.trustee_id:
         raise HTTPException(status_code=403, detail="This grant is not under your trusteeship")
 
+    # תיקון backdating (v0.6.0, מאושר במפורש): לא ניתן להפקיד מניות אצל הנאמן
+    # לפני שהמענק בכלל נוצר - נבדק מול הדאטה הקיים לפני התכנון (0 הפרות).
+    # קודם לא הייתה שום בדיקה כאן, וזה בדיוק מה שמאפשר לזכות במסלול רווח הון
+    # מוקדם מדי אם ההפקדה "נרשמת" לתאריך שקדם למענק עצמו.
+    if deposit_date < grant.grant_date:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Deposit date {deposit_date} cannot precede the grant date {grant.grant_date}",
+        )
+
     before_deposit = grant.trustee_deposit_date
     grant.trustee_deposit_date = deposit_date
     record_audit_event(db, "Grant", grant_id, "DEPOSIT_CONFIRMED", current_user.user_id,
                         before={"trustee_deposit_date": before_deposit}, after={"trustee_deposit_date": deposit_date})
+    append_event(db, event_type="TRUSTEE_DEPOSIT_CONFIRMED", aggregate_type="Grant",
+                aggregate_id=grant_id, payload={"deposit_date": deposit_date},
+                effective_date=deposit_date, actor_user_id=current_user.user_id)
     db.commit()
 
     return {"grant_id": grant_id, "deposit_date": str(deposit_date), "status": "DEPOSIT_CONFIRMED"}
@@ -856,10 +1075,28 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
     total_cost = payload.options_to_exercise * grant.exercise_price
     gain = max(0.0, (stock_price - grant.exercise_price) * payload.options_to_exercise)
 
-    tax_result = TaxCalculationEngine.calculate_tax(
-        db, grant.employee.country_code, grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type,
-        payload.exercise_date, gain,
-    )
+    grant_type_value = grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type
+    try:
+        tax_result = TaxCalculationEngine.calculate_tax(
+            db, grant.employee.country_code, grant_type_value, payload.exercise_date, gain,
+        )
+    except MissingTaxRuleError as e:
+        # 409 ולא 500: זה לא קלט שגוי מהעובד, אלא נתון מס חסר שלא ניתן לגשר
+        # עליו בשקט - בדיוק אותו עיקרון כמו MissingVestingScheduleError.
+        # ה-reason (NEVER_MODELED / NO_RULE_EFFECTIVE_AS_OF_DATE /
+        # PACK_HAS_NO_DETAIL_ROWS) נשמר ב-audit לצורך triage, לא נחשף כקוד HTTP
+        # נפרד ללקוח - שני המצבים דורשים מהעובד את אותה פעולה (לפנות למנהל).
+        record_audit_event(
+            db, "TaxSimulation", grant.grant_id, "SIMULATE_FAILED", current_user.user_id,
+            after={"exercise_date": payload.exercise_date, "options_to_exercise": payload.options_to_exercise,
+                  "gain": gain, "reason": e.reason},
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=(f"No tax rule found for {grant.employee.country_code}/{grant_type_value} "
+                    f"as of {payload.exercise_date} - contact your plan administrator."),
+        )
 
     # רישום audit לכל סימולציה - כדי שאפשר יהיה לבדוק בדיעבד בדיוק לפי איזו
     # גרסת טבלת מס/מדרגות חושב סכום נתון (נדרש עבור תרחישי ביקורת עתידיים).
@@ -869,7 +1106,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
             "exercise_date": payload.exercise_date, "options_to_exercise": payload.options_to_exercise,
             "gain": gain, "tax_method": tax_result.method, "tax_table_effective_date": tax_result.table_effective_date,
             "effective_rate": tax_result.effective_rate, "tax_amount": tax_result.tax_amount,
-            "source": tax_result.source_url,
+            "source": tax_result.source_url, "tax_rule_pack_id": tax_result.pack_id,
         },
     )
     db.commit()
@@ -885,6 +1122,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
         tax_rule_source=tax_result.source_url,
         tax_calculation_method=tax_result.method,
         tax_table_effective_date=tax_result.table_effective_date,
+        tax_rule_pack_id=tax_result.pack_id,
         is_within_post_termination_window=is_within_ptw,
         post_termination_exercise_deadline=ptw_deadline,
     )
@@ -932,6 +1170,17 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
         status=ExerciseRequestStatus.PENDING,
     )
     db.add(req)
+    db.flush()
+
+    # v0.6.0: אירוע בסיס - בלי זה, EXERCISE_REQUEST_DECIDED עתידי (אישור/דחייה)
+    # ייפול על state=None בלי אפקט (ראו project_exercise_request).
+    record_ownership(db, aggregate_id=req.request_id, aggregate_type="ExerciseRequest",
+                     company_id=_company_id_of_grant(db, grant), employee_id=current_user.employee_id)
+    append_event(db, event_type="EXERCISE_REQUEST_SUBMITTED", aggregate_type="ExerciseRequest",
+                aggregate_id=req.request_id,
+                payload={"options_requested": req.options_requested, "grant_id": grant.grant_id},
+                effective_date=date.today(), actor_user_id=current_user.user_id)
+
     db.commit()
     db.refresh(req)
     return req

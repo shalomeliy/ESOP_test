@@ -986,6 +986,23 @@ def seed_database():
         print("🧾 יוצר טבלאות מס versioned (דמו בלבד)...")
         DEMO_SOURCE = "DEMO-NOT-REAL-TAX-LAW"
 
+        def _tax_rule_pack(grant_type, country, eff_date, method):
+            """v0.7.0: כותרת חדשה שמחזיקה את שיטת החישוב כדאטה, לא כ-if ב-tax_engine.py.
+            מוחזר pack_id כדי שהשורות המפורטות (TaxRatesHistory/IncomeTaxBracket) יוכלו להצביע אליו."""
+            pack = models.TaxRulePack(
+                pack_id=f"PACK-{grant_type}-{country}-{eff_date.isoformat()}",
+                country_code=country, grant_type=grant_type, effective_start_date=eff_date,
+                calculation_method=method, official_source_url=DEMO_SOURCE,
+            )
+            db.add(pack)
+            # flush מיידי - בלי relationship() בין TaxRulePack לטבלאות הפירוט,
+            # כתיבה מרובה לפני commit יחיד עלולה לנסות להכניס את שורת הפירוט
+            # לפני שורת ה-pack שהיא מפנה אליה (אותו דפוס בדיוק שנתפס ב-v0.6.0,
+            # ראו הערת seeded_world/backfill_ledger). נתפס בפועל: FOREIGN KEY
+            # constraint failed על income_tax_brackets בזמן בדיקת שלב 2.
+            db.flush()
+            return pack.pack_id
+
         flat_tax_rows = [
             ("IL_102_CAPITAL_GAINS", "IL", date(2020, 1, 1), 0.25),
             ("IL_102_CAPITAL_GAINS", "IL", date(2025, 1, 1), 0.28),
@@ -995,10 +1012,11 @@ def seed_database():
             ("US_NSO", "US", date(2025, 1, 1), 0.32),
         ]
         for grant_type, country, eff_date, rate in flat_tax_rows:
+            pack_id = _tax_rule_pack(grant_type, country, eff_date, "FLAT_RATE")
             db.add(models.TaxRatesHistory(
                 tax_rule_id=f"TAX-{grant_type}-{country}-{eff_date.isoformat()}",
                 country_code=country, grant_type=grant_type, effective_start_date=eff_date,
-                capital_gains_rate=rate, official_source_url=DEMO_SOURCE,
+                capital_gains_rate=rate, official_source_url=DEMO_SOURCE, pack_id=pack_id,
             ))
 
         bracket_versions = [
@@ -1010,12 +1028,13 @@ def seed_database():
             ]),
         ]
         for eff_date, brackets in bracket_versions:
+            pack_id = _tax_rule_pack("IL_102_WORK_INCOME", "IL", eff_date, "PROGRESSIVE_BRACKETS")
             for order, min_amt, max_amt, rate in brackets:
                 db.add(models.IncomeTaxBracket(
                     bracket_id=f"BRACKET-IL_102_WORK_INCOME-IL-{eff_date.isoformat()}-{order}",
                     country_code="IL", grant_type="IL_102_WORK_INCOME", effective_start_date=eff_date,
                     bracket_order=order, min_amount=min_amt, max_amount=max_amt, rate=rate,
-                    official_source_url=DEMO_SOURCE,
+                    official_source_url=DEMO_SOURCE, pack_id=pack_id,
                 ))
         db.commit()
 

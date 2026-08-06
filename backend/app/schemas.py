@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import date, datetime
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from backend.app.models import EmployeeStatus, GrantType
 
 class EmployeeStatusUpdate(BaseModel):
@@ -24,6 +24,9 @@ class ExerciseSimulationResponse(BaseModel):
     tax_rule_source: str
     tax_calculation_method: str
     tax_table_effective_date: Optional[date] = None
+    # v0.7.0: מזהה ה-TaxRulePack שהופעל בפועל - מאפשר לאתר בדיוק לפי איזו
+    # גרסת כלל חושב סכום נתון, בלי לשחזר את זה מ-3 שדות בנפרד.
+    tax_rule_pack_id: str
     is_within_post_termination_window: bool
     post_termination_exercise_deadline: Optional[date] = None
 
@@ -270,3 +273,41 @@ class ExerciseRequestOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ===================================================================
+# Ledger (v0.6.0 שלב 3) - ציר זמן ושאילתה בי-טמפורלית
+# ===================================================================
+
+class LedgerEventOut(BaseModel):
+    event_id: str
+    event_type: str
+    effective_date: date
+    recorded_at: datetime
+    source: str
+    payload: Dict[str, Any]
+    corrects_event_id: Optional[str] = None
+
+
+class LedgerProjectionOut(BaseModel):
+    aggregate_type: str
+    aggregate_id: str
+    as_of_effective_date: Optional[date] = None
+    as_of_knowledge_date: Optional[datetime] = None
+    # None משמעו "אין אירועים בכלל עד לחתך הזה" - לא 0/ריק, אלא היעדר ידיעה
+    # אמיתי. ראו GOAL.md: אין מספר בלי שרשור מקורות.
+    state: Optional[Dict[str, Any]] = None
+
+
+# ===================================================================
+# Vesting pause / leave-of-absence (v0.6.0 שלב 4)
+# ===================================================================
+
+class VestingPauseRequest(BaseModel):
+    start_date: date
+    end_date: date
+
+class VestingPauseResponse(BaseModel):
+    schedule_id: str
+    days_added: int
+    paused_days_total: int

@@ -107,6 +107,35 @@ class VestingSchedule(Base):
 
     grant = relationship("Grant", back_populates="vesting_schedule")
 
+# סוגי שיטת חישוב אפשריים על TaxRulePack.calculation_method - String רגיל (לא
+# SQLEnum), כמו LEDGER_EVENT_TYPES: אוצר מילים סגור שנבדק באפליקציה, לא באילוץ DB.
+TAX_CALCULATION_METHODS = {"FLAT_RATE", "PROGRESSIVE_BRACKETS"}
+
+
+class TaxRulePack(Base):
+    # "כותרת" חדשה (v0.7.0) שמוציאה את שיטת החישוב (שטוח מול מדורג) מ-if קשיח
+    # ב-tax_engine.py אל תוך דאטה - זה בדיוק הפער בין "יש דאטה עם תאריך תוקף"
+    # (כבר היה קיים) לבין "אין אף כלל מקודד בקוד" (עדיין לא היה, עד עכשיו).
+    # calculation_method נשאר בכל זאת עובדה מבנית לא-ניתנת לעריכה חופשית: הגרסה
+    # הזו לא בונה מסך admin לניהול חבילות - השורות היחידות שנכתבות הן מגיבוי
+    # חד-פעמי (backfill_tax_rule_packs.py) ומ-seed_data.py, בדיוק כמו הטבלאות
+    # הקיימות. ראו אזהרת מומחה המס בתכנון: שיוך שגוי של שיטה למסלול (למשל
+    # מדרגות על מסלול רווח הון) הוא סיכון תוכן-מס, לא רק סיכון טכני.
+    __tablename__ = "tax_rule_packs"
+    pack_id = Column(String, primary_key=True, default=generate_uuid)
+    country_code = Column(String, nullable=False, index=True)
+    grant_type = Column(String, nullable=False, index=True)
+    effective_start_date = Column(Date, nullable=False)
+    calculation_method = Column(String, nullable=False)
+    official_source_url = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("country_code", "grant_type", "effective_start_date",
+                         name="uq_tax_rule_packs_country_type_date"),
+    )
+
+
 class TaxRatesHistory(Base):
     __tablename__ = "tax_rates_history"
     tax_rule_id = Column(String, primary_key=True, default=generate_uuid)
@@ -115,6 +144,23 @@ class TaxRatesHistory(Base):
     effective_start_date = Column(Date, nullable=False)
     capital_gains_rate = Column(Float, nullable=False)
     official_source_url = Column(String, nullable=False)
+    # nullable בכוונה: מתמלא ע"י backfill חד-פעמי על שורות קיימות, לא שדה
+    # שנדרש בזמן יצירה - ראו backfill_tax_rule_packs.py.
+    # unique=True: **נמצא בסקירת קוד עצמאית** - היחס בין pack ל-TaxRatesHistory
+    # הוא 1:1 (בניגוד ל-IncomeTaxBracket, ששם כמה שורות *אמורות* לחלוק pack_id
+    # אחד - מדרגות אותה גרסה). בלי האילוץ, שתי שורות עם אותו pack_id היו יכולות
+    # להתקיים ו-tax_engine.py._calculate_flat (שמשתמש ב-.first()) היה בוחר
+    # ביניהן בלי סדר מובטח - בדיוק אותה מחלקת באג ש-v0.7.0 כולו נועד לסגור.
+    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True, unique=True)
+
+    __table_args__ = (
+        # נמצא בתכנון v0.7.0: בלי האילוץ הזה, שתי שורות עם אותו תאריך תוקף
+        # היו מתחרות על .order_by(...).first() בלי סדר מובטח - בחירה לא
+        # דטרמיניסטית בחישוב מס בפועל.
+        UniqueConstraint("country_code", "grant_type", "effective_start_date",
+                         name="uq_tax_rates_history_country_type_date"),
+    )
+
 
 class IncomeTaxBracket(Base):
     # מדרגות מס פרוגרסיביות, versioned לפי (country_code, grant_type,
@@ -132,6 +178,15 @@ class IncomeTaxBracket(Base):
     max_amount = Column(Float, nullable=True)
     rate = Column(Float, nullable=False)
     official_source_url = Column(String, nullable=False)
+    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True)
+
+    __table_args__ = (
+        # ייחוד על בכל המפתח כולל bracket_order (לא רק השלישייה): שורות רבות
+        # שייכות בכוונה לאותה גרסה (מדרגה 1, 2, 3...) - האילוץ מונע רק "גרסה
+        # כפולה" (אותה מדרגה פעמיים לאותה שלישייה), לא חוסם מדרגות לגיטימיות.
+        UniqueConstraint("country_code", "grant_type", "effective_start_date", "bracket_order",
+                         name="uq_income_tax_brackets_country_type_date_order"),
+    )
 
 class StockPricesHistory(Base):
     __tablename__ = "stock_prices_history"
@@ -280,3 +335,99 @@ class NotificationDismissal(Base):
     # שתיווצר מחדש מהמנוע היום.
     notification_key = Column(String, nullable=False)
     dismissed_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ===================================================================
+# Ledger מבוסס-אירועים (v0.6.0)
+# ===================================================================
+# מצב עסקי (יתרת פול, סטטוס עובד, תאריך הפקדת נאמן וכו') הופך מ"שדה שמישהו
+# עורך" ל-*תוצר חישוב* מרצף אירועים append-only. העמודות המוטטות הקיימות
+# (OptionPool.allocated_shares וכו') נשארות בשלב זה כ"פרויקציה מחושבת" -
+# נכתבות באותה טרנזקציה שמוסיפה את האירוע - כדי ש-ck_option_pools_shares_balance
+# ואילוצי ה-DB האחרים ימשיכו להיאכף בלי שינוי (SQLite לא יודע לאכוף שוויון
+# מול ערך משוחזר מאירועים, רק מול עמודות בפועל).
+
+# רשימת סוגי האירועים החוקיים. עמודה String רגילה ולא SQLEnum/CHECK בכוונה -
+# אותה החלטה בדיוק כמו NotificationPreference.rule למעלה: הרשימה צפויה לגדול,
+# ו-CHECK על ערכי טקסט ב-SQLite דורש בנייה מחדש של הטבלה בכל תוספת.
+# "ESTABLISHED" = אירוע בסיס (snapshot) שממנו מתחיל ה-replay; כל שאר הסוגים הם
+# דלתא שמצטברת מעליו. גם אירוע גיבוי (source=BACKFILL) וגם אירוע חי (source=LIVE)
+# משתמשים באותם סוגי אירועים בדיוק - ה-source הוא מה שמבדיל ביניהם, לא סוג האירוע.
+LEDGER_EVENT_TYPES = {
+    "POOL_BALANCE_ESTABLISHED",     # בסיס: יתרת פול כפי שהיא ידועה כרגע
+    "POOL_ALLOCATED",               # דלתא: הקצאה בעת יצירת מענק
+    "POOL_UNVEST_RETURNED",         # דלתא: החזרה לפול בעת עזיבה
+    "EMPLOYEE_STATE_ESTABLISHED",   # בסיס: סטטוס עובד כפי שהוא ידוע כרגע
+    # דלתא: כל שינוי סטטוס (לא רק עזיבה - update_employee_status מקבל כל
+    # EmployeeStatus) - שם אחד גנרי ולא EMPLOYEE_TERMINATED, כי הקוד עצמו
+    # מבצע השמה גנרית ל-status ולא ענף ייעודי לעזיבה בלבד.
+    "EMPLOYEE_STATUS_CHANGED",
+    "GRANT_CREATED",                # בסיס וגם דלתא חיה: יצירת מענק
+    "TRUSTEE_DEPOSIT_CONFIRMED",    # בסיס וגם דלתא חיה: אישור הפקדה אצל נאמן
+    "VESTING_SCHEDULE_ESTABLISHED", # בסיס: לוח הבשלה כפי שהוא ידוע כרגע
+    # דלתא (שלב 4): תקופת הקפאה שלמה שנרשמה - start_date+end_date+days בבת
+    # אחת, לא שני אירועים נפרדים "התחל"/"סיים". שום מקום אחר במערכת לא עוקב
+    # אחרי "הקפאה פתוחה שטרם נסגרה" (בניגוד ל-termination_date, שכן קיים כשדה
+    # עצמאי) - מוסכמת ברזל: לא לבנות מצב-ביניים שאין לו צרכן. אדמין רושם את
+    # התקופה אחרי שהיא כבר ידועה במלואה, בדיוק כמו trustee_deposit_date.
+    "VESTING_PAUSE_RECORDED",
+    "EXERCISE_REQUEST_SUBMITTED",   # בסיס וגם דלתא חיה: הגשת בקשת מימוש
+    "EXERCISE_REQUEST_DECIDED",     # דלתא: אישור/דחייה
+}
+
+LEDGER_AGGREGATE_TYPES = {"OptionPool", "Employee", "Grant", "VestingSchedule", "ExerciseRequest"}
+
+# מקור האירוע - נדרש כעמודה בסכמה (לא הערה בקוד): אירוע גיבוי חייב להיות מובחן
+# לצמיתות מאירוע אמיתי, כדי שמסך "מה חשבנו בתאריך X" לעולם לא יתחזה לידע
+# שאין למערכת (ראו GOAL.md, "אין מספר בלי שרשור מקורות").
+LEDGER_SOURCE_LIVE = "LIVE"
+LEDGER_SOURCE_BACKFILL = "BACKFILL_v0.6.0"
+
+
+class LedgerEvent(Base):
+    __tablename__ = "ledger_events"
+    __table_args__ = (
+        # (aggregate_id, sequence_no) הוא סדר הקיפול (fold) הקנוני בתוך אותה
+        # ישות, כששני אירועים חולקים את אותו effective_date - recorded_at לבדו
+        # לא מספיק כי backfill מדביק את כולם לאותה שנייה בדיוק (ראו backfill_ledger.py).
+        UniqueConstraint("aggregate_id", "sequence_no", name="uq_ledger_events_aggregate_seq"),
+        Index("ix_ledger_events_aggregate", "aggregate_type", "aggregate_id"),
+        Index("ix_ledger_events_effective_date", "effective_date"),
+        Index("ix_ledger_events_recorded_at", "recorded_at"),
+    )
+    event_id = Column(String, primary_key=True, default=generate_uuid)
+    event_type = Column(String, nullable=False, index=True)
+    aggregate_type = Column(String, nullable=False)
+    aggregate_id = Column(String, nullable=False)
+    # עובדה טיפוסית כ-JSON טקסטואלי - אותה מוסכמה כמו AuditLog.before_value/after_value.
+    payload = Column(String, nullable=False)
+    # ציר זמן #1: מתי העובדה נכונה *בעולם*.
+    effective_date = Column(Date, nullable=False)
+    # ציר זמן #2: מתי המערכת למדה אותה. immutable לאחר הכתיבה - זו בדיוק הסיבה
+    # שהטריגר במיגרציה חוסם UPDATE על הטבלה הזו כולה.
+    recorded_at = Column(DateTime, nullable=False)
+    # nullable כדי לאפשר אירועי גיבוי/מערכת - לעולם לא משויכים למשתמש אמיתי
+    # שלא ביצע את הפעולה בפועל (ראו backfill_ledger.py).
+    actor_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
+    sequence_no = Column(Integer, nullable=False)
+    # מצביע על האירוע שהוא מתקן, ולעולם לא מוחק/עורך אותו. הסכמה מוכנה מהיום
+    # הראשון; אין עדיין endpoint שיוצר תיקון - זה מתוכנן לגרסה הבאה, ראו
+    # ההחלטה המפורשת ב-FEATURE_SPEC.md ("אין maker-checker לתיקונים בגרסה הזו").
+    corrects_event_id = Column(String, ForeignKey("ledger_events.event_id"), nullable=True)
+    schema_version = Column(Integer, nullable=False, default=1)
+    # LEDGER_SOURCE_LIVE / LEDGER_SOURCE_BACKFILL - ראו הערה למעלה.
+    source = Column(String, nullable=False)
+
+
+class LedgerOwnership(Base):
+    """אינדקס בעלות נפרד ולא-חוזר, לצורך הרשאות בלבד - לעולם לא נשען על דאטה
+    משוחזר/מוקרן. נקבע פעם אחת ביצירת הישות ונחשב immutable בהיקף v0.6.0 (מענק
+    שעובר בין חברות הוא v1.4.0/M&A, לא כאן). זו בדיוק ההגנה מפני חזרה של דפוס
+    ה-IDOR שכבר תוקן פעמיים: מסכי v0.6.0 מאשרים גישה מול הטבלה הזו, לא מול
+    אירועים ששוחזרו."""
+    __tablename__ = "ledger_ownership"
+    aggregate_id = Column(String, primary_key=True)
+    aggregate_type = Column(String, nullable=False)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
+    trustee_id = Column(String, ForeignKey("trustees.trustee_id"), nullable=True, index=True)
+    employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True, index=True)

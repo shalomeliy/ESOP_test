@@ -48,6 +48,197 @@ python -m uvicorn backend.app.main:app --port 8001
 | P3 | **ולידציה קיימת בנתיב אחד וחסרה בשני** | אישור בקשת מימוש: כל הבדיקות חסרו גם ב-admin וגם ב-trustee |
 | P4 | **נתון חסר מוצג כערך עסקי** — `None` שהופך ל-0 | מענק בלי `VestingSchedule` הציג `vested=0` לצמיתות |
 | P5 | **כתיבה לא אידמפוטנטית** — אותה פעולה פעמיים משנה מצב פעמיים | החזרת אופציות לפול בפיטורים, אישור חוזר של בקשה שכבר טופלה |
+| P6 | **נאמנות טיפוסים בין כתיבה לקריאה** — JSON אין לו סוג תאריך; בלי פענוח מפורש, תאריך חוזר כמחרוזת ולא כ-`date` | `project()` על שדה תאריך, ראו v0.6.0 למטה |
+
+---
+
+# v0.7.0 — כללי מס כדאטה, עם כשל מפורש (שלבים 1–2 מתוך 2 — הושלם)
+
+**מטרה:** אף חישוב מס לא מסתמך על שיטת חישוב שמקודדת ב-`if` בקוד, וחישוב
+שלא נמצא לו כלל מתאים נכשל בגלוי במקום לנחש שיעור. קריטריון 5 ב-`GOAL.md`.
+**היקף מוצהר (הוחלט בתכנון)**: רק המנוע והדאטה — לא מסך admin לניהול חבילות
+כללים (זה שטח עבודה נפרד, בכוונה נדחה לגרסה עתידית). שלב 1: טבלת `TaxRulePack`
+חדשה, מיגרציה, גיבוי חד-פעמי, ואילוצי ייחוד חדשים. **שלב 2**: חיווט
+`tax_engine.py` לקריאת `TaxRulePack` במקום ה-`if` הקשיח, הסרת ה-fallback
+השקט, ומיפוי הכישלון ל-409 (בדיוק דפוס `MissingVestingScheduleError` הקיים).
+
+## (א) מקרי בדיקה — שלב 1
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-070-01 | יצירת `TaxRulePack` עם השדות הצפויים | שורה חדשה עם `calculation_method="FLAT_RATE"` | `pack_id` מוקצה; השדות נשמרים | `test_tax_rule_pack_created_with_expected_fields` |
+| QA-070-02 | אילוץ ייחוד על `tax_rule_packs` עצמה | שתי שורות עם אותה שלישייה | `IntegrityError` | `test_duplicate_tax_rule_pack_same_key_is_rejected` |
+| QA-070-03 | **תיקון פער אמיתי**: אילוץ ייחוד חדש על `TaxRatesHistory` | שתי שורות עם אותה שלישייה | `IntegrityError` — לפני הגרסה הזו זה היה מתקבל בשקט ויוצר בחירה לא-דטרמיניסטית ב-`.order_by().first()` | `test_duplicate_tax_rates_history_same_key_is_rejected` |
+| QA-070-04 | אותו דבר על `IncomeTaxBracket` (כולל `bracket_order`) | שתי שורות עם אותה רביעייה | `IntegrityError` | `test_duplicate_income_tax_bracket_same_key_and_order_is_rejected` |
+| QA-070-05 | גבול הבדיקה: מדרגות לגיטימיות (`bracket_order` שונה) לאותה גרסה מותרות | שתי מדרגות, `bracket_order` 0 ו-1 | לא נזרקת שגיאה | `test_same_version_different_bracket_order_is_allowed` |
+| QA-070-06 | גיבוי יוצר pack אחד לכל גרסת שיעור שטוח | שתי שורות `TaxRatesHistory` בתאריכים שונים | 2 packs, כל שורה מקושרת ל-pack שלה | `test_backfill_creates_one_pack_per_flat_rate_version` |
+| QA-070-07 | גיבוי: כל המדרגות של אותה גרסה חולקות pack אחד | שתי מדרגות (`bracket_order` 0,1) לאותו תאריך תוקף | pack אחד בלבד; שתי השורות מקושרות אליו | `test_backfill_creates_one_pack_per_progressive_version_shared_across_brackets` |
+| QA-070-08 | **הכרעה מפורשת מהתכנון**: מקור החבילה בגיבוי הוא `official_source_url` של `bracket_order=0` | שתי מדרגות עם `source_url` שונה במכוון | pack מקבל את המקור של `bracket_order=0` — תואם למה ש-`tax_engine.py` הקיים כבר קורא, לא "תיקון" חוסר עקביות בשקט | `test_backfill_uses_bracket_order_zero_source_url_as_the_packs_source` |
+
+## (ב) אזורי סיכון — שלב 1
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-070-01 | `calculation_method` על `TaxRulePack` הוא `String` חופשי, לא נאכף ברמת ה-DB מול `TAX_CALCULATION_METHODS` | בכוונה (כמו `LEDGER_EVENT_TYPES`) — אבל בלי מסך admin בגרסה הזו, השורה היחידה שכותבת ערך היא קוד מבוקר (`seed_data.py`/`backfill_tax_rule_packs.py`), לא קלט חיצוני | שלב 2 (מנוע) צריך לוודא/לזרוק אם `calculation_method` לא ב-`TAX_CALCULATION_METHODS` בזמן קריאה, לא רק בזמן כתיבה |
+| R-070-02 | `pack_id` על `TaxRatesHistory`/`IncomeTaxBracket` נשאר `nullable=True` | תוספתי בכוונה — לא לשבור שורות קיימות שטרם עברו גיבוי; לא הופך ל-`NOT NULL` בגרסה הזו | לפני שלב 2 סוגר, לוודא שכל שורה חיה עברה גיבוי (`backfill_tax_rule_packs.py` רץ) - אחרת מנוע שקורא רק לפי `pack_id` יפספס שורות ישנות |
+| R-070-03 | הגיבוי לא מטפל בחוסר-עקביות אמיתי ב-`official_source_url` בין מדרגות של אותה גרסה — רק בוחר את `bracket_order=0` ומתעלם מהשאר | תואם התנהגות קיימת (`_calculate_progressive` תמיד קרא רק את זה), לא רגרסיה - אבל גם לא תיקון | אם אי-פעם יידרש לאכוף עקביות מקור בין מדרגות אותה גרסה - זו נקודת הבדיקה, לא הנחה שקטה |
+
+## (א) מקרי בדיקה — שלב 2
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-070-09 | שיעור שטוח נבחר לפי הגרסה שהייתה בתוקף בתאריך המימוש | מימוש ב-2023-06-01 מול גרסאות 2020/2024 | `FLAT_RATE`, `25,000`, `table_effective_date=2020-01-01` | `test_flat_rate_uses_the_version_in_force_on_the_exercise_date` |
+| QA-070-10 | מעבר לגרסה חדשה אחרי שנכנסה לתוקף | מימוש ב-2024-06-01 | `FLAT_RATE`, `28,000`, `table_effective_date=2024-01-01` | `test_flat_rate_switches_to_the_newer_version_after_it_takes_effect` |
+| QA-070-11 | **הסרת ה-fallback**: שילוב שמעולם לא נבנה | `calculate_tax` על DB ריק | `MissingTaxRuleError`, `reason=NEVER_MODELED` — **מחליף** את הטסט הישן שציפה ל-fallback, זו החלטת התכנון המכוונת | `test_never_modeled_combination_raises_with_that_reason` |
+| QA-070-12 | תאריך מימוש לפני כל גרסה קיימת | תאריך 2019-12-31 מול גרסאות 2020/2024 | `MissingTaxRuleError`, `reason=NO_RULE_EFFECTIVE_AS_OF_DATE` — שונה מ-QA-070-11 (המסלול כן קיים) | `test_exercise_date_before_earliest_rule_raises_with_that_reason` |
+| QA-070-13 | **תיקון פער אמיתי בסקירה עצמית**: `calculation_method` לא-חוקי | pack עם `calculation_method="SOMETHING_ELSE"` | `MissingTaxRuleError`, `reason=INVALID_CALCULATION_METHOD` — לפני התיקון היה נופל בשקט למסלול השטוח כברירת מחדל | `test_invalid_calculation_method_raises_with_that_reason` |
+| QA-070-14 | pack קיים בלי שורת `TaxRatesHistory` תואמת (לא אמור לקרות, אבל לא קורס) | pack שטוח בלי שורת פירוט מקושרת | `MissingTaxRuleError`, `reason=PACK_HAS_NO_DETAIL_ROWS` | `test_pack_with_no_matching_flat_rate_row_raises_data_integrity_reason` |
+| QA-070-15 | אותו דבר עבור מדרגות | pack מדורג בלי שורות `IncomeTaxBracket` | `MissingTaxRuleError`, `reason=PACK_HAS_NO_DETAIL_ROWS` | `test_pack_with_no_matching_brackets_raises_data_integrity_reason` |
+| QA-070-16 | מדרגות מסתכמות נכון | רווח 50,000 על 3 מדרגות | `14,000`, שיעור אפקטיבי `0.28` | `test_progressive_brackets_sum_correctly` |
+| QA-070-17 | רווח אפס לא מתרסק (חילוק באפס) | רווח `0.0` | מס `0.0`, שיעור `0.0` | `test_progressive_zero_gain_is_zero_tax_and_no_division_by_zero` |
+| QA-070-18 | מסלול מדורג לא "נופל" למסלול שטוח גם כשקיים | שני הפאקים קיימים יחד | `method="PROGRESSIVE_BRACKETS"` | `test_progressive_grant_type_never_falls_through_to_flat` |
+| QA-070-19 | **קריטריון קבלה מכריע (רגרסיה מלאה)**: כל שילוב (מדינה, סוג מענק, תאריך) אמיתי מהדאטה החי | `tools/verify_tax_rule_pack_regression.py` משווה בחירת גרסה בין הלוגיקה הישנה (משוחזרת) לחדשה, על 82 שילובים אמיתיים × 3 תאריכים = 246 בדיקות | 0 אי-התאמות; 36 מקרים שבהם שתיהן מסכימות "אין גרסה" | **תוקן אחרי סקירת PR עצמאית**: הסקריפט עצמו הוכנס ל-`tools/` (לא היה קיים ב-repo קודם, רק הורץ ידנית) - כדי שהתוצאה תהיה ניתנת לשחזור ע"י מישהו אחר, לא רק דיווח מחברו. הורץ מחדש ואומת שוב באותם מספרים בדיוק |
+| QA-070-20 | אימות HTTP חי: מימוש מוצלח מחזיר `tax_rule_pack_id` | `POST /employee/simulate-exercise`, תאריך עם כלל | `200`, `tax_rule_pack_id` מאוכלס, `audit_log` שורת `SIMULATE` עם `tax_rule_pack_id` | אומת ידנית מול סנדבוקס |
+| QA-070-21 | אימות HTTP חי: אין כלל → 409 עם הודעה עניינית | תאריך 2015-01-01, לפני כל גרסה | `409` · `"No tax rule found for IL/IL_102_CAPITAL_GAINS as of 2015-01-01..."`; `audit_log` שורת `SIMULATE_FAILED` עם `reason` | אומת ידנית מול סנדבוקס |
+| QA-070-22 | **תיקון פער אמיתי מסקירת PR עצמאית**: `TaxRatesHistory.pack_id` הוא 1:1 - שתי שורות לא יכולות לחלוק pack אחד | שתי שורות `TaxRatesHistory` עם אותו `pack_id` | `IntegrityError` — לפני התיקון שום דבר לא מנע זאת, ו-`_calculate_flat` (`.first()`) היה בוחר ביניהן בלי סדר מובטח | `test_two_tax_rates_history_rows_cannot_share_one_pack_id` |
+
+## (ב) אזורי סיכון — שלב 2
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-070-04 | **תיקון R-070-01 מהתכנון**: `calculation_method` נבדק עכשיו מול `TAX_CALCULATION_METHODS` בזמן קריאה | לפני התיקון, ערך לא-מוכר היה נופל בשקט למסלול `FLAT_RATE` (כברירת מחדל של `if/else`) - בדיוק סוג הבאג ש-v0.7.0 כולו נועד למנוע | `test_invalid_calculation_method_raises_with_that_reason` (QA-070-13) הוא בדיקת הרגרסיה |
+| R-070-05 | שני `reason` שונים (`NEVER_MODELED`/`NO_RULE_EFFECTIVE_AS_OF_DATE`) מוחזרים כ-409 זהה ללקוח, ההבחנה חיה רק ב-`audit_log` | החלטת תכנון מפורשת (architecture+QA): שתי הסיבות דורשות מהעובד את אותה פעולה בפועל (לפנות למנהל) - אין ערך UX בפיצול קוד HTTP, יש ערך ל-triage פנימי | אם אי-פעם יידרש למנהל להבחין ביניהן ב-UI (לא רק ב-audit) - זו נקודת ההרחבה, לא הנחה קיימת |
+| R-070-06 | `PACK_HAS_NO_DETAIL_ROWS`/`INVALID_CALCULATION_METHOD` מטופלים כ-409 בדיוק כמו "אין כלל בכלל", לא כשגיאת מערכת (500) | הכרעה מכוונת: אלה לא אמורים לקרות בפועל (seed/backfill תמיד כותבים pack+פירוט יחד, לא מסך admin שיכול ליצור אי-עקביות) - אבל אם בכל זאת יקרו, 409 עדיין נכון יותר מקריסה | אם בעתיד תיפתח יכולת כתיבה חופשית (מסך admin, שלא בהיקף v0.7.0) - להפריד את הקודים האלה מ"אין כלל" האמיתי |
+| R-070-07 | ~~`pack_id` על `TaxRatesHistory` לא היה ייחודי ברמת ה-DB~~ **נסגר** | **נמצא בסקירת PR עצמאית** (לא בתכנון המקורי): שום דבר לא מנע משתי שורות לחלוק אותו `pack_id`, למרות שהיחס הוא 1:1 - סיכון דומה במהותו ל-R-070-03 (שלב 1) אבל על ה-FK עצמו, לא על השלישייה הטבעית | `test_two_tax_rates_history_rows_cannot_share_one_pack_id` (QA-070-22) היא בדיקת הרגרסיה; מיגרציה `4ccffff30b94` |
+| R-070-08 | README.md כלל שני קבועים שכבר התיישנו (`eca19ffceb4d` כ"head" הצפוי, "13 טבלאות") | **נמצא בסקירת PR עצמאית**: כל מיגרציה חדשה (ובגרסה הזו לבדה נוספו 2) מיישנת ערכים קבועים כאלה מחדש - זו לא הפעם הראשונה (ראו QA_TESTBOOK עצמו, שגם בו יש דיוק היסטורי-בזמן) | תוקן להפניה ל-`alembic heads` במקום מספר קבוע; ללא ספירת טבלאות קשיחה |
+
+---
+
+# v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלבים 1–4 מתוך 4 — הושלם)
+
+**מטרה:** מצב עסקי הופך מ"שדה שמישהו עורך" ל*תוצר חישוב* מרצף אירועים
+append-only. קריטריונים 1–3 ב-`GOAL.md`. שלב 1: סכמה, מיגרציה, גיבוי
+(backfill), ושכבת קיפול (fold). שלב 2: חיווט חמש נקודות המוטציה החיות, איחוד
+שני נתיבי אישור בקשת המימוש, ותיקון backdating בהפקדת נאמן. שלב 3: שכבת
+השאילתה הבי-טמפורלית + שני מסכים ב-admin portal (ציר זמן, שחזור לתאריך) -
+דרך א' שהוחלטה: הבוס הקיים (`COMPANY_ADMIN`) מקבל גישה, בלי תפקיד "מבקר" חדש.
+**שלב 4 (אחרון)**: פיצ'ר הקפאת הבשלה (leave-of-absence) - endpoint חדש
+שכותב ל-`VestingSchedule.paused_days_total` דרך הלדג'ר, וכפתור "הקפאה" חדש
+ליד "ציר זמן" בטבלת המענקים ב-admin portal.
+
+## (א) מקרי בדיקה — שלב 1
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-01 | **Replay-equivalence על כל הדאטה האמיתי** | גיבוי + קיפול על עותק מלא של `esop_database.db` (19 פולים, 260 עובדים, 251 מענקים, 247 לוחות הבשלה, 4 בקשות) | 0 אי-התאמות מול העמודות המוטטות בפועל | אומת ידנית מול עותק חי — ראו `test_replay_equivalence_for_every_aggregate_type` לגרסה הממוסמכת ב-pytest |
+| QA-060-02 | קיפול פול: בסיס + שתי דלתאות | `POOL_BALANCE_ESTABLISHED` ואז `POOL_ALLOCATED`/`POOL_UNVEST_RETURNED` | סכום נכון של allocated/unallocated | `test_pool_projection_folds_established_then_deltas` |
+| QA-060-03 | קיפול עובד: שינוי סטטוס דורס בסיס | `EMPLOYEE_STATE_ESTABLISHED` ואז `EMPLOYEE_STATUS_CHANGED` | status/termination_date מהאירוע האחרון | `test_employee_projection_terminated_overrides_established` |
+| QA-060-04 | קיפול מענק: הפקדת נאמן אחרי יצירה | `GRANT_CREATED` ואז `TRUSTEE_DEPOSIT_CONFIRMED` | `trustee_deposit_date` מעודכן, כ-`date` ולא מחרוזת | `test_grant_projection_deposit_confirmed_after_creation` |
+| QA-060-05 | ישות בלי אירועים בכלל | `project_option_pool([])` | `None`, לא קריסה ולא 0 | `test_missing_aggregate_projects_to_none` |
+| QA-060-06 | `append_event` דוחה סוג אירוע/צובר לא מוכר | `event_type`/`aggregate_type` לא ב-`LEDGER_EVENT_TYPES`/`LEDGER_AGGREGATE_TYPES` | `UnknownLedgerEventType`/`UnknownLedgerAggregateType` | `test_append_event_rejects_unknown_event_type`, `test_append_event_rejects_unknown_aggregate_type` |
+| QA-060-07 | רצף (sequence_no) עולה לפי ישות | שני אירועים על אותה `aggregate_id` | `1, 2` בסדר | `test_append_event_assigns_increasing_sequence_per_aggregate` |
+| QA-060-08 | `LedgerOwnership` נקבע פעם אחת, immutable | קריאה שנייה ל-`record_ownership` עם ערך אחר | הערך הראשון נשאר | `test_record_ownership_is_set_once_and_immutable` |
+| QA-060-09 | **הגנת שינוי אמיתית** — UPDATE/DELETE נדחים ברמת ה-DB | טריגרים שנבנים בבדיקה עצמה (create_all לא מריץ CREATE TRIGGER) | `IntegrityError` על שני הניסיונות | `test_ledger_events_reject_update_at_the_db_level`, `test_ledger_events_reject_delete_at_the_db_level` — **אומת גם ידנית** מול עותק חי עם `sqlite3` גולמי |
+| QA-060-10 | שאילתה על ידיעה שלפני רגע הגיבוי | `as_of_knowledge_date` לפני `run_at` | `None` — לא מתחזה לידע שאין | `test_query_before_backfill_knowledge_date_returns_no_history` |
+| QA-060-11 | **דוגמה מחושבת ביד: bitemporal אמיתי** | הפקדת נאמן 20 יום אחרי יצירת מענק; קיפול לפני/אחרי | לפני ההפקדה: `None`; אחריה: `2021-01-20` — שתי תשובות נכונות לאותה שאלה | `test_bitemporal_query_before_and_after_deposit_confirmation_differ` |
+| QA-060-12 | גיבוי לא רץ פעמיים | `python -m backend.backfill_ledger` פעם שנייה | מסרב, לא כותב כפילויות | אומת ידנית מול עותק חי |
+
+## (ב) אזורי סיכון — שלב 1
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-01 | **`sequence_no` מניח כותב יחיד** | `_next_sequence_no` הוא query+increment בלי נעילה - שני writers מקבילים על אותה ישות עלולים להתנגש. SQLite חד-תהליכי מקטין את הסיכון אבל לא מבטל אותו | אם אי-פעם יתווסף כותב מקביל אמיתי (worker נפרד) - לחזק ל-transaction עם retry, לא רק constraint |
+| R-060-02 | **נאמנות טיפוסים JSON↔Python** | תאריך שנכתב כ-ISO string וחוזר כמחרוזת בלי `_parse_date` מפורש - **נתפס בפועל** באמצע הפיתוח (`test_replay_equivalence_for_every_aggregate_type` נכשל על `termination_date`), לא רק תיאורטי | כל שדה תאריך חדש בפרויקטור עתידי (שלב 3+) חייב לעבור דרך `_parse_date` באותה צורה |
+| R-060-03 | `ledger_events`/`ledger_ownership` לא קיימים בסכמת ה-`create_all` של הבדיקות עם הטריגרים | `Base.metadata.create_all` יוצר את הטבלאות (דרך המודלים) אבל **לא** את ה-triggers (הם raw SQL במיגרציה בלבד) - QA-060-09 בונה אותם ידנית בבדיקה עצמה | אם המיגרציה תשתנה, לוודא שהבדיקה עדיין תואמת את ה-SQL בפועל |
+| R-060-04 | סדר הכנסה (flush) בין `Grant` ל-`ExerciseRequest` לא תמיד נכון כשמצרפים הרבה אובייקטים תלויים בפלאש אחד | אין `relationship()` מוצהר בין השניים ב-`models.py` - עובדה קיימת בסכמה, לא באג חדש. **נתפס בפועל** בזמן כתיבת `seeded_world` fixture | fixtures עתידיים שמכניסים דאטה תלוי דרך כמה טבלאות צריכים פלאש ביניים, לא פלאש אחד בסוף |
+| R-060-05 | **גיבוי לא משחזר היסטוריית ביניים אמיתית** — `POOL_BALANCE_ESTABLISHED` הוא snapshot של המצב הנוכחי, לא רצף האירועים האמיתי שהוביל אליו | אי אפשר לשחזר את זה מ-`AuditLog` (JSON טקסטואלי, לא מובטח שלם) - הוחלט במפורש לא לנסות | שאילתת "מה חשבנו" לפני רגע הגיבוי חייבת להחזיר "אין נתון" (QA-060-10), לא לנחש היסטוריה שאין |
+| R-060-06 | ~~חיווט חמש נקודות המוטציה החיות עדיין לא קיים~~ | **נסגר בשלב 2** — ראו למטה | — |
+
+## (א) מקרי בדיקה — שלב 2
+
+הבדיקות עוברות דרך ה-API האמיתי (`client` fixture), לא קוראות ל-`append_event`
+ישירות — כדי להוכיח שהחיווט ב-`routes.py` עובד, לא רק שהשירות עצמו עובד.
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-20 | `create_grant` מייצר שלושה אירועי בסיס | `POST /admin/grants` | `GRANT_CREATED` + `POOL_ALLOCATED` + `VESTING_SCHEDULE_ESTABLISHED`, ושלושתם ברשומת `LedgerOwnership` נכונה | `test_create_grant_appends_baseline_events_and_ownership` |
+| QA-060-21 | פרויקציית הפול נכונה אחרי כמה מענקים | שני `POST /admin/grants` על אותו פול | `project()` == עמודות הפול בפועל | `test_create_grant_projection_matches_pool_after_two_grants` |
+| QA-060-22 | **תיקון באג אמיתי**: מענק עם `grant_date` ישן מ-`pool.created_at` | מענק עם תאריך מ-2015 מול פול שנוצר "עכשיו" | `POOL_ALLOCATED` מקופל נכון ולא מתעלם | `test_pool_projection_still_correct_when_grant_predates_pool_row_creation` — **נמצא ותוקן באימות ידני מול עותק חי**, ראו R-060-07 |
+| QA-060-23 | עזיבה (legacy status endpoint) עם החזרה לפול | `PATCH /admin/employees/{id}/status`, `TERMINATED`+`return_unvested_to_pool` | `EMPLOYEE_STATUS_CHANGED` + `POOL_UNVEST_RETURNED` אחד; `project()` תואם | `test_employee_termination_appends_status_event_and_pool_return_events` |
+| QA-060-24 | עזיבה כפולה לא מכפילה אירועי החזרה | אותה קריאה פעמיים | אירוע `POOL_UNVEST_RETURNED` **אחד** בלבד; `EMPLOYEE_STATUS_CHANGED` נרשם בכל פעם | `test_terminating_twice_does_not_duplicate_pool_return_events` |
+| QA-060-25 | מחיקה רכה (soft-delete) מייצרת אירוע סטטוס משלה | `DELETE /admin/employees/{id}` עם היסטוריית מענקים | `EMPLOYEE_STATUS_CHANGED` אחד — נתיב שלא עובר דרך `update_employee_status` | `test_soft_delete_appends_status_event_too` |
+| QA-060-26 | עובד חדש מקבל אירוע בסיס | `POST /admin/employees` | `EMPLOYEE_STATE_ESTABLISHED`; `project()` == `{status: ACTIVE, termination_date: None}` | `test_create_employee_appends_baseline_event` |
+| QA-060-27 | בקשת מימוש חדשה מקבלת אירוע בסיס | `POST /employee/exercise-requests` | `EXERCISE_REQUEST_SUBMITTED` | `test_create_exercise_request_appends_baseline_event` |
+| QA-060-28 | אישור admin מייצר `EXERCISE_REQUEST_DECIDED` | `PATCH /admin/exercise-requests/{id}`, `approve=true` | רצף `SUBMITTED→DECIDED`; `project()["status"]=="APPROVED"` | `test_admin_approval_appends_decided_event` |
+| QA-060-29 | דחיית נאמן — **אותה נקודת כתיבה** כמו admin | `PATCH /trustee/exercise-requests/{id}`, `approve=false` | `EXERCISE_REQUEST_DECIDED` יחיד; `project()["status"]=="REJECTED"` | `test_trustee_rejection_appends_decided_event_via_the_same_shared_function` |
+| QA-060-30 | הפקדת נאמן מייצרת אירוע | `PATCH /trustee/confirm-deposit/{id}` | `TRUSTEE_DEPOSIT_CONFIRMED`; `project()` תואם `grant.trustee_deposit_date` | `test_confirm_deposit_appends_event` |
+| QA-060-31 | **תיקון backdating**: הפקדה לפני תאריך המענק נחסמת | `deposit_date < grant.grant_date` | `400` · `"...cannot precede the grant date..."`; **אין** אירוע נכתב | `test_confirm_deposit_before_grant_date_is_rejected` |
+| QA-060-32 | גבול הבדיקה: הפקדה *באותו* תאריך של המענק מותרת | `deposit_date == grant.grant_date` | `200` | `test_confirm_deposit_on_the_grant_date_itself_is_allowed` |
+
+## (ב) אזורי סיכון — שלב 2
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-07 | **`POOL_BALANCE_ESTABLISHED` עם `effective_date` שגוי — תוקן** | הגרסה המקורית (שלב 1) השתמשה ב-`pool.created_at.date()`: זמן יצירת השורה ב-DB, לא עובדה היסטורית. מענק חי עם `grant_date` ישן ממנו (המצב הנפוץ) "הקדים" את הבסיס בקיפול, וה-`POOL_ALLOCATED` שלו התעלם בשקט - **נמצא באימות ידני מול עותק חי**, לא בבדיקה. תוקן ל-`LEDGER_EPOCH` (`date.min`) - הבסיס תמיד ראשון | `test_pool_projection_still_correct_when_grant_predates_pool_row_creation` (QA-060-22) הוא בדיקת הרגרסיה |
+| R-060-08 | אין endpoint ל-`OptionPool` חדש | `create_grant` מריץ `record_ownership` הגנתי לפול, אבל אם הפול לא קיים ב-`ledger_ownership`/ללא `POOL_BALANCE_ESTABLISHED` (למשל DB חדש לגמרי בלי גיבוי), `project()` יחזיר `None` ו-`POOL_ALLOCATED` יתעלם בשקט - בדיוק R-060-07 מחדש, בהקשר אחר | להריץ `backfill_ledger.py` **תמיד** לפני live traffic ראשון בסביבה חדשה; לתעד את סדר הפעולות (מיגרציה → גיבוי → שרת) |
+| R-060-09 | ולידציית ה-backdating בודקת רק `deposit_date >= grant.grant_date` | ⚠️ אין אימות חיצוני לכלל הזה - זו הכרעת מערכת שמרנית (למנוע ניצול מוקדם של מסלול רווח הון), לא כלל מס מאומת. ראו החלטת האבטחה בתכנון v0.6.0 | אם יתגלה כלל רשמי אחר - לעדכן כאן ובקוד יחד |
+
+## (א) מקרי בדיקה — שלב 3
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-40 | ציר הזמן מחזיר אירועים בסדר, עם payload מפוענח | `GET /admin/ledger/Grant/{id}/events` | רשימת אירועים ממוינת; `payload` הוא `dict`, לא מחרוזת JSON גולמית | `test_timeline_returns_events_in_order_with_parsed_payload` |
+| QA-060-41 | `aggregate_type` לא מוכר נדחה | `GET .../ledger/NotAThing/{id}/events` | `400` · `Unsupported aggregate_type` | `test_timeline_rejects_unknown_aggregate_type` |
+| QA-060-42 | **IDOR חוצה-חברות נחסם** | אדמין של חברה B מבקש ציר זמן של מענק בחברה A | `403` | `test_timeline_blocks_cross_company_access` — **אומת גם ידנית בדפדפן** |
+| QA-060-43 | ישות שלא קיימת ב-`ledger_ownership` בכלל | `aggregate_id` שאינו קיים | `403`, לא `200` עם רשימה ריקה (כדי לא להבחין בין "קיים אבל לא שלי" ל"לא קיים") | `test_timeline_for_unknown_aggregate_id_is_also_blocked_not_leaked_as_empty` |
+| QA-060-44 | `as-of` בלי פרמטרים = המצב הנוכחי | `GET .../as-of` | תואם את `grant.trustee_deposit_date` בפועל | `test_as_of_with_no_params_returns_current_state` — **אומת בדפדפן** |
+| QA-060-45 | **דוגמה מחושבת ביד, חיה**: יום לפני הפקדה | `effective_date` יום לפני `trustee_deposit_date` | `trustee_deposit_date: null` | `test_as_of_effective_date_before_deposit_shows_no_deposit_yet` — **אומת בדפדפן**: 2021-01-20→`null` |
+| QA-060-46 | אותה דוגמה, ביום ההפקדה עצמו | `effective_date == trustee_deposit_date` | `trustee_deposit_date` מוצג | `test_as_of_effective_date_on_and_after_deposit_shows_it` — **אומת בדפדפן**: 2021-02-01→`"2021-02-01"` |
+| QA-060-47 | שאילתת ידיעה לפני שהמענק בכלל נוצר | `knowledge_date` 10 שנים אחורה | `state: null` — "אין נתון", לא מתחזה | `test_as_of_knowledge_date_before_backfill_or_creation_returns_no_data` — **אומת בדפדפן** |
+| QA-060-48 | `as-of` דוחה `aggregate_type` לא מוכר | כמו QA-060-41 | `400` | `test_as_of_rejects_unknown_aggregate_type` |
+| QA-060-49 | `as-of` חוסם חוצה-חברות | כמו QA-060-42 | `403` | `test_as_of_blocks_cross_company_access` |
+| QA-060-50 | **תיקון מ-change-reviewer**: תפקידי TRUSTEE/EMPLOYEE נחסמים בפועל מציר הזמן, לא רק לפי קריאת קוד | `GET .../events` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_timeline_rejects_non_admin_roles` (parametrized) |
+| QA-060-51 | אותו דבר עבור `as-of` | `GET .../as-of` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_as_of_rejects_non_admin_roles` (parametrized) |
+| QA-060-52 | **תיקון באג אמיתי מ-change-reviewer**: `aggregate_type` לא תואם ל-`aggregate_type` האמיתי שנשמר, אותה חברה | מענק אמיתי (aggregate_type="Grant") מבוקש דרך `GET /admin/ledger/Employee/{grant_id}/events` | `403` — לא עובר בשקט מול פרויקטור לא נכון | `test_timeline_rejects_mismatched_aggregate_type_even_same_company` |
+| QA-060-53 | אותו דבר עבור `as-of` | כמו QA-060-52, על `/as-of` | `403` | `test_as_of_rejects_mismatched_aggregate_type_even_same_company` |
+
+## (ב) אזורי סיכון — שלב 3
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-10 | ~~אימות ההרשאה במסכי v0.6.0 בדק רק `company_id`, לא `aggregate_type`~~ **נסגר** | `_assert_ledger_ownership` עבר דרך `LedgerOwnership` (לא `project()`) מההתחלה - זו הייתה ההגנה הנכונה מפני IDOR. אבל **נמצא ב-change-reviewer**: מזהה תקין של ישות אחת (למשל מענק) עם `aggregate_type` של ישות אחרת מאותה חברה היה עובר את הבדיקה ומופעל מול הפרויקטור הלא נכון. תוקן: הבדיקה כוללת עכשיו גם `ownership.aggregate_type == aggregate_type` | QA-060-52/53 הן בדיקות הרגרסיה |
+| R-060-11 | ה-UI מציג `payload` גולמי (JSON) בציר הזמן, לא מנוסח לפי סוג אירוע | מספיק לשלב 3 (שקוף, אמין) אבל לא "יפה" - שיפור עתידי אפשרי, לא חוסם | אין השפעה על נכונות, רק על חוויית משתמש |
+| R-060-12 | `knowledge_date` מהדפדפן מגיע כ-`type="date"` (יום בלבד), בלי שעה | תואם למה שה-API כבר תומך בו (Pydantic הופך תאריך בלי שעה לחצות), אבל מגביל את הדיוק שהמשתמש יכול לבדוק בו דרך ה-UI ל-24 שעות | אם יידרש דיוק לשעה - להוסיף שדה שעה נפרד, לא לשנות את ה-API |
+
+## (א) מקרי בדיקה — שלב 4
+
+הקפאת הבשלה נרשמת כפעולה **רטרוספקטיבית אחת** (`start_date`+`end_date` ידועים
+יחד) ולא כמצב "פתוח"/"סגור" בשני שלבים - שום דבר אחר במערכת לא עוקב אחרי
+תקופת חופשה שעדיין לא נסגרה, בדיוק כמו `trustee_deposit_date` (גם הוא נרשם
+בדיעבד). ראו GOAL.md: לא בונים state בלי צרכן.
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-060-60 | רישום הקפאה מוסיף אירוע ומעדכן עמודה | `POST /admin/grants/{id}/vesting-pause` | `VESTING_PAUSE_RECORDED` אחד; `schedule.paused_days_total` == `days_added`; `project()` תואם לעמודה | `test_recording_a_pause_appends_event_and_updates_column` — **אומת גם בדפדפן**: G-2021-001, 2021-03-01→2021-04-30 (60 יום), טוסט הצגה נכון |
+| QA-060-61 | שתי הקפאות לא-חופפות מצטברות | שתי קריאות רצופות | `paused_days_total` השני == סכום שני ה-`days_added` | `test_two_non_overlapping_pauses_accumulate` |
+| QA-060-62 | `end_date <= start_date` נדחה | `end_date` לפני/שווה ל-`start_date` | `400` · `"end_date must be after start_date"` | `test_end_date_before_start_date_is_rejected` |
+| QA-060-63 | הקפאה באורך אפס (אותו תאריך) נדחית | `start_date == end_date` | `400` | `test_zero_length_pause_is_rejected` |
+| QA-060-64 | חפיפה עם הקפאה קיימת נחסמת | תקופה שנייה חופפת לראשונה | `400` · `"Overlaps an existing pause period..."`; **אין** אירוע נוסף נכתב (הבדיקה לפני הכתיבה, לא אחריה) | `test_overlapping_pause_period_is_rejected` |
+| QA-060-65 | גבול הבדיקה: תקופה **צמודה** (לא חופפת בפועל) מותרת | תקופה שנייה מתחילה בדיוק ביום שהראשונה נגמרת | `200` | `test_adjacent_non_overlapping_pause_is_allowed` |
+| QA-060-66 | מענק בלי לוח הבשלה בכלל | לוח הבשלה נמחק ידנית לפני הקריאה | `409` | `test_grant_without_vesting_schedule_returns_409` |
+| QA-060-67 | **IDOR חוצה-חברות נחסם** | אדמין של חברה B מנסה להקפיא מענק בחברה A | `403` | `test_cross_company_grant_is_blocked` |
+| QA-060-68 | מענק לא קיים | `grant_id` שאינו קיים | `404` | `test_unknown_grant_returns_404` |
+| QA-060-69 | **החישוב בפועל משתנה, לא רק העמודה** | הקפאה של 60 יום נרשמת, ואז `DeterministicESOPEngine.calculate_vested_options` נקרא שוב לאותו תאריך בדיקה | ההבשלה המחושבת **קטנה** אחרי ההקפאה (ה-cliff נדחה) - לא בדיקת מתמטיקה חדשה, רק שהעמודה שה-endpoint מעדכן היא בדיוק מה שהמנוע הקיים כבר קורא | `test_pause_actually_shifts_the_cliff_in_the_existing_engine` |
+| QA-060-70 | **תיקון מ-change-reviewer**: תפקידי TRUSTEE/EMPLOYEE נחסמים בפועל מהקפאת הבשלה, לא רק לפי קריאת קוד | `POST /vesting-pause` עם טוקן TRUSTEE ואז EMPLOYEE | `403` בשני המקרים | `test_non_admin_roles_are_rejected` (parametrized) |
+
+## (ב) אזורי סיכון — שלב 4
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-060-13 | חפיפה נבדקת רק מול הקפאות **קיימות באותו לוח הבשלה**, לא מול טווחי תאריכים אחרים על אותו עובד/מענק | `events_for(db, schedule.schedule_id)` מסונן לפי `aggregate_id` יחיד - זה בדיוק ההיקף הנכון (הקפאה שייכת ללוח הבשלה אחד), לא באג | אם אי-פעם יתווסף מושג "הקפאה חוצת-מענקים" לאותו עובד - זו נקודת ההרחבה |
+| R-060-14 | אין הגבלה עסקית על סך ימי ההקפאה המצטברים (`paused_days_total`) ביחס לאורך לוח ההבשלה כולו | הכרעת מערכת שמרנית: המנוע הדטרמיניסטי כבר מטפל נכון בכל ערך חיובי (דוחה את ה-cliff/ההבשלה בהתאם), ואין כלל מס שמגביל את זה - לא הומצא כלל שלא קיים | אם יתגלה כלל רשמי (למשל תקרת חופשה מוכרת) - להוסיף ולידציה כאן ובקוד יחד |
+| R-060-15 | ה-endpoint לא מייצר `POOL_UNVEST_RETURNED` או משנה יתרות פול | נכון בכוונה: הקפאה רק דוחה את לוח הזמנים, לא מבטלת אופציות שכבר הוקצו - שונה במהותו מעזיבת עובד (QA-060-23) | אין השפעה על יתרת הפול; אם ההנחה הזו תשתנה בעתיד (למשל הקפאה ארוכה מספיק שמבטלת חלק מהמענק) - זו החלטת מוצר חדשה, לא הרחבה טכנית |
+| R-060-16 | ~~UI: `LEDGER_EVENT_LABELS` הציג מחרוזת גולמית `VESTING_PAUSE_RECORDED` במקום תווית עברית~~ **נסגר** | המפה עדיין הכילה את שני המפתחות הישנים `VESTING_PAUSE_STARTED`/`VESTING_PAUSE_ENDED` מהתכנון הדו-שלבי שנדחה בתכנון שלב 4, בלי מפתח לאירוע היחיד שבאמת נכתב - **נמצא ב-change-reviewer**, לא בבדיקה אוטומטית (זה UI טקסטואלי בלבד) | תוקן ל-`VESTING_PAUSE_RECORDED: "הקפאת הבשלה נרשמה"`; אין בדיקה אוטומטית לתוכן התווית (ראו R-060-11) |
 
 ---
 
