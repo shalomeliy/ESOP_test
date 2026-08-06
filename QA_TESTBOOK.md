@@ -52,6 +52,65 @@ python -m uvicorn backend.app.main:app --port 8001
 
 ---
 
+# v0.7.0 — כללי מס כדאטה, עם כשל מפורש (שלבים 1–2 מתוך 2 — הושלם)
+
+**מטרה:** אף חישוב מס לא מסתמך על שיטת חישוב שמקודדת ב-`if` בקוד, וחישוב
+שלא נמצא לו כלל מתאים נכשל בגלוי במקום לנחש שיעור. קריטריון 5 ב-`GOAL.md`.
+**היקף מוצהר (הוחלט בתכנון)**: רק המנוע והדאטה — לא מסך admin לניהול חבילות
+כללים (זה שטח עבודה נפרד, בכוונה נדחה לגרסה עתידית). שלב 1: טבלת `TaxRulePack`
+חדשה, מיגרציה, גיבוי חד-פעמי, ואילוצי ייחוד חדשים. **שלב 2**: חיווט
+`tax_engine.py` לקריאת `TaxRulePack` במקום ה-`if` הקשיח, הסרת ה-fallback
+השקט, ומיפוי הכישלון ל-409 (בדיוק דפוס `MissingVestingScheduleError` הקיים).
+
+## (א) מקרי בדיקה — שלב 1
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-070-01 | יצירת `TaxRulePack` עם השדות הצפויים | שורה חדשה עם `calculation_method="FLAT_RATE"` | `pack_id` מוקצה; השדות נשמרים | `test_tax_rule_pack_created_with_expected_fields` |
+| QA-070-02 | אילוץ ייחוד על `tax_rule_packs` עצמה | שתי שורות עם אותה שלישייה | `IntegrityError` | `test_duplicate_tax_rule_pack_same_key_is_rejected` |
+| QA-070-03 | **תיקון פער אמיתי**: אילוץ ייחוד חדש על `TaxRatesHistory` | שתי שורות עם אותה שלישייה | `IntegrityError` — לפני הגרסה הזו זה היה מתקבל בשקט ויוצר בחירה לא-דטרמיניסטית ב-`.order_by().first()` | `test_duplicate_tax_rates_history_same_key_is_rejected` |
+| QA-070-04 | אותו דבר על `IncomeTaxBracket` (כולל `bracket_order`) | שתי שורות עם אותה רביעייה | `IntegrityError` | `test_duplicate_income_tax_bracket_same_key_and_order_is_rejected` |
+| QA-070-05 | גבול הבדיקה: מדרגות לגיטימיות (`bracket_order` שונה) לאותה גרסה מותרות | שתי מדרגות, `bracket_order` 0 ו-1 | לא נזרקת שגיאה | `test_same_version_different_bracket_order_is_allowed` |
+| QA-070-06 | גיבוי יוצר pack אחד לכל גרסת שיעור שטוח | שתי שורות `TaxRatesHistory` בתאריכים שונים | 2 packs, כל שורה מקושרת ל-pack שלה | `test_backfill_creates_one_pack_per_flat_rate_version` |
+| QA-070-07 | גיבוי: כל המדרגות של אותה גרסה חולקות pack אחד | שתי מדרגות (`bracket_order` 0,1) לאותו תאריך תוקף | pack אחד בלבד; שתי השורות מקושרות אליו | `test_backfill_creates_one_pack_per_progressive_version_shared_across_brackets` |
+| QA-070-08 | **הכרעה מפורשת מהתכנון**: מקור החבילה בגיבוי הוא `official_source_url` של `bracket_order=0` | שתי מדרגות עם `source_url` שונה במכוון | pack מקבל את המקור של `bracket_order=0` — תואם למה ש-`tax_engine.py` הקיים כבר קורא, לא "תיקון" חוסר עקביות בשקט | `test_backfill_uses_bracket_order_zero_source_url_as_the_packs_source` |
+
+## (ב) אזורי סיכון — שלב 1
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-070-01 | `calculation_method` על `TaxRulePack` הוא `String` חופשי, לא נאכף ברמת ה-DB מול `TAX_CALCULATION_METHODS` | בכוונה (כמו `LEDGER_EVENT_TYPES`) — אבל בלי מסך admin בגרסה הזו, השורה היחידה שכותבת ערך היא קוד מבוקר (`seed_data.py`/`backfill_tax_rule_packs.py`), לא קלט חיצוני | שלב 2 (מנוע) צריך לוודא/לזרוק אם `calculation_method` לא ב-`TAX_CALCULATION_METHODS` בזמן קריאה, לא רק בזמן כתיבה |
+| R-070-02 | `pack_id` על `TaxRatesHistory`/`IncomeTaxBracket` נשאר `nullable=True` | תוספתי בכוונה — לא לשבור שורות קיימות שטרם עברו גיבוי; לא הופך ל-`NOT NULL` בגרסה הזו | לפני שלב 2 סוגר, לוודא שכל שורה חיה עברה גיבוי (`backfill_tax_rule_packs.py` רץ) - אחרת מנוע שקורא רק לפי `pack_id` יפספס שורות ישנות |
+| R-070-03 | הגיבוי לא מטפל בחוסר-עקביות אמיתי ב-`official_source_url` בין מדרגות של אותה גרסה — רק בוחר את `bracket_order=0` ומתעלם מהשאר | תואם התנהגות קיימת (`_calculate_progressive` תמיד קרא רק את זה), לא רגרסיה - אבל גם לא תיקון | אם אי-פעם יידרש לאכוף עקביות מקור בין מדרגות אותה גרסה - זו נקודת הבדיקה, לא הנחה שקטה |
+
+## (א) מקרי בדיקה — שלב 2
+
+| מזהה | מה בודקים | איך | תוצאה צפויה | כיסוי |
+|---|---|---|---|---|
+| QA-070-09 | שיעור שטוח נבחר לפי הגרסה שהייתה בתוקף בתאריך המימוש | מימוש ב-2023-06-01 מול גרסאות 2020/2024 | `FLAT_RATE`, `25,000`, `table_effective_date=2020-01-01` | `test_flat_rate_uses_the_version_in_force_on_the_exercise_date` |
+| QA-070-10 | מעבר לגרסה חדשה אחרי שנכנסה לתוקף | מימוש ב-2024-06-01 | `FLAT_RATE`, `28,000`, `table_effective_date=2024-01-01` | `test_flat_rate_switches_to_the_newer_version_after_it_takes_effect` |
+| QA-070-11 | **הסרת ה-fallback**: שילוב שמעולם לא נבנה | `calculate_tax` על DB ריק | `MissingTaxRuleError`, `reason=NEVER_MODELED` — **מחליף** את הטסט הישן שציפה ל-fallback, זו החלטת התכנון המכוונת | `test_never_modeled_combination_raises_with_that_reason` |
+| QA-070-12 | תאריך מימוש לפני כל גרסה קיימת | תאריך 2019-12-31 מול גרסאות 2020/2024 | `MissingTaxRuleError`, `reason=NO_RULE_EFFECTIVE_AS_OF_DATE` — שונה מ-QA-070-11 (המסלול כן קיים) | `test_exercise_date_before_earliest_rule_raises_with_that_reason` |
+| QA-070-13 | **תיקון פער אמיתי בסקירה עצמית**: `calculation_method` לא-חוקי | pack עם `calculation_method="SOMETHING_ELSE"` | `MissingTaxRuleError`, `reason=INVALID_CALCULATION_METHOD` — לפני התיקון היה נופל בשקט למסלול השטוח כברירת מחדל | `test_invalid_calculation_method_raises_with_that_reason` |
+| QA-070-14 | pack קיים בלי שורת `TaxRatesHistory` תואמת (לא אמור לקרות, אבל לא קורס) | pack שטוח בלי שורת פירוט מקושרת | `MissingTaxRuleError`, `reason=PACK_HAS_NO_DETAIL_ROWS` | `test_pack_with_no_matching_flat_rate_row_raises_data_integrity_reason` |
+| QA-070-15 | אותו דבר עבור מדרגות | pack מדורג בלי שורות `IncomeTaxBracket` | `MissingTaxRuleError`, `reason=PACK_HAS_NO_DETAIL_ROWS` | `test_pack_with_no_matching_brackets_raises_data_integrity_reason` |
+| QA-070-16 | מדרגות מסתכמות נכון | רווח 50,000 על 3 מדרגות | `14,000`, שיעור אפקטיבי `0.28` | `test_progressive_brackets_sum_correctly` |
+| QA-070-17 | רווח אפס לא מתרסק (חילוק באפס) | רווח `0.0` | מס `0.0`, שיעור `0.0` | `test_progressive_zero_gain_is_zero_tax_and_no_division_by_zero` |
+| QA-070-18 | מסלול מדורג לא "נופל" למסלול שטוח גם כשקיים | שני הפאקים קיימים יחד | `method="PROGRESSIVE_BRACKETS"` | `test_progressive_grant_type_never_falls_through_to_flat` |
+| QA-070-19 | **קריטריון קבלה מכריע (רגרסיה מלאה)**: כל שילוב (מדינה, סוג מענק, תאריך) אמיתי מהדאטה החי | סקריפט חד-פעמי משווה בחירת גרסה בין הלוגיקה הישנה (משוחזרת) לחדשה, על 82 שילובים אמיתיים × 3 תאריכים = 246 בדיקות | 0 אי-התאמות; 36 מקרים שבהם שתיהן מסכימות "אין גרסה" | אומת ידנית מול עותק של `esop_database.db`, לא נכנס ל-pytest (חד-פעמי) |
+| QA-070-20 | אימות HTTP חי: מימוש מוצלח מחזיר `tax_rule_pack_id` | `POST /employee/simulate-exercise`, תאריך עם כלל | `200`, `tax_rule_pack_id` מאוכלס, `audit_log` שורת `SIMULATE` עם `tax_rule_pack_id` | אומת ידנית מול סנדבוקס |
+| QA-070-21 | אימות HTTP חי: אין כלל → 409 עם הודעה עניינית | תאריך 2015-01-01, לפני כל גרסה | `409` · `"No tax rule found for IL/IL_102_CAPITAL_GAINS as of 2015-01-01..."`; `audit_log` שורת `SIMULATE_FAILED` עם `reason` | אומת ידנית מול סנדבוקס |
+
+## (ב) אזורי סיכון — שלב 2
+
+| מזהה | הסיכון | למה | מה לבדוק |
+|---|---|---|---|
+| R-070-04 | **תיקון R-070-01 מהתכנון**: `calculation_method` נבדק עכשיו מול `TAX_CALCULATION_METHODS` בזמן קריאה | לפני התיקון, ערך לא-מוכר היה נופל בשקט למסלול `FLAT_RATE` (כברירת מחדל של `if/else`) - בדיוק סוג הבאג ש-v0.7.0 כולו נועד למנוע | `test_invalid_calculation_method_raises_with_that_reason` (QA-070-13) הוא בדיקת הרגרסיה |
+| R-070-05 | שני `reason` שונים (`NEVER_MODELED`/`NO_RULE_EFFECTIVE_AS_OF_DATE`) מוחזרים כ-409 זהה ללקוח, ההבחנה חיה רק ב-`audit_log` | החלטת תכנון מפורשת (architecture+QA): שתי הסיבות דורשות מהעובד את אותה פעולה בפועל (לפנות למנהל) - אין ערך UX בפיצול קוד HTTP, יש ערך ל-triage פנימי | אם אי-פעם יידרש למנהל להבחין ביניהן ב-UI (לא רק ב-audit) - זו נקודת ההרחבה, לא הנחה קיימת |
+| R-070-06 | `PACK_HAS_NO_DETAIL_ROWS`/`INVALID_CALCULATION_METHOD` מטופלים כ-409 בדיוק כמו "אין כלל בכלל", לא כשגיאת מערכת (500) | הכרעה מכוונת: אלה לא אמורים לקרות בפועל (seed/backfill תמיד כותבים pack+פירוט יחד, לא מסך admin שיכול ליצור אי-עקביות) - אבל אם בכל זאת יקרו, 409 עדיין נכון יותר מקריסה | אם בעתיד תיפתח יכולת כתיבה חופשית (מסך admin, שלא בהיקף v0.7.0) - להפריד את הקודים האלה מ"אין כלל" האמיתי |
+
+---
+
 # v0.6.0 — Ledger מבוסס-אירועים ושחזור בי-טמפורלי (שלבים 1–4 מתוך 4 — הושלם)
 
 **מטרה:** מצב עסקי הופך מ"שדה שמישהו עורך" ל*תוצר חישוב* מרצף אירועים

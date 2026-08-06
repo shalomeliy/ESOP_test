@@ -107,6 +107,35 @@ class VestingSchedule(Base):
 
     grant = relationship("Grant", back_populates="vesting_schedule")
 
+# סוגי שיטת חישוב אפשריים על TaxRulePack.calculation_method - String רגיל (לא
+# SQLEnum), כמו LEDGER_EVENT_TYPES: אוצר מילים סגור שנבדק באפליקציה, לא באילוץ DB.
+TAX_CALCULATION_METHODS = {"FLAT_RATE", "PROGRESSIVE_BRACKETS"}
+
+
+class TaxRulePack(Base):
+    # "כותרת" חדשה (v0.7.0) שמוציאה את שיטת החישוב (שטוח מול מדורג) מ-if קשיח
+    # ב-tax_engine.py אל תוך דאטה - זה בדיוק הפער בין "יש דאטה עם תאריך תוקף"
+    # (כבר היה קיים) לבין "אין אף כלל מקודד בקוד" (עדיין לא היה, עד עכשיו).
+    # calculation_method נשאר בכל זאת עובדה מבנית לא-ניתנת לעריכה חופשית: הגרסה
+    # הזו לא בונה מסך admin לניהול חבילות - השורות היחידות שנכתבות הן מגיבוי
+    # חד-פעמי (backfill_tax_rule_packs.py) ומ-seed_data.py, בדיוק כמו הטבלאות
+    # הקיימות. ראו אזהרת מומחה המס בתכנון: שיוך שגוי של שיטה למסלול (למשל
+    # מדרגות על מסלול רווח הון) הוא סיכון תוכן-מס, לא רק סיכון טכני.
+    __tablename__ = "tax_rule_packs"
+    pack_id = Column(String, primary_key=True, default=generate_uuid)
+    country_code = Column(String, nullable=False, index=True)
+    grant_type = Column(String, nullable=False, index=True)
+    effective_start_date = Column(Date, nullable=False)
+    calculation_method = Column(String, nullable=False)
+    official_source_url = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("country_code", "grant_type", "effective_start_date",
+                         name="uq_tax_rule_packs_country_type_date"),
+    )
+
+
 class TaxRatesHistory(Base):
     __tablename__ = "tax_rates_history"
     tax_rule_id = Column(String, primary_key=True, default=generate_uuid)
@@ -115,6 +144,18 @@ class TaxRatesHistory(Base):
     effective_start_date = Column(Date, nullable=False)
     capital_gains_rate = Column(Float, nullable=False)
     official_source_url = Column(String, nullable=False)
+    # nullable בכוונה: מתמלא ע"י backfill חד-פעמי על שורות קיימות, לא שדה
+    # שנדרש בזמן יצירה - ראו backfill_tax_rule_packs.py.
+    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True)
+
+    __table_args__ = (
+        # נמצא בתכנון v0.7.0: בלי האילוץ הזה, שתי שורות עם אותו תאריך תוקף
+        # היו מתחרות על .order_by(...).first() בלי סדר מובטח - בחירה לא
+        # דטרמיניסטית בחישוב מס בפועל.
+        UniqueConstraint("country_code", "grant_type", "effective_start_date",
+                         name="uq_tax_rates_history_country_type_date"),
+    )
+
 
 class IncomeTaxBracket(Base):
     # מדרגות מס פרוגרסיביות, versioned לפי (country_code, grant_type,
@@ -132,6 +173,15 @@ class IncomeTaxBracket(Base):
     max_amount = Column(Float, nullable=True)
     rate = Column(Float, nullable=False)
     official_source_url = Column(String, nullable=False)
+    pack_id = Column(String, ForeignKey("tax_rule_packs.pack_id"), nullable=True)
+
+    __table_args__ = (
+        # ייחוד על בכל המפתח כולל bracket_order (לא רק השלישייה): שורות רבות
+        # שייכות בכוונה לאותה גרסה (מדרגה 1, 2, 3...) - האילוץ מונע רק "גרסה
+        # כפולה" (אותה מדרגה פעמיים לאותה שלישייה), לא חוסם מדרגות לגיטימיות.
+        UniqueConstraint("country_code", "grant_type", "effective_start_date", "bracket_order",
+                         name="uq_income_tax_brackets_country_type_date_order"),
+    )
 
 class StockPricesHistory(Base):
     __tablename__ = "stock_prices_history"

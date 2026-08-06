@@ -28,7 +28,7 @@ from backend.app.schemas import (
 from backend.app.services.engine import (
     DeterministicESOPEngine, MissingVestingScheduleError, shift_months,
 )
-from backend.app.services.tax_engine import TaxCalculationEngine
+from backend.app.services.tax_engine import TaxCalculationEngine, MissingTaxRuleError
 from backend.app.services.search_engine import SearchEngine
 from backend.app.services import notifications as notif
 from backend.app.services.audit import record_audit_event
@@ -1075,10 +1075,28 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
     total_cost = payload.options_to_exercise * grant.exercise_price
     gain = max(0.0, (stock_price - grant.exercise_price) * payload.options_to_exercise)
 
-    tax_result = TaxCalculationEngine.calculate_tax(
-        db, grant.employee.country_code, grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type,
-        payload.exercise_date, gain,
-    )
+    grant_type_value = grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type
+    try:
+        tax_result = TaxCalculationEngine.calculate_tax(
+            db, grant.employee.country_code, grant_type_value, payload.exercise_date, gain,
+        )
+    except MissingTaxRuleError as e:
+        # 409 ולא 500: זה לא קלט שגוי מהעובד, אלא נתון מס חסר שלא ניתן לגשר
+        # עליו בשקט - בדיוק אותו עיקרון כמו MissingVestingScheduleError.
+        # ה-reason (NEVER_MODELED / NO_RULE_EFFECTIVE_AS_OF_DATE /
+        # PACK_HAS_NO_DETAIL_ROWS) נשמר ב-audit לצורך triage, לא נחשף כקוד HTTP
+        # נפרד ללקוח - שני המצבים דורשים מהעובד את אותה פעולה (לפנות למנהל).
+        record_audit_event(
+            db, "TaxSimulation", grant.grant_id, "SIMULATE_FAILED", current_user.user_id,
+            after={"exercise_date": payload.exercise_date, "options_to_exercise": payload.options_to_exercise,
+                  "gain": gain, "reason": e.reason},
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=(f"No tax rule found for {grant.employee.country_code}/{grant_type_value} "
+                    f"as of {payload.exercise_date} - contact your plan administrator."),
+        )
 
     # רישום audit לכל סימולציה - כדי שאפשר יהיה לבדוק בדיעבד בדיוק לפי איזו
     # גרסת טבלת מס/מדרגות חושב סכום נתון (נדרש עבור תרחישי ביקורת עתידיים).
@@ -1088,7 +1106,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
             "exercise_date": payload.exercise_date, "options_to_exercise": payload.options_to_exercise,
             "gain": gain, "tax_method": tax_result.method, "tax_table_effective_date": tax_result.table_effective_date,
             "effective_rate": tax_result.effective_rate, "tax_amount": tax_result.tax_amount,
-            "source": tax_result.source_url,
+            "source": tax_result.source_url, "tax_rule_pack_id": tax_result.pack_id,
         },
     )
     db.commit()
@@ -1104,6 +1122,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
         tax_rule_source=tax_result.source_url,
         tax_calculation_method=tax_result.method,
         tax_table_effective_date=tax_result.table_effective_date,
+        tax_rule_pack_id=tax_result.pack_id,
         is_within_post_termination_window=is_within_ptw,
         post_termination_exercise_deadline=ptw_deadline,
     )

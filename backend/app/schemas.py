@@ -24,6 +24,9 @@ class ExerciseSimulationResponse(BaseModel):
     tax_rule_source: str
     tax_calculation_method: str
     tax_table_effective_date: Optional[date] = None
+    # v0.7.0: מזהה ה-TaxRulePack שהופעל בפועל - מאפשר לאתר בדיוק לפי איזו
+    # גרסת כלל חושב סכום נתון, בלי לשחזר את זה מ-3 שדות בנפרד.
+    tax_rule_pack_id: str
     is_within_post_termination_window: bool
     post_termination_exercise_deadline: Optional[date] = None
 
