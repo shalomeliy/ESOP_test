@@ -92,20 +92,21 @@ def _rtl(text: str) -> str:
     return get_display(text)
 
 
-def build_grant_letter(grant: Grant, employee: Employee, company: Company,
-                       trustee: Optional[Trustee], document_id: str, version: int) -> tuple[str, str]:
-    """בונה PDF כתב הענקה, שומר ל-document_store/, ומחזיר (נתיב יחסי, sha256).
+# הכיתוב שמופיע *בגוף כל PDF*, לא רק בהערת קוד: המסמך עצמו חייב להצהיר שאין לו
+# תוקף משפטי ושאין בו חתימה. אחרת עובד שמחזיק את הקובץ ביד לא יכול לדעת את זה.
+_NOT_BINDING_NOTICE = (
+    "This is an internally generated practice document (demo template, not reviewed legal "
+    "counsel content) and does not constitute a legally binding agreement or signature."
+)
+_ACKNOWLEDGMENT_NOTICE = (
+    "This document is generated for internal tracking only. Any acknowledgment recorded "
+    "against it is an internal record of receipt, not a legally binding signature."
+)
 
-    זורק MissingDocumentDataError אם אין ללוח הבשלה בכלל - כשל מפורש, לא
-    מסמך שמדלג בשקט על סעיף ההבשלה (החלטת התכנון v0.9.0, מקביל ל-
-    MissingVestingScheduleError)."""
-    schedule = grant.vesting_schedule
-    if not schedule:
-        raise MissingDocumentDataError(
-            f"Grant {grant.grant_id} has no vesting schedule - cannot generate a grant letter "
-            "without vesting terms. Attach a vesting schedule before generating this document."
-        )
 
+def _render_pdf(title: str, rows: list, document_id: str, version: int) -> tuple[str, str]:
+    """המרנדר המשותף לכל התבניות - כותרת, הצהרת אי-מחויבות, טבלת שדות, והצהרת
+    האישור. שלוש התבניות נבדלות רק בכותרת ובשורות, לא במבנה."""
     _ensure_store_dir()
     relative_path = f"{document_id}_v{version}.pdf"
     full_path = DOCUMENT_STORE_DIR / relative_path
@@ -118,33 +119,14 @@ def build_grant_letter(grant: Grant, employee: Employee, company: Company,
     styles = getSampleStyleSheet()
     for style_name in ("Title", "Italic", "Normal"):
         styles[style_name].fontName = font_name
-    story = []
 
-    story.append(Paragraph(f"Grant Letter — {_rtl(company.name)}", styles["Title"]))
-    story.append(Spacer(1, 0.5 * cm))
-    story.append(Paragraph(
-        "This is an internally generated practice document (demo template, not reviewed legal "
-        "counsel content) and does not constitute a legally binding agreement or signature.",
-        styles["Italic"],
-    ))
-    story.append(Spacer(1, 1 * cm))
-
-    employee_name = _rtl(f"{employee.first_name} {employee.last_name}")
-    trustee_name = _rtl(trustee.name) if trustee else "— none —"
-    rows = [
-        ["Employee", employee_name],
-        ["National ID", employee.national_id or "— not on file —"],
-        ["Company", _rtl(company.name)],
-        ["Grant ID", grant.grant_id],
-        ["Grant date", grant.grant_date.isoformat()],
-        ["Grant type", grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type],
-        ["Total options", f"{grant.total_options:,.2f}"],
-        ["Exercise price", f"{grant.exercise_price:,.2f} {grant.currency or ''}"],
-        ["Vesting start", schedule.start_date.isoformat()],
-        ["Cliff (months)", str(schedule.cliff_months)],
-        ["Total vesting (months)", str(schedule.total_months)],
-        ["Trustee", trustee_name],
+    story = [
+        Paragraph(title, styles["Title"]),
+        Spacer(1, 0.5 * cm),
+        Paragraph(_NOT_BINDING_NOTICE, styles["Italic"]),
+        Spacer(1, 1 * cm),
     ]
+
     table = Table(rows, colWidths=[6 * cm, 9 * cm])
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -155,14 +137,119 @@ def build_grant_letter(grant: Grant, employee: Employee, company: Company,
     ]))
     story.append(table)
     story.append(Spacer(1, 1 * cm))
-    story.append(Paragraph(
-        "This document is generated for internal tracking only. It carries no acknowledgment "
-        "of receipt until an explicit acknowledgment action is recorded in the system.",
-        styles["Normal"],
-    ))
+    story.append(Paragraph(_ACKNOWLEDGMENT_NOTICE, styles["Normal"]))
 
-    doc = SimpleDocTemplate(str(full_path), pagesize=A4)
-    doc.build(story)
+    SimpleDocTemplate(str(full_path), pagesize=A4).build(story)
+    return relative_path, _sha256_of_file(full_path)
 
-    file_hash = _sha256_of_file(full_path)
-    return relative_path, file_hash
+
+def _grant_type_value(grant: Grant) -> str:
+    return grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type
+
+
+def build_grant_letter(grant: Grant, employee: Employee, company: Company,
+                       trustee: Optional[Trustee], document_id: str, version: int) -> tuple[str, str]:
+    """כתב הענקה. זורק MissingDocumentDataError אם אין לוח הבשלה - כשל מפורש,
+    לא מסמך שמדלג בשקט על סעיף ההבשלה (מקביל ל-MissingVestingScheduleError)."""
+    schedule = grant.vesting_schedule
+    if not schedule:
+        raise MissingDocumentDataError(
+            f"Grant {grant.grant_id} has no vesting schedule - cannot generate a grant letter "
+            "without vesting terms. Attach a vesting schedule before generating this document."
+        )
+
+    rows = [
+        ["Employee", _rtl(f"{employee.first_name} {employee.last_name}")],
+        ["National ID", employee.national_id or "— not on file —"],
+        ["Company", _rtl(company.name)],
+        ["Grant ID", grant.grant_id],
+        ["Grant date", grant.grant_date.isoformat()],
+        ["Grant type", _grant_type_value(grant)],
+        ["Total options", f"{grant.total_options:,.2f}"],
+        ["Exercise price", f"{grant.exercise_price:,.2f} {grant.currency or ''}"],
+        ["Vesting start", schedule.start_date.isoformat()],
+        ["Cliff (months)", str(schedule.cliff_months)],
+        ["Total vesting (months)", str(schedule.total_months)],
+        ["Trustee", _rtl(trustee.name) if trustee else "— none —"],
+    ]
+    return _render_pdf(f"Grant Letter — {_rtl(company.name)}", rows, document_id, version)
+
+
+def build_section_102_appendix(grant: Grant, employee: Employee, company: Company,
+                               trustee: Optional[Trustee], document_id: str,
+                               version: int) -> tuple[str, str]:
+    """נספח 102 - *** תבנית דמו מסומנת, לא נוסח משפטי אמיתי ***.
+
+    ההחלטה המפורשת בתכנון v0.9.0: המערכת לא מנסחת תוכן משפטי אמיתי (אותו כלל
+    כמו "לא ממציאים כלל מס"). התבנית מציגה את *הנתונים* של המסלול מתוך המענק,
+    ולא טוענת לנוסח סטטוטורי - ראו _NOT_BINDING_NOTICE שמופיע בגוף המסמך.
+
+    חסום למסלולים שאינם 102: נספח 102 לא חל על US_ISO/US_NSO. זו לא הכרעת מס
+    חדשה - זו פשוט אי-תחולה של מסמך ישראלי על מסלול אמריקאי."""
+    grant_type = _grant_type_value(grant)
+    if not grant_type.startswith("IL_102"):
+        raise MissingDocumentDataError(
+            f"Grant {grant.grant_id} is {grant_type} - a Section 102 appendix applies only to "
+            "Israeli Section 102 tracks (IL_102_CAPITAL_GAINS / IL_102_WORK_INCOME)."
+        )
+    if not trustee:
+        raise MissingDocumentDataError(
+            f"Grant {grant.grant_id} has no trustee - a Section 102 track is held in trust, "
+            "so this appendix cannot be generated without one."
+        )
+
+    rows = [
+        ["Employee", _rtl(f"{employee.first_name} {employee.last_name}")],
+        ["National ID", employee.national_id or "— not on file —"],
+        ["Company", _rtl(company.name)],
+        ["Grant ID", grant.grant_id],
+        ["Section 102 track", grant_type],
+        ["Grant date", grant.grant_date.isoformat()],
+        ["Total options", f"{grant.total_options:,.2f}"],
+        ["Trustee", _rtl(trustee.name)],
+        ["Trustee registration no.", trustee.registration_number],
+        ["Trustee deposit date", grant.trustee_deposit_date.isoformat()
+                                 if grant.trustee_deposit_date else "— not yet deposited —"],
+    ]
+    return _render_pdf("Section 102 Appendix (DEMO TEMPLATE — NOT REAL LEGAL TEXT)",
+                       rows, document_id, version)
+
+
+def build_trustee_deposit_confirmation(grant: Grant, employee: Employee, company: Company,
+                                       trustee: Optional[Trustee], document_id: str,
+                                       version: int) -> tuple[str, str]:
+    """אישור הפקדה בנאמנות. דורש נאמן *וגם* תאריך הפקדה בפועל - אישור על הפקדה
+    שלא קרתה הוא בדיוק סוג המסמך המטעה שאסור לייצר בשקט."""
+    if not trustee:
+        raise MissingDocumentDataError(
+            f"Grant {grant.grant_id} has no trustee - cannot confirm a trustee deposit."
+        )
+    if not grant.trustee_deposit_date:
+        raise MissingDocumentDataError(
+            f"Grant {grant.grant_id} has no trustee deposit date on record - cannot confirm a "
+            "deposit that has not been recorded. Confirm the deposit before generating this document."
+        )
+
+    rows = [
+        ["Employee", _rtl(f"{employee.first_name} {employee.last_name}")],
+        ["National ID", employee.national_id or "— not on file —"],
+        ["Company", _rtl(company.name)],
+        ["Grant ID", grant.grant_id],
+        ["Grant type", _grant_type_value(grant)],
+        ["Grant date", grant.grant_date.isoformat()],
+        ["Total options deposited", f"{grant.total_options:,.2f}"],
+        ["Trustee", _rtl(trustee.name)],
+        ["Trustee registration no.", trustee.registration_number],
+        ["Deposit date", grant.trustee_deposit_date.isoformat()],
+    ]
+    return _render_pdf(f"Trustee Deposit Confirmation — {_rtl(trustee.name)}",
+                       rows, document_id, version)
+
+
+# מיפוי סוג תבנית -> בונה. כל הבונים חולקים אותה חתימה בדיוק, כדי ש-routes.py
+# יקרא להם בלי if/elif שגדל עם כל תבנית חדשה.
+TEMPLATE_BUILDERS = {
+    "GRANT_LETTER": build_grant_letter,
+    "SECTION_102_APPENDIX": build_section_102_appendix,
+    "TRUSTEE_DEPOSIT_CONFIRMATION": build_trustee_deposit_confirmation,
+}
