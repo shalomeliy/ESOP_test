@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "uvicorn", "backend.app.main:app", "--reload"],
       "port": 8000
+    },
+    {
+      "name": "esop-api-sandbox",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "tools.run_sandbox", "--port", "8001"],
+      "port": 8001
     }
   ]
 }

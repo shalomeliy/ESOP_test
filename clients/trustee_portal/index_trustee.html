@@ -53,6 +53,7 @@
                 <nav class="p-4 space-y-2">
                     <button onclick="switchTab('portfolio')" id="nav-portfolio" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-folder-open"></i> תיק עבודה (כל החברות)</button>
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-hand-holding-dollar"></i> בקשות מימוש</button>
+                    <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-file-pdf"></i> מסמכים ממתינים</button>
                 </nav>
             </div>
             <div class="p-4 border-t border-slate-800">
@@ -141,6 +142,34 @@
                     </table>
                 </div>
             </section>
+
+            <!-- DOCUMENTS (v0.9.0 שלב 3) -->
+            <!-- *** אישור קבלה, לא חתימה *** - ראו clients/shared/documents.js.
+                 התור מציג רק מסמכים שנשלחו בפועל, ורק על מענקים שהנאמן הזה מחזיק. -->
+            <section id="tab-documents" class="tab-content space-y-6">
+                <div>
+                    <h3 class="text-lg font-bold text-white">מסמכים הממתינים לאישור קבלה</h3>
+                    <p class="text-xs text-slate-500 mt-1">
+                        אישור קבלה הוא רישום פנימי בלבד — <strong class="text-slate-400">אינו חתימה</strong>
+                        ואינו מסמך בעל תוקף משפטי מחייב. מסמך שאושר או נדחה יוצא מהתור.
+                    </p>
+                </div>
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="pb-3 font-semibold">עובד</th>
+                                <th class="pb-3 font-semibold">מענק</th>
+                                <th class="pb-3 font-semibold">סוג מסמך</th>
+                                <th class="pb-3 font-semibold">גרסה</th>
+                                <th class="pb-3 font-semibold">נשלח</th>
+                                <th class="pb-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pending-documents-body" class="divide-y divide-slate-800/50"></tbody>
+                    </table>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -160,8 +189,14 @@
     </div>
 
     <script src="../shared/notifications.js"></script>
+    <script src="../shared/documents.js"></script>
     <script>
-        const API = "http://127.0.0.1:8000/api/v1";
+        // כתובת ה-API נגזרת מהמקור שממנו הדף הוגש, כדי שהרצת סנדבוקס על פורט
+        // אחר (ESOP_DATABASE_URL + --port 8001, ראו QA_TESTBOOK.md) תפנה באמת
+        // לסנדבוקס. כתובת קשיחה שלחה כל בדיקה ידנית ל-DB החי בלי להודיע.
+        // file:// נשאר על 8000 - שם אין origin לגזור ממנו.
+        const API = (location.origin && location.protocol.startsWith("http")
+                     ? location.origin : "http://127.0.0.1:8000") + "/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_trustee_session") || "null");
         let portfolioData = [];
 
@@ -225,10 +260,12 @@
             const btn = document.getElementById(`nav-${tabId}`);
             btn.classList.add("bg-purple-600", "text-white");
             btn.classList.remove("text-slate-400");
-            document.getElementById("page-title").textContent = tabId === "portfolio" ? "תיק עבודה" : "בקשות מימוש";
+            document.getElementById("page-title").textContent =
+                tabId === "portfolio" ? "תיק עבודה" : tabId === "documents" ? "מסמכים ממתינים" : "בקשות מימוש";
 
             if (tabId === "portfolio") loadPortfolio();
             if (tabId === "requests") loadRequests();
+            if (tabId === "documents") loadPendingDocuments();
         }
 
         async function apiGet(path) {
@@ -291,7 +328,7 @@
                 html += `
                     <tr class="bg-slate-900/60">
                         <td colspan="9" class="py-2 px-1 font-bold text-purple-300 text-sm">
-                            <i class="fa-solid fa-building"></i> ${comp.name} <span class="text-slate-600 font-mono text-xs">(${comp.id})</span>
+                            <i class="fa-solid fa-building"></i> ${ESOPDocuments.escapeHtml(comp.name)} <span class="text-slate-600 font-mono text-xs">(${ESOPDocuments.escapeHtml(comp.id)})</span>
                             <span class="text-slate-400 font-normal text-xs">- ${comp.grants.length} מענקים | סה"כ ${totalOptions.toLocaleString()} | הבשילו ${vestedOptions.toLocaleString()}${
                                 missingCount ? ` | <span class="text-amber-400">${missingCount} ללא נתוני הבשלה</span>` : ""}</span>
                         </td>
@@ -299,9 +336,14 @@
                 `;
                 html += comp.grants.map(g => `
                     <tr class="hover:bg-slate-800/30">
-                        <td class="py-3 text-slate-300">${g.company_name || "-"}</td>
-                        <td class="py-3 text-white">${g.employee_name || "-"}</td>
-                        <td class="py-3 font-mono text-xs text-slate-400">${g.grant_id}</td>
+                        <!-- *** נמצא באימות שלב 3 ***: שם עובד ושם חברה הם טקסט חופשי
+                             שאדמין של חברה מקליד, והם נכנסים ל-innerHTML בסשן של
+                             *הנאמן* - גורם אחר, שמחזיק טוקן ב-localStorage. הזרקת
+                             <img onerror> לשם עובד הרצה קוד כאן בפועל. כל שדה טקסטואלי
+                             מה-DB עובר escapeHtml; grant_id נשאר כמו שהוא (מזהה, לא טקסט חופשי). -->
+                        <td class="py-3 text-slate-300">${ESOPDocuments.orDash(g.company_name)}</td>
+                        <td class="py-3 text-white">${ESOPDocuments.orDash(g.employee_name)}</td>
+                        <td class="py-3 font-mono text-xs text-slate-400">${ESOPDocuments.escapeHtml(g.grant_id)}</td>
                         <td class="py-3">${g.total_options.toLocaleString()}</td>
                         <td class="py-3 ${g.vesting_data_missing ? "text-amber-400" : "text-emerald-400"}">${
                             g.vesting_data_missing ? "נתונים חסרים" : g.vested_options.toLocaleString()}</td>
@@ -395,6 +437,69 @@
 
         // חיפוש חופשי - debounce קצר כדי לא לירות בקשה על כל תו
         let searchTimer = null;
+        // --- מסמכים ממתינים (v0.9.0 שלב 3) ------------------------------
+        // *** אישור קבלה, לא חתימה *** - ראו clients/shared/documents.js.
+
+        async function loadPendingDocuments() {
+            const tbody = document.getElementById("pending-documents-body");
+            tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">טוען...</td></tr>`;
+            try {
+                const docs = await apiGet("/trustee/documents/pending");
+                tbody.innerHTML = docs.map(d => `
+                    <tr class="hover:bg-slate-800/30">
+                        <td class="py-3 text-white">${ESOPDocuments.orDash(d.employee_name)}</td>
+                        <td class="py-3 text-slate-400 text-xs">
+                            ${ESOPDocuments.orDash(d.grant_date)}
+                            <span class="block font-mono text-[10px] text-slate-600">${d.grant_id.slice(0, 8)}...</span>
+                        </td>
+                        <td class="py-3 text-xs">${ESOPDocuments.templateLabel(d.template_type)}</td>
+                        <td class="py-3 text-slate-400 text-xs">v${d.version}</td>
+                        <td class="py-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.sent_at)}</td>
+                        <td class="py-3 whitespace-nowrap">
+                            <button onclick="downloadPendingDocument('${d.document_id}')" class="text-purple-400 hover:text-purple-300 text-xs"><i class="fa-solid fa-download"></i> הורדה</button>
+                            <button onclick="decidePendingDocument('${d.document_id}', 'acknowledge')" class="text-emerald-400 hover:text-emerald-300 text-xs mr-3"><i class="fa-solid fa-check"></i> אישור קבלה</button>
+                            <button onclick="decidePendingDocument('${d.document_id}', 'decline')" class="text-rose-400 hover:text-rose-300 text-xs mr-3"><i class="fa-solid fa-xmark"></i> דחייה</button>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="6" class="py-4 text-center text-slate-500">אין מסמכים הממתינים לאישורך</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        async function downloadPendingDocument(documentId) {
+            try {
+                const docs = await apiGet("/trustee/documents/pending");
+                const doc = docs.find(d => d.document_id === documentId);
+                await ESOPDocuments.downloadDocument(API, `/trustee/documents/${documentId}/download`,
+                    authHeaders(), doc ? ESOPDocuments.fileNameFor(doc) : null);
+            } catch (err) {
+                toast(err.message, true);
+            }
+        }
+
+        // נעילת כל הכפתורים בתור עד לרענון: התור מציג רק SENT, וכל אישור מוציא
+        // שורה ממנו. בלי הנעילה לחיצה כפולה שולחת שתי בקשות על אותו מסמך (P5).
+        async function decidePendingDocument(documentId, decision) {
+            if (decision === "decline" &&
+                !confirm("דחיית המסמך היא סופית ואינה ניתנת לביטול. המסמך לא יוכל להיות מאושר לאחר מכן. להמשיך?")) {
+                return;
+            }
+            const buttons = document.querySelectorAll("#pending-documents-body button");
+            buttons.forEach(b => b.disabled = true);
+            try {
+                const res = await fetch(`${API}/trustee/documents/${documentId}/${decision}`, {
+                    method: "POST", headers: authHeaders()
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast(decision === "acknowledge" ? "אישור הקבלה נרשם" : "המסמך נדחה");
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                loadPendingDocuments();
+            }
+        }
+
         function runGlobalSearch() {
             clearTimeout(searchTimer);
             searchTimer = setTimeout(doGlobalSearch, 250);
@@ -409,13 +514,15 @@
                 if (!results.length) {
                     box.innerHTML = `<div class="p-4 text-center text-slate-500 text-sm">לא נמצאו תוצאות</div>`;
                 } else {
+                    // r.title/r.subtitle מכילים שמות עובדים - אותו סינק כמו טבלת התיק.
+                    // הסרת גרשיים לבדה הגנה רק על מחרוזת ה-onclick, לא על גוף ה-HTML.
                     box.innerHTML = results.map(r => `
-                        <button onclick="jumpToResult('${r.entity_type}', '${r.title.replace(/'/g, "")}')" class="w-full text-right px-4 py-2.5 hover:bg-slate-900 border-b border-slate-800/50 last:border-0 block">
+                        <button onclick="jumpToResult('${ESOPDocuments.escapeHtml(r.entity_type)}', '${ESOPDocuments.escapeHtml(r.title.replace(/'/g, ""))}')" class="w-full text-right px-4 py-2.5 hover:bg-slate-900 border-b border-slate-800/50 last:border-0 block">
                             <div class="flex items-center justify-between gap-2">
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 shrink-0">${r.entity_type}</span>
-                                <span class="text-white text-sm truncate">${r.title}</span>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 shrink-0">${ESOPDocuments.escapeHtml(r.entity_type)}</span>
+                                <span class="text-white text-sm truncate">${ESOPDocuments.escapeHtml(r.title)}</span>
                             </div>
-                            <div class="text-xs text-slate-500 truncate mt-0.5">${r.subtitle}</div>
+                            <div class="text-xs text-slate-500 truncate mt-0.5">${ESOPDocuments.escapeHtml(r.subtitle)}</div>
                         </button>
                     `).join("");
                 }

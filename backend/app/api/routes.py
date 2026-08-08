@@ -40,7 +40,7 @@ from backend.app.services.documents import (
     TEMPLATE_BUILDERS, MissingDocumentDataError, DocumentRenderingError, DOCUMENT_STORE_DIR,
 )
 from backend.app.services.document_access import assert_document_access
-from backend.app.services.document_status import assert_transition_allowed
+from backend.app.services.document_status import assert_is_current_version, assert_transition_allowed
 from backend.app.auth import (
     hash_password, verify_password, create_session, get_current_user, require_roles,
     generate_temporary_password, is_account_locked, register_failed_login,
@@ -1209,6 +1209,41 @@ def list_my_exercise_requests(current_user: User = Depends(require_roles(UserRol
 # בלי שום פרמטר שהלקוח יכול לדרוס.
 # ===================================================================
 
+def _documents_out(db: Session, documents: List[Document]) -> List[DocumentOut]:
+    """הרכבת תצוגת המסמך: שם העובד ותאריך המענק יושבים בטבלאות אחרות, ובלעדיהם
+    השורה בפורטל היא UUID בלבד. שאילתה אחת לכל טבלה ולא אחת לכל מסמך - ספריית
+    המסמכים של חברה גדולה לא תייצר N+1."""
+    if not documents:
+        return []
+    employees = {
+        e.employee_id: e for e in db.query(Employee)
+        .filter(Employee.employee_id.in_({d.employee_id for d in documents})).all()
+    }
+    grants = {
+        g.grant_id: g for g in db.query(Grant)
+        .filter(Grant.grant_id.in_({d.grant_id for d in documents})).all()
+    }
+    out = []
+    for d in documents:
+        employee = employees.get(d.employee_id)
+        grant = grants.get(d.grant_id)
+        out.append(DocumentOut(
+            document_id=d.document_id, template_type=d.template_type, grant_id=d.grant_id,
+            status=d.status.value, version=d.version, is_latest=d.is_latest,
+            file_sha256=d.file_sha256, generated_at=d.generated_at,
+            sent_at=d.sent_at, acknowledged_at=d.acknowledged_at,
+            # None ולא "" - ראו ההערה ב-DocumentOut. שורה יתומה היא באג נתונים
+            # שה-UI צריך להראות ככזה, לא שם ריק שנראה תקין.
+            employee_name=f"{employee.first_name} {employee.last_name}" if employee else None,
+            grant_date=grant.grant_date if grant else None,
+        ))
+    return out
+
+
+def _document_out(db: Session, document: Document) -> DocumentOut:
+    return _documents_out(db, [document])[0]
+
+
 def _load_document_or_404(db: Session, document_id: str, current_user: User) -> Document:
     document = db.query(Document).filter(Document.document_id == document_id).first()
     if not document:
@@ -1220,7 +1255,8 @@ def _load_document_or_404(db: Session, document_id: str, current_user: User) -> 
 def _transition_document(db: Session, document: Document, target: DocumentStatus,
                          current_user: User, action: str) -> Document:
     """מעבר מצב יחיד + audit, בטרנזקציה אחת. הוולידציה קודמת לכתיבה - מסמך
-    שכבר אושר לא מקבל אפקט שני (P5)."""
+    שכבר אושר לא מקבל אפקט שני (P5), וגרסה מיושנת לא עוברת מצב בכלל."""
+    assert_is_current_version(document.is_latest, target)
     assert_transition_allowed(document.status, target)
     before = document.status.value
     document.status = target
@@ -1304,7 +1340,7 @@ def generate_document(payload: GenerateDocumentRequest,
                              "version": next_version, "file_sha256": file_hash})
     db.commit()
     db.refresh(doc)
-    return doc
+    return _document_out(db, doc)
 
 
 @router.get("/admin/documents", response_model=List[DocumentOut])
@@ -1320,7 +1356,7 @@ def list_company_documents(status: Optional[str] = None, template_type: Optional
         query = query.filter(Document.status == DocumentStatus(status))
     if template_type:
         query = query.filter(Document.template_type == template_type)
-    return query.order_by(Document.generated_at.desc()).all()
+    return _documents_out(db, query.order_by(Document.generated_at.desc()).all())
 
 
 @router.post("/admin/documents/{document_id}/send", response_model=DocumentOut)
@@ -1331,7 +1367,8 @@ def send_document_for_acknowledgment(document_id: str,
     if not document.is_latest:
         raise HTTPException(status_code=409,
                             detail="This is a superseded version - send the latest version instead")
-    return _transition_document(db, document, DocumentStatus.SENT, current_user, "SENT_FOR_ACKNOWLEDGMENT")
+    document = _transition_document(db, document, DocumentStatus.SENT, current_user, "SENT_FOR_ACKNOWLEDGMENT")
+    return _document_out(db, document)
 
 
 @router.get("/admin/documents/{document_id}/download")
@@ -1349,13 +1386,12 @@ def list_my_documents(current_user: User = Depends(require_roles(UserRole.EMPLOY
                       db: Session = Depends(get_db)):
     """רק המסמכים של העובד המחובר, ורק כאלה שנשלחו לו בפועל - טיוטה שהאדמין
     עוד לא שלח אינה אמורה להיות גלויה לעובד."""
-    return (
+    return _documents_out(db, (
         db.query(Document)
         .filter(Document.employee_id == current_user.employee_id,
                 Document.status != DocumentStatus.DRAFT)
         .order_by(Document.generated_at.desc())
-        .all()
-    )
+    ).all())
 
 
 @router.get("/employee/documents/{document_id}/download")
@@ -1374,7 +1410,8 @@ def acknowledge_document_employee(document_id: str,
                                   db: Session = Depends(get_db)):
     """*** אישור קבלה פנימי, לא חתימה משפטית *** - ראו models.py.Document."""
     document = _load_document_or_404(db, document_id, current_user)
-    return _transition_document(db, document, DocumentStatus.ACKNOWLEDGED, current_user, "ACKNOWLEDGED")
+    document = _transition_document(db, document, DocumentStatus.ACKNOWLEDGED, current_user, "ACKNOWLEDGED")
+    return _document_out(db, document)
 
 
 @router.post("/employee/documents/{document_id}/decline", response_model=DocumentOut)
@@ -1382,7 +1419,8 @@ def decline_document_employee(document_id: str,
                               current_user: User = Depends(require_roles(UserRole.EMPLOYEE)),
                               db: Session = Depends(get_db)):
     document = _load_document_or_404(db, document_id, current_user)
-    return _transition_document(db, document, DocumentStatus.DECLINED, current_user, "DECLINED")
+    document = _transition_document(db, document, DocumentStatus.DECLINED, current_user, "DECLINED")
+    return _document_out(db, document)
 
 
 # --- TRUSTEE -------------------------------------------------------
@@ -1391,14 +1429,19 @@ def decline_document_employee(document_id: str,
 def list_pending_documents_trustee(current_user: User = Depends(require_roles(UserRole.TRUSTEE)),
                                    db: Session = Depends(get_db)):
     """תור האישורים הממתינים של הנאמן - רק מסמכים על מענקים שהוא הנאמן שלהם,
-    ורק כאלה שממתינים בפועל."""
-    return (
+    ורק כאלה שממתינים בפועל.
+
+    is_latest נכנס לסינון כאן ולא רק בתצוגה: זה *תור פעולה*, ומסמך שהחברה
+    כבר החליפה בגרסה חדשה אינו פעולה שממתינה - השרת דוחה אישור עליו ממילא
+    (assert_is_current_version). בפורטל העובד ההתנהגות שונה בכוונה: שם הרשימה
+    היא היסטוריה, ולכן גרסה מיושנת נשארת מוצגת ומסומנת ככזו."""
+    return _documents_out(db, (
         db.query(Document)
         .filter(Document.trustee_id == current_user.trustee_id,
-                Document.status == DocumentStatus.SENT)
+                Document.status == DocumentStatus.SENT,
+                Document.is_latest == True)  # noqa: E712
         .order_by(Document.generated_at.desc())
-        .all()
-    )
+    ).all())
 
 
 @router.get("/trustee/documents/{document_id}/download")
@@ -1417,7 +1460,8 @@ def acknowledge_document_trustee(document_id: str,
                                  db: Session = Depends(get_db)):
     """*** אישור קבלה פנימי, לא חתימה משפטית *** - ראו models.py.Document."""
     document = _load_document_or_404(db, document_id, current_user)
-    return _transition_document(db, document, DocumentStatus.ACKNOWLEDGED, current_user, "ACKNOWLEDGED")
+    document = _transition_document(db, document, DocumentStatus.ACKNOWLEDGED, current_user, "ACKNOWLEDGED")
+    return _document_out(db, document)
 
 
 @router.post("/trustee/documents/{document_id}/decline", response_model=DocumentOut)
@@ -1425,4 +1469,5 @@ def decline_document_trustee(document_id: str,
                              current_user: User = Depends(require_roles(UserRole.TRUSTEE)),
                              db: Session = Depends(get_db)):
     document = _load_document_or_404(db, document_id, current_user)
-    return _transition_document(db, document, DocumentStatus.DECLINED, current_user, "DECLINED")
+    document = _transition_document(db, document, DocumentStatus.DECLINED, current_user, "DECLINED")
+    return _document_out(db, document)
