@@ -18,3 +18,7 @@ qa_sandbox.db*
 # עותק .bak בתוך הריפו; _skills_audit* הוא כלי מקומי חד-פעמי, לא קוד פרויקט.
 *.bak
 _skills_audit.*
+
+# מכיל נתיבים מוחלטים של מכונה מסוימת (//C:/Users/Shalom/...) - אצל מפתח אחר
+# חוקי ה-deny שמגנים על esop_database.db פשוט לא יתפסו, בשקט ובלי שגיאה.
+.claude/settings.local.json
