@@ -78,6 +78,7 @@
                 <nav class="p-4 space-y-2">
                     <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-chart-pie"></i> הון המניות שלי</button>
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-paper-plane"></i> בקשות המימוש שלי</button>
+                    <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition"><i class="fa-solid fa-file-pdf"></i> המסמכים שלי</button>
                 </nav>
             </div>
             <div class="p-4 border-t border-slate-800">
@@ -222,12 +223,46 @@
                     </div>
                 </div>
             </section>
+
+            <!-- DOCUMENTS (v0.9.0 שלב 3) -->
+            <!-- *** אישור קבלה, לא חתימה *** - ראו clients/shared/documents.js.
+                 המסך לא מציג טיוטות: השרת מסנן אותן, וגם המסך לא מבקש אותן. -->
+            <section id="tab-documents" class="space-y-6" style="display:none">
+                <div class="bg-slate-800/30 border border-slate-800 rounded-2xl p-6">
+                    <h3 class="text-lg font-bold text-white mb-1">המסמכים שלי</h3>
+                    <p class="text-xs text-slate-500 mb-4">
+                        אישור קבלה כאן הוא רישום פנימי שקיבלת את המסמך וקראת אותו. הוא
+                        <strong class="text-slate-400">אינו חתימה</strong> ואינו יוצר התחייבות משפטית.
+                    </p>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-right border-collapse text-sm">
+                            <thead>
+                                <tr class="border-b border-slate-800 text-slate-400">
+                                    <th class="pb-3 font-semibold">סוג מסמך</th>
+                                    <th class="pb-3 font-semibold">מענק</th>
+                                    <th class="pb-3 font-semibold">גרסה</th>
+                                    <th class="pb-3 font-semibold">סטטוס</th>
+                                    <th class="pb-3 font-semibold">נשלח אליי</th>
+                                    <th class="pb-3 font-semibold">פעולות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="my-documents-body" class="divide-y divide-slate-800/50"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 
     <script src="../shared/notifications.js"></script>
+    <script src="../shared/documents.js"></script>
     <script>
-        const API = "http://127.0.0.1:8000/api/v1";
+        // כתובת ה-API נגזרת מהמקור שממנו הדף הוגש, כדי שהרצת סנדבוקס על פורט
+        // אחר (ESOP_DATABASE_URL + --port 8001, ראו QA_TESTBOOK.md) תפנה באמת
+        // לסנדבוקס. כתובת קשיחה שלחה כל בדיקה ידנית ל-DB החי בלי להודיע.
+        // file:// נשאר על 8000 - שם אין origin לגזור ממנו.
+        const API = (location.origin && location.protocol.startsWith("http")
+                     ? location.origin : "http://127.0.0.1:8000") + "/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_employee_session") || "null");
         let currentEmployeeData = null;
 
@@ -317,6 +352,7 @@
         function switchTab(tabId) {
             document.getElementById("tab-dashboard").style.display = tabId === "dashboard" ? "block" : "none";
             document.getElementById("tab-requests").style.display = tabId === "requests" ? "block" : "none";
+            document.getElementById("tab-documents").style.display = tabId === "documents" ? "block" : "none";
             document.querySelectorAll(".nav-btn").forEach(el => {
                 el.classList.remove("bg-emerald-600", "text-white");
                 el.classList.add("text-slate-400");
@@ -327,6 +363,7 @@
 
             if (tabId === "dashboard") fetchEmployeeDashboard();
             if (tabId === "requests") loadMyRequests();
+            if (tabId === "documents") loadMyDocuments();
         }
 
         async function fetchEmployeeDashboard() {
@@ -516,6 +553,92 @@
 
         // חיפוש חופשי - debounce קצר כדי לא לירות בקשה על כל תו
         let searchTimer = null;
+        // --- המסמכים שלי (v0.9.0 שלב 3) ---------------------------------
+        // *** אישור קבלה, לא חתימה *** - ראו clients/shared/documents.js.
+
+        async function loadMyDocuments() {
+            const tbody = document.getElementById("my-documents-body");
+            tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">טוען...</td></tr>`;
+            try {
+                const res = await fetch(`${API}/employee/documents`, { headers: authHeaders() });
+                if (res.status === 401) { handleLogout(); return; }
+                if (!res.ok) throw new Error(await res.text());
+                const docs = await res.json();
+                tbody.innerHTML = docs.map(d => `
+                    <tr class="hover:bg-slate-800/30 ${d.is_latest ? "" : "opacity-50"}">
+                        <td class="py-3">${ESOPDocuments.templateLabel(d.template_type)}</td>
+                        <td class="py-3 text-slate-400 text-xs">${ESOPDocuments.orDash(d.grant_date)}</td>
+                        <td class="py-3 text-slate-400 text-xs">
+                            v${d.version}
+                            ${ESOPDocuments.supersededMarker(d)}
+                        </td>
+                        <td class="py-3">${ESOPDocuments.statusBadge(d.status)}</td>
+                        <td class="py-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.sent_at)}</td>
+                        <td class="py-3 whitespace-nowrap">
+                            <button onclick="downloadMyDocument('${d.document_id}')" class="text-emerald-400 hover:text-emerald-300 text-xs"><i class="fa-solid fa-download"></i> הורדה</button>
+                            ${acknowledgeButtonsHtml(d)}
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="6" class="py-4 text-center text-slate-500">לא נשלחו אליך מסמכים</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        // רק SENT ניתן לאישור/דחייה. ACKNOWLEDGED ו-DECLINED הם מצבים סופיים -
+        // אין כפתור, ולא רק כי השרת יחזיר 409: כפתור פעיל על מצב סופי מזמין
+        // לחיצה כפולה, וזה בדיוק דפוס P5 (כתיבה לא אידמפוטנטית).
+        // *** נמצא בסקירת שלב 3 ***: גם גרסה מיושנת נחסמת כאן. הרשימה של העובד
+        // היא היסטוריה ולכן היא ממשיכה להציג אותה (בשונה מתור הנאמן, שמסנן
+        // אותה ב-SQL) - אבל אישור עליה היה נצמד לנייר שהחברה כבר החליפה.
+        function acknowledgeButtonsHtml(doc) {
+            if (doc.status !== "SENT") return "";
+            if (!doc.is_latest) {
+                return `<span title="קיימת גרסה חדשה יותר של המסמך הזה" class="text-slate-600 text-xs mr-3"><i class="fa-solid fa-ban"></i> הוחלף בגרסה חדשה</span>`;
+            }
+            return `
+                <button onclick="decideDocument('${doc.document_id}', 'acknowledge')" class="text-emerald-400 hover:text-emerald-300 text-xs mr-3"><i class="fa-solid fa-check"></i> אישור קבלה</button>
+                <button onclick="decideDocument('${doc.document_id}', 'decline')" class="text-rose-400 hover:text-rose-300 text-xs mr-3"><i class="fa-solid fa-xmark"></i> דחייה</button>
+            `;
+        }
+
+        async function downloadMyDocument(documentId) {
+            try {
+                const res = await fetch(`${API}/employee/documents`, { headers: authHeaders() });
+                const docs = res.ok ? await res.json() : [];
+                const doc = docs.find(d => d.document_id === documentId);
+                await ESOPDocuments.downloadDocument(API, `/employee/documents/${documentId}/download`,
+                    authHeaders(), doc ? ESOPDocuments.fileNameFor(doc) : null);
+            } catch (err) {
+                toast(err.message, true);
+            }
+        }
+
+        // decision הוא 'acknowledge' או 'decline' בלבד - שתי הפעולות עוברות
+        // באותה פונקציה כדי שנעילת הכפתורים והרענון יהיו זהים בשתיהן (P3).
+        async function decideDocument(documentId, decision) {
+            // דחייה היא מצב סופי ואינה נושאת סיבה (החלטת מוצר מפורשת ב-v0.9.0),
+            // והכפתור צמוד לכפתור האישור. בלי אישור מפורש, לחיצה שגויה אחת
+            // סוגרת את המסמך בלי דרך חזרה ובלי שאיש יידע למה.
+            if (decision === "decline" &&
+                !confirm("דחיית המסמך היא סופית ואינה ניתנת לביטול. המסמך לא יוכל להיות מאושר לאחר מכן. להמשיך?")) {
+                return;
+            }
+            const buttons = document.querySelectorAll("#my-documents-body button");
+            buttons.forEach(b => b.disabled = true);
+            try {
+                const res = await fetch(`${API}/employee/documents/${documentId}/${decision}`, {
+                    method: "POST", headers: authHeaders()
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast(decision === "acknowledge" ? "אישור הקבלה נרשם" : "המסמך נדחה");
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                loadMyDocuments();
+            }
+        }
+
         function runGlobalSearch() {
             clearTimeout(searchTimer);
             searchTimer = setTimeout(doGlobalSearch, 250);

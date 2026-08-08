@@ -332,6 +332,15 @@ class DocumentOut(BaseModel):
     is_latest: bool
     file_sha256: str
     generated_at: datetime
+    sent_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    # שני השדות האחרונים אינם על שורת ה-Document אלא מגיעים מ-Employee/Grant,
+    # ולכן מורכבים ב-_documents_out ולא דרך from_attributes. בלעדיהם רשימת
+    # המסמכים בפורטל היא grant_id בלבד - שהוא UUID לכל מענק שנוצר דרך ה-API.
+    # Optional ולא מחרוזת ריקה: נתון חסר חייב להישאר מזוהה כחסר עד ל-UI, אחרת
+    # הוא מוצג כשם ריק לגיטימי (QA_TESTBOOK.md P4).
+    employee_name: Optional[str] = None
+    grant_date: Optional[date] = None
 
     class Config:
         from_attributes = True

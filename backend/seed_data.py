@@ -21,36 +21,61 @@ def shift_months(d: date, months: int) -> date:
     return date(year, month, day)
 
 
-def stamp_alembic_head() -> None:
-    """מסמן את ה-DB שזה עתה נבנה ב-create_all כגרסת Alembic העדכנית (head).
+def build_schema_via_migrations() -> None:
+    """בונה את הסכימה ב-`alembic upgrade head` ולא ב-create_all.
 
-    ה-seed בונה סכימה ישירות מהמודלים ולא דרך מיגרציות, ולכן בלי stamp נשאר DB
-    בלי טבלת alembic_version - וכל `alembic upgrade head` עתידי ינסה להריץ את
-    מיגרציית ה-baseline על טבלאות שכבר קיימות וייפול. stamp רק כותב את מספר
-    הגרסה ולא מריץ שום DDL. כישלון כאן אינו קריטי ל-seed עצמו, ולכן רק אזהרה.
+    *** נמצא באימות v0.9.0 שלב 3 ***: הגרסה הקודמת בנתה סכימה ב-create_all ואז
+    עשתה `stamp head`. התוצאה: DB שמסומן כמעודכן אבל ה-DDL של המיגרציות מעולם
+    לא רץ - כלומר **אף טריגר לא קיים בסנדבוקס**. create_all מכיר רק את מה
+    שמוגדר במודלים, וטריגר אינו טבלה ואינו עמודה. בפועל
+    `SELECT name FROM sqlite_master WHERE type='trigger'` על סנדבוקס זרוע החזיר
+    רשימה ריקה: גם שני טריגרי הקפאת מסמך שאושר (v0.9.0 שלב 2) וגם טריגרי
+    ledger_events (v0.6.0) נעדרו - כלומר ההגנה שנבנתה במפורש בשכבת הנתונים,
+    *דווקא מפני שקוד אפליקציה ניתן לעקיפה*, לא הייתה קיימת בסביבה שבה כל ה-QA
+    מתבצע. upgrade head מריץ את אותן מיגרציות שירוצו בפרודקשן, ולכן הסנדבוקס
+    מקבל את אותה סכימה בדיוק - כולל הטריגרים - ובלי צורך ב-stamp נפרד.
+
+    כישלון כאן *כן* קריטי: DB בלי טריגרים נראה תקין לחלוטין עד לרגע שבו מסתמכים
+    על ההגנה שאינה שם, ולכן עדיף להיעצר מיד.
     """
-    try:
-        from alembic import command
-        from alembic.config import Config
+    from alembic import command
+    from alembic.config import Config
 
-        alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-        cfg = Config(str(alembic_ini))
-        # ה-URL נלקח מה-engine שהרגע בנה את הטבלאות ולא מ-alembic.ini (שמכיל נתיב
-        # יחסי ל-cwd) - כדי שה-stamp ייכתב תמיד לאותו קובץ DB שנוצר בפועל.
-        cfg.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
-        command.stamp(cfg, "head")
-        print("🏷️ ה-DB סומן ב-Alembic (stamp head).")
-    except Exception as exc:
-        print(f"⚠️ אזהרה: לא בוצע stamp ל-Alembic ({exc}). הריצו ידנית: alembic stamp head")
+    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+    cfg = Config(str(alembic_ini))
+    # ה-URL נלקח מה-engine ולא מ-alembic.ini (שמחזיק נתיב יחסי ל-cwd), כדי
+    # שהמיגרציות ירוצו תמיד על אותו קובץ DB שה-seed עומד לכתוב אליו.
+    cfg.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        triggers = conn.exec_driver_sql(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
+        ).scalar()
+    # בדיקת שפיות מפורשת: זו בדיוק התקלה שהתגלתה, ושתקה בעבר.
+    if not triggers:
+        raise RuntimeError(
+            "המיגרציות רצו אך לא נוצר אף טריגר - הסכימה אינה שלמה. "
+            "בדקו את alembic.ini ואת מיגרציית הטריגרים לפני שממשיכים."
+        )
+    print(f"🏗️ הסכימה נבנתה דרך Alembic (upgrade head), כולל {triggers} טריגרים.")
 
 
 def seed_database():
     print("🧹 מוחק טבלאות קיימות...")
     Base.metadata.drop_all(bind=engine)
+    # alembic_version אינה מודל ולכן drop_all לא נוגע בה. אם היא נשארת על head,
+    # ה-upgrade הבא הוא no-op - הטבלאות לא ייבנו כלל וה-seed ייפול על "no such
+    # table" במקום להיבנות מחדש. מחיקה מפורשת, וגם הטריגרים איתה: הם נוצרים
+    # במיגרציה ולא נמחקים עם הטבלאות שהם תלויים בהן בכל גרסת SQLite.
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+        for (name,) in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
+            conn.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{name}"')
 
     print("🏗️ בונה טבלאות מחדש...")
-    Base.metadata.create_all(bind=engine)
-    stamp_alembic_head()
+    build_schema_via_migrations()
 
     db = SessionLocal()
     today = date.today()

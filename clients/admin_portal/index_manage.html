@@ -57,6 +57,7 @@
                     <button onclick="switchTab('employees')" id="nav-employees" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ניהול עובדים</span><i class="fa-solid fa-users"></i></button>
                     <button onclick="switchTab('grants')" id="nav-grants" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מענקים ואופציות</span><i class="fa-solid fa-file-contract"></i></button>
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>בקשות מימוש</span><i class="fa-solid fa-hand-holding-dollar"></i></button>
+                    <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מסמכים</span><i class="fa-solid fa-file-pdf"></i></button>
                     <button onclick="switchTab('company')" id="nav-company" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>פרופיל חברה</span><i class="fa-solid fa-gear"></i></button>
                 </nav>
             </div>
@@ -75,7 +76,10 @@
             <header class="flex justify-between items-center mb-8 pb-4 border-b border-slate-800">
                 <div>
                     <h2 class="text-2xl font-black text-white" id="page-title">דאשבורד</h2>
-                    <p class="text-xs text-slate-400 mt-1">API: <code class="text-indigo-400">http://127.0.0.1:8000</code> <span id="app-version" class="text-slate-600">v...</span></p>
+                    <!-- הכתובת מוצגת מהערך שבו הדף באמת משתמש ולא כטקסט קבוע:
+                         בהרצת סנדבוקס על פורט אחר, כיתוב קבוע היה מצהיר על היעד
+                         הלא נכון - וזו בדיוק ההצהרה שדוח באג נשען עליה. -->
+                    <p class="text-xs text-slate-400 mt-1">API: <code id="api-base-label" class="text-indigo-400">-</code> <span id="app-version" class="text-slate-600">v...</span></p>
                 </div>
                 <div class="flex items-center gap-3">
                     <div class="relative">
@@ -173,6 +177,52 @@
                             </tr>
                         </thead>
                         <tbody id="requests-table-body"><tr><td colspan="6" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- DOCUMENTS (v0.9.0 שלב 3) -->
+            <!-- *** אישור קבלה, לא חתימה *** - למערכת אין אימות זהות ואין גורם
+                 שלישי מאשר. המילה "חתימה" לא מופיעה כאן באף מקום, בכוונה. -->
+            <section id="tab-documents" class="tab-content space-y-6">
+                <div class="flex justify-between items-center flex-wrap gap-3">
+                    <div>
+                        <h3 class="text-lg font-bold text-white">ספריית המסמכים</h3>
+                        <p class="text-xs text-slate-500 mt-1">אישור קבלה פנימי בלבד — אינו חתימה ואינו מסמך בעל תוקף משפטי מחייב.</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <select id="doc-filter-status" onchange="loadDocuments()" class="bg-slate-900 border border-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2">
+                            <option value="">כל הסטטוסים</option>
+                            <option value="DRAFT">טיוטה</option>
+                            <option value="SENT">נשלח לאישור</option>
+                            <option value="ACKNOWLEDGED">אושרה קבלה</option>
+                            <option value="DECLINED">נדחה</option>
+                            <option value="EXPIRED">פג תוקף</option>
+                        </select>
+                        <select id="doc-filter-type" onchange="loadDocuments()" class="bg-slate-900 border border-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2">
+                            <option value="">כל הסוגים</option>
+                            <option value="GRANT_LETTER">כתב הענקה</option>
+                            <option value="SECTION_102_APPENDIX">נספח 102</option>
+                            <option value="TRUSTEE_DEPOSIT_CONFIRMATION">אישור הפקדה בנאמנות</option>
+                        </select>
+                        <button onclick="openGenerateDocModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> מסמך חדש</button>
+                    </div>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">עובד</th>
+                                <th class="p-3 font-semibold">מענק</th>
+                                <th class="p-3 font-semibold">סוג מסמך</th>
+                                <th class="p-3 font-semibold">גרסה</th>
+                                <th class="p-3 font-semibold">סטטוס</th>
+                                <th class="p-3 font-semibold">נשלח</th>
+                                <th class="p-3 font-semibold">אושרה קבלה</th>
+                                <th class="p-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="documents-table-body"><tr><td colspan="8" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
                     </table>
                 </div>
             </section>
@@ -317,6 +367,34 @@
         </div>
     </div>
 
+    <!-- Modal: Generate Document -->
+    <div id="generate-doc-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-1">יצירת מסמך</h3>
+            <p class="text-xs text-slate-500 mb-4">המסמך נוצר כטיוטה. הוא לא גלוי לעובד עד שנשלח לאישור.</p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">מענק</label>
+                    <select id="doc-grant-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">סוג מסמך</label>
+                    <select id="doc-template-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
+                        <option value="GRANT_LETTER">כתב הענקה</option>
+                        <option value="SECTION_102_APPENDIX">נספח 102 (תבנית דמו)</option>
+                        <option value="TRUSTEE_DEPOSIT_CONFIRMATION">אישור הפקדה בנאמנות</option>
+                    </select>
+                    <p class="text-[10px] text-amber-400/80 mt-1">נספח 102 חל רק על מענקים במסלול 102 עם נאמן, ואישור הפקדה רק אחרי שנרשמה הפקדה בפועל.</p>
+                </div>
+            </div>
+            <div id="generate-doc-error" class="hidden mt-3 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2"></div>
+            <div class="flex gap-2 mt-5">
+                <button onclick="submitGenerateDoc()" id="generate-doc-submit" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-xl transition">צור מסמך</button>
+                <button onclick="closeGenerateDocModal()" class="px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal: New Grant -->
     <div id="grant-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
@@ -367,8 +445,14 @@
     </div>
 
     <script src="../shared/notifications.js"></script>
+    <script src="../shared/documents.js"></script>
     <script>
-        const API = "http://127.0.0.1:8000/api/v1";
+        // כתובת ה-API נגזרת מהמקור שממנו הדף הוגש, כדי שהרצת סנדבוקס על פורט
+        // אחר (ESOP_DATABASE_URL + --port 8001, ראו QA_TESTBOOK.md) תפנה באמת
+        // לסנדבוקס. כתובת קשיחה שלחה כל בדיקה ידנית ל-DB החי בלי להודיע.
+        // file:// נשאר על 8000 - שם אין origin לגזור ממנו.
+        const API = (location.origin && location.protocol.startsWith("http")
+                     ? location.origin : "http://127.0.0.1:8000") + "/api/v1";
         let session = JSON.parse(localStorage.getItem("esop_admin_session") || "null");
 
         function authHeaders() {
@@ -441,6 +525,7 @@
             if (tabId === "employees") loadEmployees();
             if (tabId === "grants") loadGrants();
             if (tabId === "requests") loadRequests();
+            if (tabId === "documents") loadDocuments();
             if (tabId === "company") loadCompany();
         }
 
@@ -840,6 +925,137 @@
             }
         }
 
+        // --- מסמכים (v0.9.0 שלב 3) --------------------------------------
+        // *** אישור קבלה, לא חתימה *** - ראו clients/shared/documents.js.
+
+        async function loadDocuments() {
+            const tbody = document.getElementById("documents-table-body");
+            const status = document.getElementById("doc-filter-status").value;
+            const type = document.getElementById("doc-filter-type").value;
+            const query = new URLSearchParams();
+            if (status) query.set("status", status);
+            if (type) query.set("template_type", type);
+            try {
+                const docs = await apiGet(`/admin/documents${query.toString() ? "?" + query : ""}`);
+                tbody.innerHTML = docs.map(d => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50 ${d.is_latest ? "" : "opacity-50"}">
+                        <td class="p-3 text-white">${ESOPDocuments.orDash(d.employee_name)}</td>
+                        <td class="p-3 text-slate-400 text-xs">
+                            ${ESOPDocuments.orDash(d.grant_date)}
+                            <span class="block font-mono text-[10px] text-slate-600">${d.grant_id.slice(0, 8)}...</span>
+                        </td>
+                        <td class="p-3 text-xs">${ESOPDocuments.templateLabel(d.template_type)}</td>
+                        <td class="p-3 text-xs">
+                            v${d.version}
+                            ${ESOPDocuments.supersededMarker(d)}
+                        </td>
+                        <td class="p-3">${ESOPDocuments.statusBadge(d.status)}</td>
+                        <td class="p-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.sent_at)}</td>
+                        <td class="p-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.acknowledged_at)}</td>
+                        <td class="p-3 whitespace-nowrap">
+                            <button onclick="downloadDoc('${d.document_id}')" class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-download"></i> הורדה</button>
+                            ${sendButtonHtml(d)}
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="8" class="p-4 text-center text-slate-500">אין מסמכים</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+            }
+        }
+
+        // שליחה אפשרית רק על טיוטה שהיא הגרסה האחרונה. השרת מחזיר 409 בשני
+        // המקרים ממילא - הכפתור המושבת מסביר *למה* מראש במקום להפיל את
+        // המשתמש על שגיאה אחרי לחיצה.
+        function sendButtonHtml(doc) {
+            if (doc.status !== "DRAFT") return "";
+            if (!doc.is_latest) {
+                return `<span title="קיימת גרסה חדשה יותר של אותו מסמך" class="text-slate-600 text-xs mr-3"><i class="fa-solid fa-ban"></i> לא ניתן לשלוח</span>`;
+            }
+            return `<button onclick="sendDoc('${doc.document_id}')" class="text-emerald-400 hover:text-emerald-300 text-xs mr-3"><i class="fa-solid fa-paper-plane"></i> שלח לאישור</button>`;
+        }
+
+        async function downloadDoc(documentId) {
+            try {
+                const docs = await apiGet("/admin/documents");
+                const doc = docs.find(d => d.document_id === documentId);
+                await ESOPDocuments.downloadDocument(API, `/admin/documents/${documentId}/download`,
+                    authHeaders(), doc ? ESOPDocuments.fileNameFor(doc) : null);
+            } catch (err) {
+                toast(err.message, true);
+            }
+        }
+
+        // נעילת כל כפתורי הטבלה עד לרענון: לחיצה כפולה על "שלח" שלחה בקשה שנייה
+        // שחוזרת 409, והמשתמש קיבל טוסט אדום על פעולה שדווקא הצליחה (P5).
+        async function sendDoc(documentId) {
+            const buttons = document.querySelectorAll("#documents-table-body button");
+            buttons.forEach(b => b.disabled = true);
+            try {
+                const res = await fetch(`${API}/admin/documents/${documentId}/send`, {
+                    method: "POST", headers: authHeaders()
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("המסמך נשלח לאישור קבלה");
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                loadDocuments();
+            }
+        }
+
+        async function openGenerateDocModal() {
+            document.getElementById("generate-doc-error").classList.add("hidden");
+            const select = document.getElementById("doc-grant-select");
+            select.innerHTML = `<option>טוען...</option>`;
+            document.getElementById("generate-doc-modal").classList.add("open");
+            try {
+                const grants = await apiGet("/admin/grants");
+                select.innerHTML = grants.map(g =>
+                    `<option value="${g.grant_id}">${g.grant_date} · ${g.total_options.toLocaleString()} אופציות · ${g.grant_type}</option>`
+                ).join("") || `<option value="">אין מענקים בחברה</option>`;
+            } catch (err) {
+                select.innerHTML = `<option value="">${err.message}</option>`;
+            }
+        }
+
+        function closeGenerateDocModal() {
+            document.getElementById("generate-doc-modal").classList.remove("open");
+        }
+
+        async function submitGenerateDoc() {
+            const errorBox = document.getElementById("generate-doc-error");
+            const button = document.getElementById("generate-doc-submit");
+            const grantId = document.getElementById("doc-grant-select").value;
+            if (!grantId) {
+                errorBox.textContent = "לא נבחר מענק";
+                errorBox.classList.remove("hidden");
+                return;
+            }
+            errorBox.classList.add("hidden");
+            button.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/documents`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        grant_id: grantId,
+                        template_type: document.getElementById("doc-template-select").value
+                    })
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                closeGenerateDocModal();
+                toast("המסמך נוצר כטיוטה");
+                switchTab("documents");
+            } catch (err) {
+                // 409 כאן הוא סירוב מכוון (מענק בלי לוח הבשלה, נספח 102 על מסלול
+                // אמריקאי, אישור הפקדה בלי הפקדה) - מוצג כמו שהוא ולא מתורגם
+                // ל"שגיאה כללית", כי הנוסח מהשרת הוא ההסבר היחיד למה זה נחסם.
+                errorBox.textContent = err.message;
+                errorBox.classList.remove("hidden");
+            } finally {
+                button.disabled = false;
+            }
+        }
+
         async function reviewRequest(id, approve) {
             try {
                 const res = await fetch(`${API}/admin/exercise-requests/${id}`, {
@@ -942,6 +1158,7 @@
         // יתכנסו לאותה גרסה בדיוק כמו השרת, בלי צורך ברענון ידני של הדף.
         let lastKnownVersion = null;
         async function loadVersion() {
+            document.getElementById("api-base-label").textContent = API.replace(/\/api\/v1$/, "");
             try {
                 const res = await fetch(`${API}/version`);
                 if (!res.ok) return;

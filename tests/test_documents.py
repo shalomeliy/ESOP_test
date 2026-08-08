@@ -482,3 +482,103 @@ def test_a_different_trustee_cannot_acknowledge_the_document(client, world, sent
 
     response = client.post(f"{API}/trustee/documents/{sent_document}/acknowledge", headers=other_headers)
     assert response.status_code == 403
+
+
+# --- שלב 3: השדות שהפורטלים צריכים כדי להציג שורה קריאה --------------
+# grant_id הוא UUID לכל מענק שנוצר דרך ה-API, ולכן רשימה שמציגה רק אותו אינה
+# שמישה. השדות האלה נבדקים על *כל* שלושת התפקידים - אותו DocumentOut מוגש
+# בשלושתם, ושדה שנשמט באחד מהם הוא בדיוק דפוס P3 (ולידציה/התנהגות שקיימת
+# בנתיב אחד וחסרה בשני).
+
+def test_document_response_carries_the_display_fields_the_portals_need(client, world, grant_id):
+    response = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                           json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["employee_name"] == "Yossi Cohen"
+    assert body["grant_date"] == str(_months_ago(20))
+    assert body["sent_at"] is None            # טיוטה - עוד לא נשלחה
+    assert body["acknowledged_at"] is None
+
+
+def test_send_and_acknowledge_populate_their_timestamps_in_the_response(client, world, sent_document):
+    listed = client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+    row = next(d for d in listed if d["document_id"] == sent_document)
+    assert row["sent_at"] is not None
+    assert row["acknowledged_at"] is None
+
+    acked = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                        headers=world.employee_a)
+    assert acked.status_code == 200
+    assert acked.json()["acknowledged_at"] is not None
+
+
+def test_employee_and_trustee_lists_carry_the_same_display_fields(client, world, sent_document):
+    employee_row = client.get(f"{API}/employee/documents", headers=world.employee_a).json()[0]
+    trustee_row = client.get(f"{API}/trustee/documents/pending", headers=world.trustee_a).json()[0]
+
+    for row in (employee_row, trustee_row):
+        assert row["employee_name"] == "Yossi Cohen"
+        assert row["grant_date"] == str(_months_ago(20))
+        assert row["sent_at"] is not None
+
+
+# --- סקירת שלב 3: אישור על גרסה מיושנת -------------------------------
+# עד שלב 3 is_latest נבדק בשליחה בלבד. אישור ודחייה - בשני התפקידים - לא בדקו
+# אותו, כך שעובד יכול היה לאשר כתב הענקה שהחברה כבר החליפה, והמערכת רשמה
+# acknowledged_at על נייר שאינו הנייר הנוכחי. זה דפוס P3 בצורתו הנקייה.
+
+@pytest.fixture
+def superseded_sent_document(client, world, grant_id, sent_document):
+    """מסמך שנשלח, ואז נוצרה לו גרסה חדשה - כלומר SENT אבל is_latest=False."""
+    regenerated = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                              json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    assert regenerated.status_code == 200, regenerated.text
+    assert regenerated.json()["version"] == 2
+
+    stale = world.db.query(Document).filter(Document.document_id == sent_document).first()
+    world.db.refresh(stale)
+    assert stale.status == DocumentStatus.SENT and stale.is_latest is False
+    return sent_document
+
+
+@pytest.mark.parametrize("role_header,path_prefix", [
+    ("employee_a", "employee"),
+    ("trustee_a", "trustee"),
+])
+@pytest.mark.parametrize("decision", ["acknowledge", "decline"])
+def test_a_superseded_version_cannot_be_acknowledged_or_declined(
+        client, world, superseded_sent_document, role_header, path_prefix, decision):
+    headers = getattr(world, role_header)
+
+    response = client.post(
+        f"{API}/{path_prefix}/documents/{superseded_sent_document}/{decision}", headers=headers)
+
+    assert response.status_code == 409, response.text
+    assert "superseded" in response.json()["detail"]
+
+    # המצב לא זז: הנקודה היא שלא נרשם אישור על נייר שהוחלף, לא רק שהתשובה 409
+    doc = world.db.query(Document).filter(Document.document_id == superseded_sent_document).first()
+    world.db.refresh(doc)
+    assert doc.status == DocumentStatus.SENT
+    assert doc.acknowledged_at is None
+    assert doc.acknowledged_by_user_id is None
+
+
+def test_trustee_pending_queue_excludes_superseded_versions(client, world, superseded_sent_document):
+    """תור פעולה, לא היסטוריה: מסמך שהוחלף אינו פעולה שממתינה."""
+    queue = client.get(f"{API}/trustee/documents/pending", headers=world.trustee_a)
+
+    assert queue.status_code == 200
+    assert [d["document_id"] for d in queue.json()] == []
+
+
+def test_employee_still_sees_a_superseded_document_but_flagged(client, world, superseded_sent_document):
+    """בשונה מתור הנאמן - רשימת העובד היא היסטוריה, ולכן היא ממשיכה להציג את
+    הגרסה המיושנת. is_latest הוא מה שמאפשר למסך לסמן אותה ולחסום את הכפתור."""
+    listed = client.get(f"{API}/employee/documents", headers=world.employee_a)
+
+    rows = {d["document_id"]: d for d in listed.json()}
+    assert superseded_sent_document in rows
+    assert rows[superseded_sent_document]["is_latest"] is False
