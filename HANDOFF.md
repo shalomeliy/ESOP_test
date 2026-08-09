@@ -54,15 +54,34 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
 - **`conftest.py:76` בונה סכימה ב-`create_all`, שאינו מייצר טריגרים.** כל
   הסוויטה פרט ל-`tests/test_document_triggers.py` רצה בלי אף טריגר — וכך שרד
   באג 500 שלם. כל אינווריאנט חדש שנאכף בטריגר חייב בדיקה בקובץ הייעודי.
-  (סיכון 15)
+  ובאותו קובץ, `conftest.py:100`: `SAWarning: transaction already deassociated
+  from connection` — ליקוי שני באותו harness. (סיכון 15)
 
-- **`datetime.utcnow()` בלוגיקת תפוגת סשן** — `backend/app/auth.py:54, 79, 92`.
-  מחזיר datetime **naive**, בנתיב אבטחה. השוואה של naive מול aware זורקת
-  `TypeError`; השוואה של שני naive ממקורות שונים מחזירה תשובה **שקטה ושגויה** —
-  כלומר סשן עלול לפוג מוקדם מדי או, הגרוע, מאוחר מדי. זהו **P6** (נאמנות
-  טיפוסים בין כתיבה לקריאה) שחוזר בנתיב auth. `utcnow()` גם מסומן להסרה
-  ואתה כבר על Python 3.14.6. התיקון: `datetime.now(datetime.UTC)` +
-  עמודות aware. → `security-engineer`.
+- **`datetime.utcnow()` בכל הפרויקט — 2,850 אזהרות ב-`python -m pytest`.**
+  מחזיר datetime **naive**. השוואה של naive מול aware זורקת `TypeError`; השוואה
+  של שני naive ממקורות שונים מחזירה תשובה **שקטה ושגויה**. `utcnow()` מסומן
+  להסרה, והפרויקט כבר על Python 3.14.6.
+
+  **בקוד הייצור, לפי סדר חומרה:**
+
+  | מקום | מה נשען על זה |
+  |---|---|
+  | `backend/app/services/ledger.py:81` | **`recorded_at` — ציר "מה המערכת ידעה ומתי" של ה-Ledger הבי-טמפורלי (v0.6.0)** |
+  | `backend/app/api/routes.py:156` | `req.reviewed_at` — חותמת אישור/דחייה של בקשת מימוש |
+  | `backend/app/api/routes.py:1263` | `now` בנתיב המסמכים |
+  | `backend/app/auth.py:31, 39` | `locked_until` — **חלון נעילת חשבון** אחרי כשלונות התחברות |
+  | `backend/app/auth.py:54, 79, 92` | תפוגת סשן |
+
+  **הסיכון החמור הוא `ledger.py:81`.** שחזור בי-טמפורלי ("מה היה נכון בתאריך X
+  לפי מה שידענו בתאריך Y") נשען כולו על השוואות `recorded_at`. naive שם שובר
+  את זה **בשקט** — בלי חריגה, רק תשובה שגויה על שאלה היסטורית. זהו **P6**
+  (נאמנות טיפוסים בין כתיבה לקריאה) בקנה מידה של פרויקט.
+
+  התיקון: `datetime.now(datetime.UTC)` + עמודות aware, במיגרציה אחת מתואמת —
+  לא קובץ-קובץ, אחרת ייווצר בדיוק המצב של naive מול aware באותה השוואה.
+  → `security-engineer` (auth) + `database-engineer` (עמודות) + `backend-engineer`
+  (ledger/routes). `tax-domain-expert` לא נדרש; אין כאן כלל מס.
+
 
 **חוב רגיל:**
 
@@ -72,6 +91,8 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
   ההתנגשות של סוכנים במקביל (`AGENT_WORKFLOW.md` שורות 67-79).
 - `EXPIRED` מוגדר במכונת המצבים ואין קוד שמייצר אותו — מדיניות תפוגה טרם הוכרעה.
   אין להציג ספירת ימים לתפוגה עד שתתקבל. (סיכון 8)
+- `db.query(...).get()` ב-`tests/test_ledger_replay.py:282, 286` — `LegacyAPIWarning`,
+  legacy מאז SQLAlchemy 2.0. `Session.get()` במקומו. בבדיקות בלבד, זניח.
 - ~8 קלאסים ב-`backend/app/schemas.py` משתמשים ב-`class Config` של Pydantic,
   שסומן להסרה ב-Pydantic V3 (`EmployeeOut`, `CompanyOut`, `GrantOut`, `PoolOut`,
   `AuditLogOut`, `DocumentOut` ואחרים). שבירה עתידית מובטחת, לא דחופה —
