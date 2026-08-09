@@ -4,6 +4,9 @@ esop_database.db
 esop_database.db-wal
 esop_database.db-shm
 esop_database.*.db
+# גיבויים של ה-DB החי לפני מיגרציה. מחוץ ל-git בכוונה: הם מכילים בדיוק את
+# אותם נתונים אמיתיים שהקובץ המקורי מוגן מפניהם, רק בשם אחר.
+db_backups/
 document_store/
 .codegraph/
 .pytest_cache/
