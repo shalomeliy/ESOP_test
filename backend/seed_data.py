@@ -6,6 +6,7 @@ from datetime import date, timedelta
 # הוספת נתיב השורש של הפרויקט ל-sys.path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+from backend.app.types import system_today_utc
 from backend.app.database import SessionLocal, engine, Base
 import backend.app.models as models
 from backend.app.auth import hash_password
@@ -78,7 +79,7 @@ def seed_database():
     build_schema_via_migrations()
 
     db = SessionLocal()
-    today = date.today()
+    today = system_today_utc()
 
     try:
         print("🌱 מתחיל הזרקת נתוני ניסיון (Seed Data)...")

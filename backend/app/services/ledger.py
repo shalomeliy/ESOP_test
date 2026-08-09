@@ -19,6 +19,7 @@ from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.app.types import utcnow
 from backend.app.models import (
     LedgerEvent, LedgerOwnership, LEDGER_EVENT_TYPES, LEDGER_AGGREGATE_TYPES,
     LEDGER_SOURCE_LIVE,
@@ -78,7 +79,7 @@ def append_event(
         aggregate_id=aggregate_id,
         payload=json.dumps(payload, default=str),
         effective_date=effective_date,
-        recorded_at=recorded_at or datetime.utcnow(),
+        recorded_at=recorded_at or utcnow(),
         actor_user_id=actor_user_id,
         sequence_no=_next_sequence_no(db, aggregate_id),
         source=source,

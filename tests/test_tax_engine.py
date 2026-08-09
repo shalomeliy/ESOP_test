@@ -225,3 +225,51 @@ def test_pack_with_no_matching_brackets_raises_data_integrity_reason(db_session)
             db_session, COUNTRY, PROGRESSIVE_GRANT_TYPE, date(2025, 3, 1), 50000.0
         )
     assert exc_info.value.reason == MissingTaxRuleError.PACK_HAS_NO_DETAIL_ROWS
+
+
+# ------------------------------------------------- שרשור המקורות של התוצאה
+
+def _pack_id_for(db, grant_type, eff_date):
+    return (
+        db.query(TaxRulePack)
+        .filter(TaxRulePack.grant_type == grant_type,
+                TaxRulePack.effective_start_date == eff_date)
+        .one()
+        .pack_id
+    )
+
+
+def test_flat_result_carries_the_source_of_the_version_actually_used(flat_rates):
+    """GOAL.md: אין מספר בלי שרשור מקורות.
+
+    ``tax_amount`` נכון הוא חצי מהדרישה - התוצאה חייבת לשאת גם *מאיפה* הוא בא.
+    בלי הבדיקה הזו, מנוע שבוחר את החבילה הלא נכונה ובמקרה מחזיר אותו שיעור
+    עובר את כל הבדיקות הקיימות, ובביקורת אי אפשר להגן על המספר.
+    """
+    result = TaxCalculationEngine.calculate_tax(
+        flat_rates, COUNTRY, FLAT_GRANT_TYPE, date(2023, 6, 1), 100000.0
+    )
+    assert result.source_url == SRC
+    assert result.pack_id == _pack_id_for(flat_rates, FLAT_GRANT_TYPE, date(2020, 1, 1))
+
+
+def test_the_pack_id_moves_to_the_newer_version_not_only_the_rate(flat_rates):
+    """אותה שאלה על הצד השני של גבול התוקף: גם השיעור וגם הזהות מתחלפים."""
+    older = _pack_id_for(flat_rates, FLAT_GRANT_TYPE, date(2020, 1, 1))
+    newer = _pack_id_for(flat_rates, FLAT_GRANT_TYPE, date(2024, 1, 1))
+
+    result = TaxCalculationEngine.calculate_tax(
+        flat_rates, COUNTRY, FLAT_GRANT_TYPE, date(2024, 6, 1), 100000.0
+    )
+    assert result.pack_id == newer
+    assert result.pack_id != older
+
+
+def test_progressive_result_carries_its_source_and_pack(progressive_brackets):
+    result = TaxCalculationEngine.calculate_tax(
+        progressive_brackets, COUNTRY, PROGRESSIVE_GRANT_TYPE, date(2025, 3, 1), 50000.0
+    )
+    assert result.source_url == SRC
+    assert result.pack_id == _pack_id_for(
+        progressive_brackets, PROGRESSIVE_GRANT_TYPE, date(2020, 1, 1)
+    )

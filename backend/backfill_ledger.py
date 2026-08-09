@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from backend.app.database import SessionLocal
+from backend.app.types import utcnow
 import backend.app.models as models
 from backend.app.services.ledger import LEDGER_EPOCH, append_event, record_ownership
 from backend.app.models import LEDGER_SOURCE_BACKFILL, LedgerEvent
@@ -148,7 +149,7 @@ def main():
             print("⛔ כבר קיימים אירועי גיבוי ב-DB הזה - לא רץ שוב (מונע כפילויות).")
             return
 
-        run_at = datetime.utcnow()
+        run_at = utcnow()
         print(f"🧾 מתחיל גיבוי ל-ledger, recorded_at={run_at.isoformat()}...")
         counts = backfill(db, run_at)
         db.commit()

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, OptionPool, Trustee, User, UserRole,
@@ -26,7 +27,7 @@ def _months_ago(months: int) -> date:
 def _token(db, user):
     token = f"tok-{user.user_id}"
     db.add(UserSession(token=token, user_id=user.user_id,
-                       expires_at=datetime.utcnow() + timedelta(hours=1)))
+                       expires_at=utcnow() + timedelta(hours=1)))
     db.flush()
     return {"Authorization": f"Bearer {token}"}
 
@@ -171,9 +172,12 @@ def test_as_of_effective_date_on_and_after_deposit_shows_it(client, world, grant
 def test_as_of_knowledge_date_before_backfill_or_creation_returns_no_data(client, world, grant_with_deposit):
     """QA-060-46: שאילתת ידיעה על רגע *לפני* שהמענק בכלל נוצר - None, לא
     מתחזה לידע שאין. זו אותה הדגמה כמו QA-060-10 (שלב 1), עכשיו חשופה ב-API חי."""
-    long_before = datetime.utcnow() - timedelta(days=3650)
+    long_before = utcnow() - timedelta(days=3650)
+    # params= ולא שרשור ל-URL: isoformat() של חותמת aware מסתיים ב-"+00:00",
+    # וה-"+" בתוך query string פירושו רווח. שרשור ידני היה מחזיר 422 על קלט תקין.
     response = client.get(
-        f"{API}/admin/ledger/Grant/{grant_with_deposit}/as-of?knowledge_date={long_before.isoformat()}",
+        f"{API}/admin/ledger/Grant/{grant_with_deposit}/as-of",
+        params={"knowledge_date": long_before.isoformat()},
         headers=world.admin_a)
     assert response.status_code == 200, response.text
     assert response.json()["state"] is None

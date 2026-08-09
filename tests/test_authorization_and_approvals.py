@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, ExerciseRequest, ExerciseRequestStatus,
@@ -39,7 +40,7 @@ def _token(db, user: User) -> dict:
     לא על זרימת ההתחברות (שמכוסה בנפרד)."""
     token = f"test-token-{user.user_id}"
     db.add(UserSession(token=token, user_id=user.user_id,
-                       expires_at=datetime.utcnow() + timedelta(hours=1)))
+                       expires_at=utcnow() + timedelta(hours=1)))
     db.flush()
     return {"Authorization": f"Bearer {token}"}
 
@@ -190,7 +191,7 @@ def test_approving_more_than_vested_is_rejected(client, world):
     world.db.add(ExerciseRequest(request_id="REQ-OVER", grant_id="GRANT-A1",
                                  employee_id="EMP-A1", options_requested=4000.0,
                                  status=ExerciseRequestStatus.PENDING,
-                                 requested_at=datetime.utcnow()))
+                                 requested_at=utcnow()))
     world.db.flush()
 
     response = client.patch(f"{API}/admin/exercise-requests/REQ-OVER",
@@ -206,7 +207,7 @@ def test_rejecting_an_over_vested_request_is_still_allowed(client, world):
     world.db.add(ExerciseRequest(request_id="REQ-OVER-2", grant_id="GRANT-A1",
                                  employee_id="EMP-A1", options_requested=4000.0,
                                  status=ExerciseRequestStatus.PENDING,
-                                 requested_at=datetime.utcnow()))
+                                 requested_at=utcnow()))
     world.db.flush()
 
     response = client.patch(f"{API}/admin/exercise-requests/REQ-OVER-2",
@@ -240,7 +241,7 @@ def test_two_pending_requests_cannot_both_be_approved(client, world):
         world.db.add(ExerciseRequest(request_id=f"REQ-DUP-{suffix}", grant_id="GRANT-A1",
                                      employee_id="EMP-A1", options_requested=amount,
                                      status=ExerciseRequestStatus.PENDING,
-                                     requested_at=datetime.utcnow()))
+                                     requested_at=utcnow()))
     world.db.flush()
 
     first = client.patch(f"{API}/admin/exercise-requests/REQ-DUP-A",
@@ -262,7 +263,7 @@ def test_approving_before_trustee_holding_period_is_blocked(client, world):
     world.db.add(ExerciseRequest(request_id="REQ-EARLY", grant_id="GRANT-HELD",
                                  employee_id="EMP-A2", options_requested=500.0,
                                  status=ExerciseRequestStatus.PENDING,
-                                 requested_at=datetime.utcnow()))
+                                 requested_at=utcnow()))
     world.db.flush()
 
     response = client.patch(f"{API}/admin/exercise-requests/REQ-EARLY",
@@ -278,7 +279,7 @@ def test_trustee_approval_path_enforces_the_same_rules(client, world):
     world.db.add(ExerciseRequest(request_id="REQ-EARLY-T", grant_id="GRANT-HELD",
                                  employee_id="EMP-A2", options_requested=500.0,
                                  status=ExerciseRequestStatus.PENDING,
-                                 requested_at=datetime.utcnow()))
+                                 requested_at=utcnow()))
     world.db.flush()
 
     response = client.patch(f"{API}/trustee/exercise-requests/REQ-EARLY-T",
@@ -293,7 +294,7 @@ def test_a_reviewed_request_cannot_be_reviewed_again(client, world):
     world.db.add(ExerciseRequest(request_id="REQ-DONE", grant_id="GRANT-A1",
                                  employee_id="EMP-A1", options_requested=100.0,
                                  status=ExerciseRequestStatus.APPROVED,
-                                 requested_at=datetime.utcnow()))
+                                 requested_at=utcnow()))
     world.db.flush()
 
     response = client.patch(f"{API}/admin/exercise-requests/REQ-DONE",

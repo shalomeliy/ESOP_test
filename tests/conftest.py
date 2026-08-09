@@ -71,9 +71,37 @@ def guard_production_db():
 
 @pytest.fixture(scope="session", autouse=True)
 def create_schema(guard_production_db):
-    """סכימה על ה-DB הזמני דרך create_all - מהיר, ומספיק לבדיקות הלוגיקה.
-    התאמת המיגרציה של Alembic לסכימה נבדקת בנפרד ולא כאן."""
-    Base.metadata.create_all(bind=engine)
+    """סכימה דרך ``alembic upgrade head`` ולא ``create_all``.
+
+    ``create_all`` בונה טבלאות בלבד ו*אינו* מייצר טריגרים, שקיימים רק
+    במיגרציות. לכן כל הסוויטה פרט ל-test_document_triggers.py רצה בלי אף
+    אינווריאנט שנאכף ב-DB, ובאג 500 שלם שרד את זה. הטריגרים הם המקום שבו
+    אי-שינוי היומן ("append-only") נאכף בפועל - בדיקה שרצה בלעדיהם מאמתת
+    סכימה אחרת מזו שבייצור.
+
+    לא מחלצים את ה-DDL לקבוע משותף: מיגרציה היא ארטיפקט קפוא, ושינוי מיגרציה
+    ישנה כדי שתייבא קבוע היה משנה התנהגות רטרואקטיבית. העתקה לקובץ עזר של
+    הבדיקות הייתה מחזירה בדיוק את הדריפט שהתיקון הזה סוגר.
+    """
+    from alembic import command  # noqa: PLC0415 - יקר, ונדרש רק פעם אחת בסשן
+    from alembic.config import Config as AlembicConfig  # noqa: PLC0415
+
+    alembic_cfg = AlembicConfig(str(PROJECT_ROOT / "alembic.ini"))
+    # alembic.ini שורה 99 מצביעה על ה-DB החי. env.py אמנם מעדיף את משתנה
+    # הסביבה, אבל ההגנה לא תישען על סדר קדימויות בקובץ אחר: קובעים במפורש.
+    alembic_cfg.set_main_option("sqlalchemy.url", TEST_DB_URL)
+    _assert_not_production(alembic_cfg.get_main_option("sqlalchemy.url"))
+
+    command.upgrade(alembic_cfg, "head")
+
+    # הוכחה ולא הבטחה: בלי זה, מיגרציה שתפסיק לייצר טריגר תחזיר את הסוויטה
+    # בשקט למצב שלפני התיקון.
+    with engine.connect() as conn:
+        triggers = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).scalars().all()
+    assert triggers, "הסכימה נבנתה בלי טריגרים - alembic upgrade head לא רץ על ה-DB הזמני"
+
     yield
     Base.metadata.drop_all(bind=engine)
 
@@ -97,7 +125,12 @@ def db_session(create_schema):
         yield session
     finally:
         session.close()
-        transaction.rollback()
+        # endpoint שעשה commit כבר סגר את הטרנזקציה החיצונית (ראו המגבלה למעלה),
+        # ו-rollback עליה פלט SAWarning בכל בדיקה כזו. הבדיקה כאן אינה מסתירה את
+        # המגבלה - היא רק מפסיקה לדווח עליה כאזהרה בכל ריצה, כדי שאזהרה אמיתית
+        # לא תיבלע ברעש. ההתנהגות זהה: טרנזקציה שכבר נסגרה אין מה לגלגל אחורה.
+        if transaction.is_active:
+            transaction.rollback()
         connection.close()
 
 

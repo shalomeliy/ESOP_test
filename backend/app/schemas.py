@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from datetime import date, datetime
 from typing import Any, Dict, Optional, List
 from backend.app.models import EmployeeStatus, GrantType
@@ -109,8 +109,7 @@ class EmployeeOut(BaseModel):
     termination_date: Optional[date] = None
     birth_date: Optional[date] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmployeeCreateResponse(EmployeeOut):
@@ -133,8 +132,7 @@ class CompanyOut(BaseModel):
     country_code: str
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class GrantOut(BaseModel):
     grant_id: str
@@ -149,8 +147,7 @@ class GrantOut(BaseModel):
     trustee_deposit_date: Optional[date] = None
     post_termination_window_days: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PoolOut(BaseModel):
     pool_id: str
@@ -159,8 +156,7 @@ class PoolOut(BaseModel):
     allocated_shares: float
     unallocated_shares: float
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ===================================================================
@@ -245,8 +241,7 @@ class AuditLogOut(BaseModel):
     after_value: Optional[str] = None
     notes: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ===================================================================
@@ -271,8 +266,7 @@ class ExerciseRequestOut(BaseModel):
     reviewed_at: Optional[datetime] = None
     review_notes: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ===================================================================
@@ -342,5 +336,4 @@ class DocumentOut(BaseModel):
     employee_name: Optional[str] = None
     grant_date: Optional[date] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

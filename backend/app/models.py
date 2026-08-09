@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime, date
 from enum import Enum
-from sqlalchemy import Column, String, Float, Integer, Date, DateTime, Boolean, ForeignKey, Enum as SQLEnum, CheckConstraint, UniqueConstraint, Index
+from sqlalchemy import Column, String, Float, Integer, Date, Boolean, ForeignKey, Enum as SQLEnum, CheckConstraint, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
+from backend.app.types import UtcDateTime, utcnow
 
 def generate_uuid():
     return str(uuid.uuid4())
@@ -26,7 +26,7 @@ class Company(Base):
     name = Column(String, nullable=False)
     country_code = Column(String, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
 
     pools = relationship("OptionPool", back_populates="company")
     employees = relationship("Employee", back_populates="company")
@@ -46,7 +46,7 @@ class OptionPool(Base):
     total_shares = Column(Float, nullable=False)
     allocated_shares = Column(Float, default=0.0, nullable=False)
     unallocated_shares = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
 
     company = relationship("Company", back_populates="pools")
 
@@ -132,7 +132,7 @@ class TaxRulePack(Base):
     effective_start_date = Column(Date, nullable=False)
     calculation_method = Column(String, nullable=False)
     official_source_url = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
 
     __table_args__ = (
         UniqueConstraint("country_code", "grant_type", "effective_start_date",
@@ -222,7 +222,7 @@ class User(Base):
     trustee_id = Column(String, ForeignKey("trustees.trustee_id"), nullable=True)
     employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
     # נדלק על כל חשבון שסופק עם סיסמה חד-פעמית (ראו auth.generate_temporary_password) -
     # לא על סיסמה שנבחרה ע"י המשתמש. require_roles חוסם כל endpoint עסקי עד שהדגל יורד
     # דרך POST /auth/change-password. חשבונות QA שנזרעים ישירות (seed_data.py) לא מסמנים
@@ -231,14 +231,14 @@ class User(Base):
     # נעילת חשבון (ראו auth.MAX_FAILED_LOGIN_ATTEMPTS). שני שדות ולא טבלה נפרדת: אין
     # צורך בהיסטוריה, רק במונה חי ובזמן שחרור.
     failed_login_attempts = Column(Integer, default=0, nullable=False)
-    locked_until = Column(DateTime, nullable=True)
+    locked_until = Column(UtcDateTime, nullable=True)
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
     token = Column(String, primary_key=True)
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow)
+    expires_at = Column(UtcDateTime, nullable=False)
 
 class ExerciseRequestStatus(str, Enum):
     PENDING = "PENDING"
@@ -252,7 +252,7 @@ class AuditLog(Base):
     entity_id = Column(String, nullable=False, index=True)
     action = Column(String, nullable=False)
     actor_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
-    occurred_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    occurred_at = Column(UtcDateTime, default=utcnow, nullable=False, index=True)
     # snapshot לפני/אחרי כ-JSON טקסטואלי - מספיק לצורכי תרגול QA, לא צריך JSON column ייעודי ב-SQLite
     before_value = Column(String, nullable=True)
     after_value = Column(String, nullable=True)
@@ -265,10 +265,10 @@ class ExerciseRequest(Base):
     grant_id = Column(String, ForeignKey("grants.grant_id"), nullable=False, index=True)
     employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=False, index=True)
     options_requested = Column(Float, nullable=False)
-    requested_at = Column(DateTime, default=datetime.utcnow)
+    requested_at = Column(UtcDateTime, default=utcnow)
     status = Column(SQLEnum(ExerciseRequestStatus), default=ExerciseRequestStatus.PENDING, nullable=False)
     reviewed_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
-    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(UtcDateTime, nullable=True)
     review_notes = Column(String, nullable=True)
 
 
@@ -338,7 +338,7 @@ class NotificationDismissal(Base):
     # כי ההתראה עצמה לא נשמרת: זה הדבר היחיד שמקשר סגירה שנעשתה אתמול להתראה
     # שתיווצר מחדש מהמנוע היום.
     notification_key = Column(String, nullable=False)
-    dismissed_at = Column(DateTime, default=datetime.utcnow)
+    dismissed_at = Column(UtcDateTime, default=utcnow)
 
 
 # ===================================================================
@@ -409,7 +409,7 @@ class LedgerEvent(Base):
     effective_date = Column(Date, nullable=False)
     # ציר זמן #2: מתי המערכת למדה אותה. immutable לאחר הכתיבה - זו בדיוק הסיבה
     # שהטריגר במיגרציה חוסם UPDATE על הטבלה הזו כולה.
-    recorded_at = Column(DateTime, nullable=False)
+    recorded_at = Column(UtcDateTime, nullable=False)
     # nullable כדי לאפשר אירועי גיבוי/מערכת - לעולם לא משויכים למשתמש אמיתי
     # שלא ביצע את הפעולה בפועל (ראו backfill_ledger.py).
     actor_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
@@ -482,8 +482,8 @@ class Document(Base):
     # רק דרך endpoint מאומת שמפעיל את בדיקת הבעלות.
     file_path = Column(String, nullable=False)
     file_sha256 = Column(String, nullable=False)
-    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    sent_at = Column(DateTime, nullable=True)
-    acknowledged_at = Column(DateTime, nullable=True)
+    generated_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    sent_at = Column(UtcDateTime, nullable=True)
+    acknowledged_at = Column(UtcDateTime, nullable=True)
     acknowledged_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
     created_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)

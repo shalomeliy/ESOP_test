@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from backend.app.types import utcnow
 from backend.app.auth import (
     MAX_FAILED_LOGIN_ATTEMPTS, hash_password, is_account_locked,
 )
@@ -207,10 +208,10 @@ def test_successful_login_resets_the_failed_attempt_counter(client, company_admi
 
 
 def test_locked_out_flag_helper(company_admin):
-    company_admin.locked_until = datetime.utcnow() + timedelta(minutes=5)
+    company_admin.locked_until = utcnow() + timedelta(minutes=5)
     assert is_account_locked(company_admin) is True
 
-    company_admin.locked_until = datetime.utcnow() - timedelta(minutes=1)
+    company_admin.locked_until = utcnow() - timedelta(minutes=1)
     assert is_account_locked(company_admin) is False
 
 
@@ -220,9 +221,9 @@ def test_locked_out_flag_helper(company_admin):
 
 def test_login_cleans_up_expired_sessions(client, company_admin, db_session):
     db_session.add(UserSession(token="expired-tok", user_id=company_admin.user_id,
-                               expires_at=datetime.utcnow() - timedelta(hours=1)))
+                               expires_at=utcnow() - timedelta(hours=1)))
     db_session.add(UserSession(token="still-valid-tok", user_id=company_admin.user_id,
-                               expires_at=datetime.utcnow() + timedelta(hours=1)))
+                               expires_at=utcnow() + timedelta(hours=1)))
     db_session.flush()
 
     client.post(f"{API}/auth/login", json={"username": "admin@secco.demo", "password": "Adm1nPass!"})

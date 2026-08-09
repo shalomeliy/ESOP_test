@@ -2,13 +2,14 @@ import hashlib
 import hmac
 import secrets
 import string
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app import models
+from backend.app.types import utcnow
 
 # נעילת חשבון אחרי כשלונות חוזרים (v0.5.1 - patch אבטחה). קבועים ולא הגדרת admin:
 # זו החלטת מוצר שמרנית, לא כלל מס - מותר לשנות בלי אימות חיצוני.
@@ -28,7 +29,7 @@ def generate_temporary_password(length: int = 14) -> str:
 
 
 def is_account_locked(user: "models.User") -> bool:
-    return user.locked_until is not None and user.locked_until > datetime.utcnow()
+    return user.locked_until is not None and user.locked_until > utcnow()
 
 
 def register_failed_login(db: Session, user: "models.User") -> None:
@@ -36,7 +37,7 @@ def register_failed_login(db: Session, user: "models.User") -> None:
     רק כניסה מוצלחת מאפסת אותו, כדי שניסיונות מפוזרים על פני זמן עדיין ייספרו."""
     user.failed_login_attempts += 1
     if user.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
-        user.locked_until = datetime.utcnow() + LOCKOUT_DURATION
+        user.locked_until = utcnow() + LOCKOUT_DURATION
     db.commit()
 
 
@@ -51,7 +52,7 @@ def cleanup_expired_sessions(db: Session) -> None:
     בפרויקט (אותה החלטה שכבר התקבלה במרכז ההתראות - מחושב על קריאה ולא
     באחסון נפרד), ונקודת הכניסה היחידה שבטוח נקראת הרבה היא ההתחברות."""
     db.query(models.UserSession).filter(
-        models.UserSession.expires_at < datetime.utcnow()
+        models.UserSession.expires_at < utcnow()
     ).delete(synchronize_session=False)
     db.commit()
 
@@ -76,7 +77,7 @@ def create_session(db: Session, user: models.User) -> str:
     session = models.UserSession(
         token=token,
         user_id=user.user_id,
-        expires_at=datetime.utcnow() + timedelta(days=30),
+        expires_at=utcnow() + timedelta(days=30),
     )
     db.add(session)
     db.commit()
@@ -89,7 +90,7 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
     token = authorization.split(" ", 1)[1]
 
     session = db.query(models.UserSession).filter(models.UserSession.token == token).first()
-    if not session or session.expires_at < datetime.utcnow():
+    if not session or session.expires_at < utcnow():
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
     user = db.query(models.User).filter(models.User.user_id == session.user_id).first()

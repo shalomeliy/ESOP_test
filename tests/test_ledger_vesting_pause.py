@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, Grant, GrantType, LedgerEvent, OptionPool,
@@ -29,7 +30,7 @@ def _months_ago(months: int) -> date:
 def _token(db, user):
     token = f"tok-{user.user_id}"
     db.add(UserSession(token=token, user_id=user.user_id,
-                       expires_at=datetime.utcnow() + timedelta(hours=1)))
+                       expires_at=utcnow() + timedelta(hours=1)))
     db.flush()
     return {"Authorization": f"Bearer {token}"}
 

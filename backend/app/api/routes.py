@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.types import utcnow, ensure_utc, system_today_utc
 from backend.app.models import (
     Employee, EmployeeStatus, OptionPool, Grant, StockPricesHistory,
     Trustee, VestingSchedule, User, UserRole, UserSession, ExerciseRequest, ExerciseRequestStatus,
@@ -115,7 +116,7 @@ def _assert_request_approvable(db: Session, req: ExerciseRequest, grant: Grant) 
         raise HTTPException(status_code=409,
                             detail=f"Request is already {req.status.value}; only PENDING can be reviewed")
 
-    today = date.today()
+    today = system_today_utc()
     vested = _vested_or_conflict(grant, today)
 
     # רק APPROVED נחשב "תפוס" בשלב האישור - בקשות PENDING אחרות עדיין לא אושרו,
@@ -153,7 +154,7 @@ def _decide_exercise_request(db: Session, req: ExerciseRequest, payload: Exercis
     אחרת יש חלון TOCTOU בין הבדיקה לכתיבה (ראו סקירת האבטחה לתכנון v0.6.0)."""
     req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
     req.reviewed_by_user_id = actor_user_id
-    req.reviewed_at = datetime.utcnow()
+    req.reviewed_at = utcnow()
     req.review_notes = payload.notes
     record_audit_event(db, "ExerciseRequest", req.request_id,
                         "APPROVE" if payload.approve else "REJECT", actor_user_id,
@@ -161,7 +162,7 @@ def _decide_exercise_request(db: Session, req: ExerciseRequest, payload: Exercis
     append_event(db, event_type="EXERCISE_REQUEST_DECIDED", aggregate_type="ExerciseRequest",
                 aggregate_id=req.request_id,
                 payload={"status": req.status.value, "notes": payload.notes},
-                effective_date=date.today(), actor_user_id=actor_user_id)
+                effective_date=system_today_utc(), actor_user_id=actor_user_id)
     return req
 
 
@@ -467,6 +468,12 @@ def delete_employee(employee_id: str, current_user: User = Depends(require_roles
         # יש היסטוריית grants - אסור למחוק, רק מסמנים TERMINATED.
         before_status = emp.status
         emp.status = EmployeeStatus.TERMINATED
+        # האתר היחיד שנשאר במכוון על date.today() ולא הומר ל-system_today_utc():
+        # התאריך הזה מודפס על מסמכים לעובד, ועובד שסיים ב-01:00 בירושלים ב-1
+        # בינואר היה נשמר לפי UTC כ-31 בדצמבר - שגיאה של *שנה* שנראית סבירה.
+        # החלפה כאן הייתה מסתירה פגם עמוק יותר: תאריך סיום העסקה הוא עובדת HR
+        # שלרוב מתרחשת בעבר, ואין לגזור אותה משעון ברגע שאדמין לוחץ. רשום
+        # כחוב פתוח ב-HANDOFF.md - הפתרון הוא קלט מפורש, לא שעון אחר.
         emp.termination_date = date.today()
         append_event(db, event_type="EMPLOYEE_STATUS_CHANGED", aggregate_type="Employee",
                     aggregate_id=employee_id,
@@ -657,6 +664,12 @@ def get_ledger_as_of(aggregate_type: str, aggregate_id: str,
     if aggregate_type not in LEDGER_AGGREGATE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported aggregate_type: {aggregate_type}")
     _assert_ledger_ownership(db, aggregate_type, aggregate_id, current_user)
+
+    # נקודת הכשל האמיתית של החתך הבי-טמפורלי: FastAPI מפרסר
+    # ?knowledge_date=...+03:00 ל-datetime aware, וההשוואה מול recorded_at
+    # ה-naive הייתה מוחקת את ההיסט בשקט - כלומר מחזירה אירוע שנוצר *אחרי*
+    # נקודת החתך כאילו המערכת כבר ידעה עליו. נרמול כאן, לפני כל שאילתה.
+    knowledge_date = ensure_utc(knowledge_date)
 
     state = project(db, aggregate_type, aggregate_id,
                     as_of_effective_date=effective_date, as_of_knowledge_date=knowledge_date)
@@ -931,7 +944,7 @@ def record_vesting_pause(grant_id: str, payload: VestingPauseRequest,
 @router.get("/trustee/portfolio", response_model=List[TrusteePortfolioItem])
 def trustee_portfolio(current_user: User = Depends(require_roles(UserRole.TRUSTEE)), db: Session = Depends(get_db)):
     grants = db.query(Grant).filter(Grant.trustee_id == current_user.trustee_id).all()
-    today = date.today()
+    today = system_today_utc()
     result = []
     for g in grants:
         emp = g.employee
@@ -1030,7 +1043,7 @@ def get_employee_dashboard(employee_id: str, current_user: User = Depends(requir
         raise HTTPException(status_code=404, detail="Employee not found")
 
     grants_data = []
-    today = date.today()
+    today = system_today_utc()
 
     for grant in employee.grants:
         is_trustee_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, today)
@@ -1145,7 +1158,7 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
         raise HTTPException(status_code=403, detail="This grant does not belong to you")
 
     is_within_ptw, ptw_deadline = DeterministicESOPEngine.check_post_termination_exercise_window(
-        grant, grant.employee, date.today()
+        grant, grant.employee, system_today_utc()
     )
     if not is_within_ptw:
         raise HTTPException(
@@ -1159,7 +1172,7 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
     # חסימה כבר בהגשה, ולא רק באישור: שתי בקשות חופפות שיושבות PENDING יחד מציגות
     # לעובד תמונה שקרית (הוא "ביקש" יותר ממה שיש לו) ומעמיסות על המאשר את התפקיד
     # שהמערכת אמורה למלא.
-    vested = _vested_or_conflict(grant, date.today())
+    vested = _vested_or_conflict(grant, system_today_utc())
     committed = _options_committed(
         db, grant.grant_id,
         (ExerciseRequestStatus.PENDING, ExerciseRequestStatus.APPROVED))
@@ -1187,7 +1200,7 @@ def create_exercise_request(payload: ExerciseRequestCreate, current_user: User =
     append_event(db, event_type="EXERCISE_REQUEST_SUBMITTED", aggregate_type="ExerciseRequest",
                 aggregate_id=req.request_id,
                 payload={"options_requested": req.options_requested, "grant_id": grant.grant_id},
-                effective_date=date.today(), actor_user_id=current_user.user_id)
+                effective_date=system_today_utc(), actor_user_id=current_user.user_id)
 
     db.commit()
     db.refresh(req)
@@ -1260,7 +1273,7 @@ def _transition_document(db: Session, document: Document, target: DocumentStatus
     assert_transition_allowed(document.status, target)
     before = document.status.value
     document.status = target
-    now = datetime.utcnow()
+    now = utcnow()
     if target == DocumentStatus.SENT:
         document.sent_at = now
     elif target == DocumentStatus.ACKNOWLEDGED:

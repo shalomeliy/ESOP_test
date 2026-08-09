@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, ExerciseRequest, ExerciseRequestStatus,
@@ -43,7 +44,7 @@ def _user(db, user_id, role, **ids):
 def _token(db, user):
     token = f"tok-{user.user_id}"
     db.add(UserSession(token=token, user_id=user.user_id,
-                       expires_at=datetime.utcnow() + timedelta(hours=1)))
+                       expires_at=utcnow() + timedelta(hours=1)))
     db.flush()
     return {"Authorization": f"Bearer {token}"}
 
@@ -332,7 +333,7 @@ def test_pending_request_notification_respects_the_waiting_threshold(world):
     db = world.db
     req = ExerciseRequest(request_id="R-WAIT", grant_id="G-1", employee_id="E-1",
                           options_requested=100.0, status=ExerciseRequestStatus.PENDING,
-                          requested_at=datetime.utcnow() - timedelta(days=10))
+                          requested_at=utcnow() - timedelta(days=10))
     db.add(req)
     db.flush()
 

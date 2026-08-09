@@ -15,5 +15,9 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python tools/context_check.py"
   }
 }

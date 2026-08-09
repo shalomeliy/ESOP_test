@@ -132,5 +132,130 @@ def test_failure_patterns_are_present_in_the_index():
 #   P2 (IDOR)  — כל route עם {id} מהלקוח עובר דרך בדיקת בעלות מהסשן
 #   P4 (None→0) — אין `or 0` על שדות vested/tax/amount
 #   P1 (תאריכים) — חשבון חודשים עובר דרך פונקציית עזר, לא `// 12` גולמי
-#   כיסוי       — TaxCalculationResult ושדותיו מכוסים בבדיקה
-#                 (codegraph סימן את זה ב-06/08/2026 כחסר כיסוי)
+#
+# בוצע ב-v0.9.1: שדות TaxCalculationResult. הפער האמיתי לא היה האריתמטיקה
+# (שהייתה מכוסה היטב) אלא **שרשור המקורות** — source_url לא נבדק מעולם
+# ו-pack_id רק כ-is not None, כך שמנוע שבוחר את החבילה הלא נכונה עם אותו
+# שיעור היה עובר הכל. ראו tests/test_tax_engine.py, סעיף שרשור המקורות.
+
+
+# ---------------------------------------------------------------------------
+# נאמנות חותמות זמן (v0.9.1). הבאג: datetime.utcnow() מחזיר naive, ו-SQLite
+# משמיט את ההיסט בשקט - כלומר שאילתה בי-טמפורלית החזירה תשובה שגויה בלי
+# חריגה. תיקון נקודתי היה נסוג בשקט בפעם הבאה שמישהו כותב utcnow() מתוך הרגל.
+# ---------------------------------------------------------------------------
+
+def _python_sources(*relative_dirs: str) -> list[Path]:
+    files: list[Path] = []
+    for rel in relative_dirs:
+        files.extend(
+            p for p in (ROOT / rel).rglob("*.py") if "__pycache__" not in p.parts
+        )
+    return files
+
+
+def test_no_naive_utcnow_in_backend():
+    """``datetime.utcnow()`` אסור ב-backend. ``backend/app/types.py`` הוא
+    החריג היחיד, ורק בטקסט התיעוד שמסביר למה הוא אסור."""
+    offenders = [
+        f"{p.relative_to(ROOT)}:{i}"
+        for p in _python_sources("backend")
+        if p != ROOT / "backend" / "app" / "types.py"
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if "datetime.utcnow(" in line
+    ]
+    assert not offenders, (
+        "datetime.utcnow() מחזיר naive. השתמשו ב-backend.app.types.utcnow(). "
+        f"נמצא ב: {offenders}"
+    )
+
+
+def test_no_host_local_date_today_in_backend():
+    """``date.today()`` מחזיר את תאריך המארח. החריג היחיד המותר הוא
+    ``routes.py`` בהשמת ``termination_date``, שמנומק שם בהערה ורשום כחוב פתוח."""
+    offenders = [
+        f"{p.relative_to(ROOT)}:{i}"
+        for p in _python_sources("backend")
+        if p != ROOT / "backend" / "app" / "types.py"
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if "date.today()" in line
+        and not line.lstrip().startswith("#")
+        # ``date.today()`` בגרשיים כפולים הוא אזכור בתיעוד, לא קריאה
+        and "``date.today()``" not in line
+        and "termination_date" not in line
+    ]
+    assert not offenders, (
+        "date.today() תלוי באזור הזמן של המארח. השתמשו ב-"
+        f"backend.app.types.system_today_utc(). נמצא ב: {offenders}"
+    )
+
+
+def test_the_clock_is_never_the_source_of_a_tax_date():
+    """תאריך בעל משמעות מסית מגיע מהמסמך ולא משעון - בשום אזור זמן.
+
+    ארה"ב מאחורי UTC וישראל לפניו, ולכן אין שעון יחיד שהוא שמרני לשתי
+    המדינות. אימות מלא ב-docs/qa/v0.9.1.md.
+    """
+    tax_dated_fields = ("grant_date", "trustee_deposit_date", "exercise_date")
+    clocks = ("system_today_utc()", "date.today()", "utcnow()")
+    offenders = [
+        f"{p.relative_to(ROOT)}:{i}  {line.strip()}"
+        for p in _python_sources("backend")
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if not line.lstrip().startswith("#")
+        and any(f"{field} =" in line or f"{field}=" in line for field in tax_dated_fields)
+        and any(clock in line for clock in clocks)
+    ]
+    assert not offenders, (
+        "תאריך מס נגזר משעון. הוא חייב להגיע מהמסמך (החלטת דירקטוריון, אישור "
+        f"הפקדה, הודעת מימוש). נמצא ב: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# database/init_scheme.sql הוא תיעוד בלבד, אבל CLAUDE.md שורה 17 מפנה אליו
+# כמקור לאימות לוגיקת דומיין. ב-09/08/2026 התגלה שהוא עצר ב-0.5.0 וחסרו בו
+# ארבע טבלאות וכל הטריגרים - כלומר הוא לא היה מיושן, הוא היה מטעה.
+# ---------------------------------------------------------------------------
+
+def test_init_scheme_sql_documents_every_table_in_the_models():
+    import sqlite3
+
+    from backend.app.database import Base
+    import backend.app.models  # noqa: F401  -- רושם את הטבלאות על Base.metadata
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript((ROOT / "database" / "init_scheme.sql").read_text(encoding="utf-8"))
+    documented = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    } - {"alembic_version"}
+
+    modelled = set(Base.metadata.tables)
+    assert not modelled - documented, (
+        "טבלאות שקיימות במודלים ולא מתועדות ב-init_scheme.sql: "
+        f"{sorted(modelled - documented)}"
+    )
+    assert not documented - modelled, (
+        "טבלאות שמתועדות ב-init_scheme.sql ולא קיימות במודלים: "
+        f"{sorted(documented - modelled)}"
+    )
+
+
+def test_init_scheme_sql_documents_the_triggers():
+    """הטריגרים הם המקום היחיד שבו append-only נאכף בפועל. קובץ סכמה שמראה
+    את הטבלה בלי הטריגר משדר שאפשר לעדכן אותה."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript((ROOT / "database" / "init_scheme.sql").read_text(encoding="utf-8"))
+    triggers = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+
+    assert triggers >= {
+        "trg_ledger_events_no_update",
+        "trg_ledger_events_no_delete",
+        "trg_documents_no_update_once_acknowledged",
+        "trg_documents_no_delete_once_acknowledged",
+    }, f"טריגרים חסרים ב-init_scheme.sql. נמצאו: {sorted(triggers)}"

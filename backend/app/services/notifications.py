@@ -15,6 +15,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from backend.app.types import system_today_utc
 from backend.app.models import (
     Employee, Grant, OptionPool, ExerciseRequest, ExerciseRequestStatus,
     NotificationPreference, NotificationDismissal, NOTIFICATION_DEFAULT_LEAD_DAYS,
@@ -255,7 +256,7 @@ def _finalize(items: list, degraded: list, dismissed: set) -> NotificationFeed:
 
 
 def for_admin(db: Session, company_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or date.today()
+    today = today or system_today_utc()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     # סקופ: רק פולים של החברה הזו -> רק המענקים שלהם. עובד עם company_id=NULL
@@ -272,7 +273,7 @@ def for_admin(db: Session, company_id: str, user_id: str, today: date = None) ->
 
 
 def for_trustee(db: Session, trustee_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or date.today()
+    today = today or system_today_utc()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     grants = db.query(Grant).filter(Grant.trustee_id == trustee_id).all()
@@ -285,7 +286,7 @@ def for_trustee(db: Session, trustee_id: str, user_id: str, today: date = None) 
 
 
 def for_employee(db: Session, employee_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or date.today()
+    today = today or system_today_utc()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     grants = db.query(Grant).filter(Grant.employee_id == employee_id).all()

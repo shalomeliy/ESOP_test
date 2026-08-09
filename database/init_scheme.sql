@@ -1,15 +1,21 @@
--- SQL Schema Reference - 15 טבלאות, משקף את backend/app/models.py בגרסה 0.5.0.
+-- SQL Schema Reference - 19 טבלאות, משקף את backend/app/models.py בגרסה 0.9.1.
 --
 -- זהו קובץ תיעוד/reference בלבד. ה-DB בפועל נבנה על ידי Alembic
 -- (python -m alembic upgrade head) מאז גרסה 0.4.0 - לא על ידי הקובץ הזה
 -- ולא יותר על ידי Base.metadata.create_all(). כל שינוי סכמה חייב מיגרציה;
 -- הקובץ הזה מסונכרן ידנית אחריה.
 --
--- *** הקובץ הזה שיקר בעבר ***: הוא הכריז על CHECK constraints לערכי enum
+-- *** הקובץ הזה שיקר פעמיים ***
+-- (1) הוא הכריז על CHECK constraints לערכי enum
 -- (status/role/grant_type) שמעולם לא היו קיימים ב-DB האמיתי, ופספס שתי טבלאות
 -- ועמודה. הגרסה הזו נגזרה מ-sqlite_master של DB שנבנה ב-alembic upgrade head,
 -- ולכן היא תואמת בדיוק. אל תוסיפו כאן אילוץ שלא קיים במודל - אילוץ מתועד שלא
 -- נאכף מסוכן יותר מהיעדר תיעוד.
+-- (2) ב-09/08/2026 התגלה שהוא עצר בגרסה 0.5.0 וחסרו בו *ארבע* טבלאות שלמות -
+--     tax_rule_packs (v0.7.0), ledger_events + ledger_ownership (v0.6.0),
+--     documents (v0.9.0) - וכל ארבעת הטריגרים. CLAUDE.md שורה 17 מפנה לכאן
+--     כמקור לאימות לוגיקת דומיין, כך שקובץ מיושן כאן אינו ליקוי תיעוד אלא
+--     מקור מטעה. מאז נאכף ב-tests/test_project_invariants.py ולא בזיכרון.
 --
 -- שתי הערות על "מה לא רואים כאן":
 -- 1. ב-SQLite אכיפת Foreign Key כבויה כברירת מחדל בכל connection.
@@ -240,3 +246,120 @@ CREATE INDEX IF NOT EXISTS ix_notification_dismissals_user_id ON notification_di
 --     UNIQUE רגיל היה יוצר autoindex זהה, ולכן אינדקס נוסף נפרד היה כפילות מיותרת.
 CREATE UNIQUE INDEX IF NOT EXISTS ix_notification_dismissals_user_key
     ON notification_dismissals(user_id, notification_key);
+
+
+-- ===================================================================
+-- v0.6.0 - v0.9.0: הטבלאות שנוספו אחרי 0.5.0
+-- ===================================================================
+
+CREATE TABLE IF NOT EXISTS tax_rule_packs (
+	pack_id VARCHAR NOT NULL, 
+	country_code VARCHAR NOT NULL, 
+	grant_type VARCHAR NOT NULL, 
+	effective_start_date DATE NOT NULL, 
+	calculation_method VARCHAR NOT NULL, 
+	official_source_url VARCHAR NOT NULL, 
+	created_at DATETIME, 
+	PRIMARY KEY (pack_id), 
+	CONSTRAINT uq_tax_rule_packs_country_type_date UNIQUE (country_code, grant_type, effective_start_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_tax_rule_packs_country_code ON tax_rule_packs (country_code);
+CREATE INDEX IF NOT EXISTS ix_tax_rule_packs_grant_type ON tax_rule_packs (grant_type);
+
+CREATE TABLE IF NOT EXISTS ledger_events (
+	event_id VARCHAR NOT NULL, 
+	event_type VARCHAR NOT NULL, 
+	aggregate_type VARCHAR NOT NULL, 
+	aggregate_id VARCHAR NOT NULL, 
+	payload VARCHAR NOT NULL, 
+	effective_date DATE NOT NULL, 
+	recorded_at DATETIME NOT NULL, 
+	actor_user_id VARCHAR, 
+	sequence_no INTEGER NOT NULL, 
+	corrects_event_id VARCHAR, 
+	schema_version INTEGER NOT NULL, 
+	source VARCHAR NOT NULL, 
+	PRIMARY KEY (event_id), 
+	FOREIGN KEY(actor_user_id) REFERENCES users (user_id), 
+	FOREIGN KEY(corrects_event_id) REFERENCES ledger_events (event_id), 
+	CONSTRAINT uq_ledger_events_aggregate_seq UNIQUE (aggregate_id, sequence_no)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ledger_events_aggregate ON ledger_events (aggregate_type, aggregate_id);
+CREATE INDEX IF NOT EXISTS ix_ledger_events_effective_date ON ledger_events (effective_date);
+CREATE INDEX IF NOT EXISTS ix_ledger_events_event_type ON ledger_events (event_type);
+CREATE INDEX IF NOT EXISTS ix_ledger_events_recorded_at ON ledger_events (recorded_at);
+
+CREATE TABLE IF NOT EXISTS ledger_ownership (
+	aggregate_id VARCHAR NOT NULL, 
+	aggregate_type VARCHAR NOT NULL, 
+	company_id VARCHAR, 
+	trustee_id VARCHAR, 
+	employee_id VARCHAR, 
+	PRIMARY KEY (aggregate_id), 
+	FOREIGN KEY(company_id) REFERENCES companies (company_id), 
+	FOREIGN KEY(employee_id) REFERENCES employees (employee_id), 
+	FOREIGN KEY(trustee_id) REFERENCES trustees (trustee_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ledger_ownership_company_id ON ledger_ownership (company_id);
+CREATE INDEX IF NOT EXISTS ix_ledger_ownership_employee_id ON ledger_ownership (employee_id);
+CREATE INDEX IF NOT EXISTS ix_ledger_ownership_trustee_id ON ledger_ownership (trustee_id);
+
+CREATE TABLE IF NOT EXISTS documents (
+	document_id VARCHAR NOT NULL, 
+	template_type VARCHAR NOT NULL, 
+	grant_id VARCHAR NOT NULL, 
+	company_id VARCHAR NOT NULL, 
+	employee_id VARCHAR NOT NULL, 
+	trustee_id VARCHAR, 
+	status VARCHAR(12) NOT NULL, 
+	version INTEGER NOT NULL, 
+	is_latest BOOLEAN NOT NULL, 
+	file_path VARCHAR NOT NULL, 
+	file_sha256 VARCHAR NOT NULL, 
+	generated_at DATETIME NOT NULL, 
+	sent_at DATETIME, 
+	acknowledged_at DATETIME, 
+	acknowledged_by_user_id VARCHAR, 
+	created_by_user_id VARCHAR, 
+	PRIMARY KEY (document_id), 
+	FOREIGN KEY(acknowledged_by_user_id) REFERENCES users (user_id), 
+	FOREIGN KEY(company_id) REFERENCES companies (company_id), 
+	FOREIGN KEY(created_by_user_id) REFERENCES users (user_id), 
+	FOREIGN KEY(employee_id) REFERENCES employees (employee_id), 
+	FOREIGN KEY(grant_id) REFERENCES grants (grant_id), 
+	FOREIGN KEY(trustee_id) REFERENCES trustees (trustee_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_documents_company_id ON documents (company_id);
+CREATE INDEX IF NOT EXISTS ix_documents_employee_id ON documents (employee_id);
+CREATE INDEX IF NOT EXISTS ix_documents_grant_id ON documents (grant_id);
+CREATE INDEX IF NOT EXISTS ix_documents_trustee_id ON documents (trustee_id);
+
+
+-- ===================================================================
+-- טריגרים - כאן נאכפים האינווריאנטים שאין להם ביטוי בעמודה
+-- ===================================================================
+-- שני זוגות: יומן האירועים append-only (אין UPDATE ואין DELETE, לעולם), ומסמך
+-- שאושר בקבלה מוקפא בתוכנו. הטריגרים קיימים *רק במיגרציות* - Base.metadata.
+-- create_all() אינו מייצר אותם, ולכן סוויטת בדיקות שנבנית ב-create_all רצה בלי
+-- אף אחד מהם. זה בדיוק מה שהסתיר באג 500 שלם עד v0.9.1; tests/conftest.py עבר
+-- מאז ל-alembic upgrade head ומוודא שנוצר לפחות טריגר אחד.
+
+CREATE TRIGGER trg_documents_no_delete_once_acknowledged
+        BEFORE DELETE ON documents
+        WHEN OLD.status = 'ACKNOWLEDGED'
+        BEGIN SELECT RAISE(ABORT, 'documents: an ACKNOWLEDGED document is frozen; DELETE is rejected'); END;
+
+CREATE TRIGGER trg_documents_no_update_once_acknowledged
+        BEFORE UPDATE ON documents
+        WHEN OLD.status = 'ACKNOWLEDGED' AND (NEW.status IS NOT OLD.status OR NEW.acknowledged_at IS NOT OLD.acknowledged_at OR NEW.acknowledged_by_user_id IS NOT OLD.acknowledged_by_user_id OR NEW.template_type IS NOT OLD.template_type OR NEW.grant_id IS NOT OLD.grant_id OR NEW.company_id IS NOT OLD.company_id OR NEW.employee_id IS NOT OLD.employee_id OR NEW.trustee_id IS NOT OLD.trustee_id OR NEW.version IS NOT OLD.version OR NEW.file_path IS NOT OLD.file_path OR NEW.file_sha256 IS NOT OLD.file_sha256 OR NEW.generated_at IS NOT OLD.generated_at OR NEW.sent_at IS NOT OLD.sent_at)
+        BEGIN SELECT RAISE(ABORT, 'documents: an ACKNOWLEDGED document is frozen; only is_latest may change'); END;
+
+CREATE TRIGGER trg_ledger_events_no_delete BEFORE DELETE ON ledger_events
+        BEGIN SELECT RAISE(ABORT, 'ledger_events is append-only: DELETE is rejected'); END;
+
+CREATE TRIGGER trg_ledger_events_no_update BEFORE UPDATE ON ledger_events
+        BEGIN SELECT RAISE(ABORT, 'ledger_events is append-only: UPDATE is rejected'); END;
