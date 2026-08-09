@@ -171,8 +171,12 @@ def test_no_naive_utcnow_in_backend():
 
 
 def test_no_host_local_date_today_in_backend():
-    """``date.today()`` מחזיר את תאריך המארח. החריג היחיד המותר הוא
-    ``routes.py`` בהשמת ``termination_date``, שמנומק שם בהערה ורשום כחוב פתוח."""
+    """``date.today()`` מחזיר את תאריך המארח. **אין חריגים.**
+
+    עד v0.9.1 היה חריג אחד ל-``termination_date``. הוא נסגר כשהתברר שהוא מזין
+    את דדליין חלון המימוש שנבדק על שעון אחר - שני הצדדים של אותו חישוב הסכימו
+    רק כל עוד המארח מוגדר לישראל.
+    """
     offenders = [
         f"{p.relative_to(ROOT)}:{i}"
         for p in _python_sources("backend")
@@ -182,11 +186,38 @@ def test_no_host_local_date_today_in_backend():
         and not line.lstrip().startswith("#")
         # ``date.today()`` בגרשיים כפולים הוא אזכור בתיעוד, לא קריאה
         and "``date.today()``" not in line
-        and "termination_date" not in line
     ]
     assert not offenders, (
         "date.today() תלוי באזור הזמן של המארח. השתמשו ב-"
-        f"backend.app.types.system_today_utc(). נמצא ב: {offenders}"
+        f"backend.app.types.business_today(). נמצא ב: {offenders}"
+    )
+
+
+def test_app_layer_runs_on_the_business_clock_not_utc():
+    """``system_today_utc()`` אסור בשכבת האפליקציה - זו הרגרסיה ח1/ח2.
+
+    ישראל לפני UTC, ולכן בין 00:00 ל-03:00 תאריך ה-UTC הוא *אתמול*. שלב א של
+    v0.9.1 העביר גבולות מזכים ו-``effective_date`` לשעון הזה, ואת האחרון לטבלה
+    append-only שאין בה UPDATE. הבדיקה הזו קיימת כי ה-grep שאיתר את האתרים
+    האלה בסקירה ידנית לא ירוץ שוב מעצמו.
+
+    ``backend/seed_data.py`` מחוץ לתחום בכוונה: זריעת נתונים אינה גבול מזכה.
+
+    שלוש האיותים ולא אחד: איסור על השם ``system_today_utc`` בלבד היה חוסם את
+    הניסוח ומשאיר את הבאג - ``utcnow().date()`` הוא בדיוק אותו ערך, כתוב אחרת.
+    """
+    utc_dates = ("system_today_utc(", "utcnow().date()", "datetime.now(timezone.utc).date()")
+    offenders = [
+        f"{p.relative_to(ROOT)}:{i}  {line.strip()}"
+        for p in _python_sources("backend/app")
+        if p != ROOT / "backend" / "app" / "types.py"
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if not line.lstrip().startswith("#")
+        and any(spelling in line for spelling in utc_dates)
+    ]
+    assert not offenders, (
+        "תאריך לפי UTC אינו יום העסקים. כל גבול שמעניק זכות, וכל effective_date, "
+        f"רצים על backend.app.types.business_today(). נמצא ב: {offenders}"
     )
 
 
@@ -197,7 +228,9 @@ def test_the_clock_is_never_the_source_of_a_tax_date():
     המדינות. אימות מלא ב-docs/qa/v0.9.1.md.
     """
     tax_dated_fields = ("grant_date", "trustee_deposit_date", "exercise_date")
-    clocks = ("system_today_utc()", "date.today()", "utcnow()")
+    # business_today() נוסף ב-v0.9.1: הוא השעון הנכון לגבול מזכה, אבל **אינו**
+    # מקור לתאריך מס יותר משהיו קודמיו. שעון עסקי מדויק הוא עדיין שעון.
+    clocks = ("system_today_utc()", "business_today()", "date.today()", "utcnow()")
     offenders = [
         f"{p.relative_to(ROOT)}:{i}  {line.strip()}"
         for p in _python_sources("backend")

@@ -9,10 +9,29 @@
 מהמקומות ויישכח באחרים - וזה בדיוק המצב שהוליד את הבאג.
 """
 
+import os
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import DateTime
 from sqlalchemy.types import TypeDecorator
+
+# אזור הזמן שהעסק פועל לפיו. **מפורש ולא נגזר מהמארח** - זו כל ההבחנה בין
+# business_today() לבין date.today(): שתי הפונקציות מחזירות את אותו ערך על שרת
+# שמוגדר לישראל, אבל רק אחת מהן תחזיר אותו גם על שרת ב-us-east-1.
+# ניתן לעקוף למי שמפעיל תוכנית אמריקאית בלבד; אין ברירת מחדל שקטה לערך שגוי.
+_BUSINESS_TIMEZONE_NAME = os.getenv("ESOP_BUSINESS_TIMEZONE", "Asia/Jerusalem")
+try:
+    BUSINESS_TIMEZONE = ZoneInfo(_BUSINESS_TIMEZONE_NAME)
+except (ZoneInfoNotFoundError, ValueError) as exc:  # pragma: no cover - כשל תצורה, לא זרימה
+    # ValueError ולא רק ZoneInfoNotFoundError: ערך כמו "UTC+3" הוא מחרוזת לא
+    # חוקית ולא אזור חסר, והוא היה עולה כ-traceback גולמי במקום ההסבר שלמטה.
+    # נפילה ל-UTC בשקט הייתה מחזירה בדיוק את הבאג שהמודול הזה סוגר, ודווקא
+    # במכונה שבה אי אפשר לראות אותו. requirements.txt נועץ tzdata בגלל זה.
+    raise RuntimeError(
+        f"אזור הזמן העסקי '{_BUSINESS_TIMEZONE_NAME}' לא נמצא. ודאו ש-tzdata "
+        "מותקן (pip install -r requirements.txt), או הגדירו ESOP_BUSINESS_TIMEZONE."
+    ) from exc
 
 
 def utcnow() -> datetime:
@@ -24,11 +43,47 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def business_today() -> date:
+    """יום העסקים הנוכחי, לפי ``BUSINESS_TIMEZONE`` המפורש.
+
+    **זהו השעון של כל גבול שמעניק או שולל זכות**, ושל ``effective_date`` ביומן
+    האירועים. הנימוק הוא גבול היום ולא העדפה: ישראל לפני UTC, ולכן בין 00:00
+    ל-03:00 בירושלים תאריך ה-UTC הוא *אתמול*. עובד שהדדליין שלו 30/08 היה
+    מתקבל ב-31/08 בשעה 01:00, ובקשה מ-01/01/2027 ב-01:00 הייתה נרשמת לנצח
+    כ-31/12/2026 - מעבר לגבול שנת מס, בטבלה append-only שאין בה UPDATE.
+
+    ההבחנה מול ``recorded_at`` היא לב המודל הבי-טמפורלי ולא כפילות: ``recorded_at``
+    הוא ממד ה**ידיעה** (מתי המערכת למדה) ולכן UTC, ו-``effective_date`` הוא ממד
+    ה**תוקף** (באיזה יום עסקים זה קרה) ולכן כאן. איחוד שני הממדים לשעון אחד
+    מוחק את ההבחנה שכל v0.6.0 עומד עליה.
+
+    **אינו מקור לתאריך מס** - ראו ``system_today_utc`` להלן; האיסור זהה וחל על
+    שתיהן. שעון אינו מקור ל-``grant_date``, בשום אזור זמן.
+    """
+    return datetime.now(BUSINESS_TIMEZONE).date()
+
+
+def business_date_of(value: datetime) -> date:
+    """באיזה **יום עסקים** התרחשה חותמת זמן מאוחסנת.
+
+    קיימת כי ``.date()`` על עמודת ``UtcDateTime`` מחזיר את היום לפי UTC, והשוואתו
+    מול ``business_today()`` היא ערבוב שעונים - שני צדדים של אותו חישוב שנמדדים
+    בסרגלים שונים. בקשה שהוגשה ב-01:00 בירושלים נשמרת עם תאריך UTC של אתמול,
+    ולכן ``today - requested_at.date()`` היה סופר יום אחד יותר מדי.
+
+    זה בדיוק הפגם של ח1/ח2 בכיוון ההפוך: שם השעון היה שגוי, כאן *ההמרה* חסרה.
+    """
+    return value.astimezone(BUSINESS_TIMEZONE).date()
+
+
 def system_today_utc() -> date:
     """התאריך שהמערכת עצמה פועלת לפיו, ב-UTC.
 
     ``date.today()`` מחזיר את תאריך **המארח**: אותו קוד על שרת אחר נותן תאריך
-    אחר. ביומן אירועים זה בלתי נסבל, ולכן שעון אחד עם ``recorded_at``.
+    אחר. הפונקציה הזו מסירה את התלות במארח, אבל **אינה** יום העסקים - ולכן
+    היא אסורה בשכבת האפליקציה (``backend/app/``) ונשארה לזריעת נתונים בלבד.
+    כל גבול שמעניק זכות עבר ל-``business_today`` ב-v0.9.1; שימוש בה כאן היה
+    הרגרסיה ח1/ח2. נאכף ב-tests/test_project_invariants.py.
 
     **אסור להשתמש בו כמקור לתאריך בעל משמעות מסית או משפטית** - ``grant_date``,
     ``trustee_deposit_date``, ``exercise_date`` וכל תאריך מימוש/מכירה עתידי.

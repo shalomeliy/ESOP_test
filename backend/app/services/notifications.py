@@ -15,7 +15,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from backend.app.types import system_today_utc
+from backend.app.types import business_date_of, business_today
 from backend.app.models import (
     Employee, Grant, OptionPool, ExerciseRequest, ExerciseRequestStatus,
     NotificationPreference, NotificationDismissal, NOTIFICATION_DEFAULT_LEAD_DAYS,
@@ -183,7 +183,10 @@ def _rule_fully_vested_unexercised(grant: Grant, today: date, lead_days: int,
 def _rule_request_pending_too_long(req: ExerciseRequest, today: date, lead_days: int) -> Optional[NotificationItem]:
     if req.status != ExerciseRequestStatus.PENDING or not req.requested_at:
         return None
-    requested_on = req.requested_at.date() if isinstance(req.requested_at, datetime) else req.requested_at
+    # business_date_of ולא .date(): requested_at הוא UTC (models.py), ו-today הוא
+    # יום עסקים. בלי ההמרה בקשה שהוגשה ב-01:00 בירושלים נספרת כיום נוסף בהמתנה.
+    requested_on = (business_date_of(req.requested_at)
+                    if isinstance(req.requested_at, datetime) else req.requested_at)
     days_waiting = _days_between(today, requested_on)
     if days_waiting < lead_days:
         return None
@@ -256,7 +259,7 @@ def _finalize(items: list, degraded: list, dismissed: set) -> NotificationFeed:
 
 
 def for_admin(db: Session, company_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or system_today_utc()
+    today = today or business_today()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     # סקופ: רק פולים של החברה הזו -> רק המענקים שלהם. עובד עם company_id=NULL
@@ -273,7 +276,7 @@ def for_admin(db: Session, company_id: str, user_id: str, today: date = None) ->
 
 
 def for_trustee(db: Session, trustee_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or system_today_utc()
+    today = today or business_today()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     grants = db.query(Grant).filter(Grant.trustee_id == trustee_id).all()
@@ -286,7 +289,7 @@ def for_trustee(db: Session, trustee_id: str, user_id: str, today: date = None) 
 
 
 def for_employee(db: Session, employee_id: str, user_id: str, today: date = None) -> NotificationFeed:
-    today = today or system_today_utc()
+    today = today or business_today()
     prefs, dismissed = _effective_preferences(db, user_id), _dismissed_keys(db, user_id)
 
     grants = db.query(Grant).filter(Grant.employee_id == employee_id).all()
