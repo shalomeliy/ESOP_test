@@ -692,7 +692,10 @@
                 const res = await fetch(`${API}/version`);
                 if (!res.ok) return;
                 const data = await res.json();
-                document.getElementById("app-version").textContent = `v${data.version}`;
+                // גם היעד וגם הגרסה: בהרצת סנדבוקס על פורט אחר, "v0.9.0" לבדו
+                // לא אומר לבודק מול איזה שרת הוא עובד (ראו QA-090-60).
+                document.getElementById("app-version").textContent =
+                    `v${data.version} · ${API.replace(/\/api\/v1$/, "")}`;
                 if (lastKnownVersion && lastKnownVersion !== data.version) {
                     toast(`השרת עודכן לגרסה v${data.version} - מומלץ לרענן את הדף`);
                 }

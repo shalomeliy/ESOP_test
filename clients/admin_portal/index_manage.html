@@ -375,11 +375,11 @@
             <div class="space-y-3">
                 <div>
                     <label class="block text-xs text-slate-400 mb-1">מענק</label>
-                    <select id="doc-grant-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                    <select id="doc-grant-select" onchange="refreshGenerateDocWarning()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
                 </div>
                 <div>
                     <label class="block text-xs text-slate-400 mb-1">סוג מסמך</label>
-                    <select id="doc-template-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
+                    <select id="doc-template-select" onchange="refreshGenerateDocWarning()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
                         <option value="GRANT_LETTER">כתב הענקה</option>
                         <option value="SECTION_102_APPENDIX">נספח 102 (תבנית דמו)</option>
                         <option value="TRUSTEE_DEPOSIT_CONFIRMATION">אישור הפקדה בנאמנות</option>
@@ -387,6 +387,7 @@
                     <p class="text-[10px] text-amber-400/80 mt-1">נספח 102 חל רק על מענקים במסלול 102 עם נאמן, ואישור הפקדה רק אחרי שנרשמה הפקדה בפועל.</p>
                 </div>
             </div>
+            <div id="generate-doc-warning" class="hidden mt-3 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2"></div>
             <div id="generate-doc-error" class="hidden mt-3 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg p-2"></div>
             <div class="flex gap-2 mt-5">
                 <button onclick="submitGenerateDoc()" id="generate-doc-submit" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-xl transition">צור מסמך</button>
@@ -1003,19 +1004,58 @@
             }
         }
 
+        // המסמכים הקיימים, לפי grant_id + סוג. נטען יחד עם המענקים כדי שהמודל
+        // יוכל להזהיר *לפני* היצירה שכבר קיים מסמך כזה - יצירה חוזרת מדיחה את
+        // הגרסה הקודמת ל-is_latest=false, וזה כולל מסמך שכבר אושר.
+        let existingDocIndex = {};
+
         async function openGenerateDocModal() {
             document.getElementById("generate-doc-error").classList.add("hidden");
+            document.getElementById("generate-doc-warning").classList.add("hidden");
             const select = document.getElementById("doc-grant-select");
             select.innerHTML = `<option>טוען...</option>`;
             document.getElementById("generate-doc-modal").classList.add("open");
             try {
-                const grants = await apiGet("/admin/grants");
-                select.innerHTML = grants.map(g =>
-                    `<option value="${g.grant_id}">${g.grant_date} · ${g.total_options.toLocaleString()} אופציות · ${g.grant_type}</option>`
-                ).join("") || `<option value="">אין מענקים בחברה</option>`;
+                // שם העובד לא חוזר ב-GrantOut, ולכן מצורף כאן מרשימת העובדים:
+                // בלעדיו שני מענקים באותו תאריך ובאותו גודל נראים זהים לחלוטין.
+                const [grants, employees, docs] = await Promise.all([
+                    apiGet("/admin/grants"), apiGet("/admin/employees"), apiGet("/admin/documents")
+                ]);
+                const nameOf = {};
+                employees.forEach(e => nameOf[e.employee_id] = `${e.first_name} ${e.last_name}`);
+
+                existingDocIndex = {};
+                docs.filter(d => d.is_latest).forEach(d => {
+                    existingDocIndex[`${d.grant_id}|${d.template_type}`] = d;
+                });
+
+                select.innerHTML = grants.map(g => {
+                    const who = nameOf[g.employee_id] || g.employee_id;
+                    return `<option value="${ESOPDocuments.escapeHtml(g.grant_id)}">${ESOPDocuments.escapeHtml(who)} · ${g.grant_date} · ${g.total_options.toLocaleString()} אופציות · ${g.grant_type}</option>`;
+                }).join("") || `<option value="">אין מענקים בחברה</option>`;
+                refreshGenerateDocWarning();
             } catch (err) {
-                select.innerHTML = `<option value="">${err.message}</option>`;
+                select.innerHTML = `<option value="">${ESOPDocuments.escapeHtml(err.message)}</option>`;
             }
+        }
+
+        // אזהרה, לא חסימה: יצירת גרסה חדשה היא פעולה לגיטימית ומכוונת. מה שאסור
+        // הוא שהאדמין יגלה רק אחרי הלחיצה שהוא הדיח מסמך שהעובד כבר אישר.
+        function refreshGenerateDocWarning() {
+            const box = document.getElementById("generate-doc-warning");
+            const grantId = document.getElementById("doc-grant-select").value;
+            const templateType = document.getElementById("doc-template-select").value;
+            const existing = existingDocIndex[`${grantId}|${templateType}`];
+            if (!existing) {
+                box.classList.add("hidden");
+                return;
+            }
+            const status = existing.status === "ACKNOWLEDGED" ? "שכבר <strong>אושרה קבלתו</strong>"
+                         : existing.status === "SENT" ? "שכבר <strong>נשלח לאישור</strong>"
+                         : "בסטטוס " + ESOPDocuments.statusBadge(existing.status);
+            box.innerHTML = `כבר קיים מסמך מסוג זה למענק הזה (v${existing.version}) ${status}.
+                             יצירה תייצר <strong>v${existing.version + 1}</strong>, והגרסה הקיימת תסומן כמיושנת ולא תוכל לעבור אישור.`;
+            box.classList.remove("hidden");
         }
 
         function closeGenerateDocModal() {

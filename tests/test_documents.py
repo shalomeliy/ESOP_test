@@ -582,3 +582,43 @@ def test_employee_still_sees_a_superseded_document_but_flagged(client, world, su
     rows = {d["document_id"]: d for d in listed.json()}
     assert superseded_sent_document in rows
     assert rows[superseded_sent_document]["is_latest"] is False
+
+
+# --- סגירת חוב שלב 3: מסלול ההורדה המוצלח של העובד והנאמן ------------
+# היה כיסוי אוטומטי למסלול השלילי בלבד (403 על טיוטה), ולמסלול המוצלח רק אצל
+# האדמין. שלושת הנתיבים מגישים את אותו קובץ דרך אותה בדיקת בעלות, ולכן נתיב
+# שנשבר בלי כיסוי הוא בדיוק P3.
+
+@pytest.mark.parametrize("role_header,path_prefix", [
+    ("employee_a", "employee"),
+    ("trustee_a", "trustee"),
+])
+def test_employee_and_trustee_can_download_a_sent_document(
+        client, world, sent_document, role_header, path_prefix):
+    headers = getattr(world, role_header)
+
+    response = client.get(f"{API}/{path_prefix}/documents/{sent_document}/download", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF"), "לא קובץ PDF אמיתי"
+
+    from backend.app.models import AuditLog
+    downloads = (world.db.query(AuditLog)
+                 .filter(AuditLog.entity_id == sent_document, AuditLog.action == "DOWNLOADED")
+                 .all())
+    assert downloads, "הורדה לא נרשמה ב-audit"
+
+
+def test_download_still_works_after_the_document_was_acknowledged(client, world, sent_document):
+    """הטריגר מקפיא את שורת המסמך, וההורדה כותבת שורת audit בלבד. אם אי פעם
+    ההורדה תתחיל לעדכן את documents עצמו, הבדיקה הזו תיפול - וזו הכוונה."""
+    acked = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                        headers=world.employee_a)
+    assert acked.status_code == 200
+
+    response = client.get(f"{API}/employee/documents/{sent_document}/download",
+                          headers=world.employee_a)
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
