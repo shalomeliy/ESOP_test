@@ -30,7 +30,7 @@ A backend engine and testbed for managing, practicing, and simulating stock opti
 
 ## Definition of done
 
-Run `pytest` from the project root — it redirects itself to a temporary DB (see `tests/conftest.py`; never reorder the imports there). Manual verification runs against a **sandbox**, never `esop_database.db`:
+Run `python -m pytest` from the project root (plain `pytest` is not on PATH on this machine) — it redirects itself to a temporary DB (see `tests/conftest.py`; never reorder the imports there). Manual verification runs against a **sandbox**, never `esop_database.db`:
 
 ```bash
 export PYTHONIOENCODING=utf-8 && export ESOP_DATABASE_URL="sqlite:///./qa_sandbox.db"
@@ -60,7 +60,8 @@ A feature is complete only when:
 
 ```bash
 python -m uvicorn backend.app.main:app --reload   # dev server, http://127.0.0.1:8000, docs at /docs
-pip install -r requirements.txt                    # currently empty -- fill in as real deps are pinned
+pip install -r requirements.txt                    # deps are pinned
+python -m pytest                                   # full suite (plain `pytest` is not on PATH here)
 ```
 
 Use `/clear` between unrelated exercises, `/context` to inspect context use, `/usage` to monitor the Claude plan, and `/rewind` when an implementation direction is wrong.
