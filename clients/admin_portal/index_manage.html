@@ -666,9 +666,24 @@
         }
 
         async function deleteEmployee(id) {
-            if (!confirm(`למחוק את ${id}? אם יש לו מענקים - זו תהיה מחיקה רכה (TERMINATED) בלבד.`)) return;
+            if (!confirm(`למחוק את ${id}? אם יש לו מענקים - זו תהיה עזיבה (TERMINATED) ותתבקשו לתאריך הסיום בפועל.`)) return;
             try {
-                const res = await fetch(`${API}/admin/employees/${id}`, { method: "DELETE", headers: authHeaders() });
+                let res = await fetch(`${API}/admin/employees/${id}`, { method: "DELETE", headers: authHeaders() });
+                // 400 כאן פירושו "לעובד יש מענקים, ולכן זו עזיבה". שואלים על התאריך רק
+                // בשלב הזה ולא מראש: העובד בלי מענקים נמחק לגמרי ואין לו תאריך סיום.
+                if (res.status === 400) {
+                    const entered = prompt(
+                        "לעובד יש מענקים, ולכן זו עזיבה ולא מחיקה.\n\n" +
+                        "תאריך סיום ההעסקה בפועל (YYYY-MM-DD). זהו התאריך שממנו נגזרים דדליין\n" +
+                        "חלון המימוש ועצירת ההבשלה - לא תאריך היום, אלא היום האחרון בפועל.");
+                    if (!entered) return;
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(entered.trim())) {
+                        toast("תאריך לא תקין. הפורמט הוא YYYY-MM-DD.", true);
+                        return;
+                    }
+                    res = await fetch(`${API}/admin/employees/${id}?termination_date=${entered.trim()}`,
+                                      { method: "DELETE", headers: authHeaders() });
+                }
                 if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
                 toast(`בוצע: ${data.deleted === "hard" ? "מחיקה מלאה" : "סומן כ-TERMINATED (עדיין קיים בהיסטוריה)"}`);

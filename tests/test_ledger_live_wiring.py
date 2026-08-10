@@ -217,7 +217,8 @@ def test_soft_delete_appends_status_event_too(client, world):
         "employee_id": "E-1", "pool_id": "P-A", "grant_type": "IL_102_CAPITAL_GAINS",
         "total_options": 100.0, "exercise_price": 1.0, "grant_date": str(_months_ago(13)),
     })
-    response = client.delete(f"{API}/admin/employees/E-1", headers=world.admin)
+    response = client.delete(f"{API}/admin/employees/E-1", headers=world.admin,
+                             params={"termination_date": str(_months_ago(2))})
     assert response.status_code == 200
     assert response.json()["deleted"] == "soft"
 

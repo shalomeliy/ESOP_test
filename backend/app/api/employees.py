@@ -1,10 +1,10 @@
+from datetime import date
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.types import business_today
 from backend.app.models import Employee, EmployeeStatus, OptionPool, Grant, User, UserRole, UserSession
 from backend.app.schemas import (
     EmployeeStatusUpdate, EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut, EmployeeCreateResponse,
@@ -98,7 +98,11 @@ def update_employee(employee_id: str, payload: EmployeeUpdateRequest,
 
 
 @router.delete("/admin/employees/{employee_id}")
-def delete_employee(employee_id: str, current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
+def delete_employee(employee_id: str,
+                     termination_date: date | None = Query(
+                         None, description="חובה כשלעובד יש מענקים: תאריך סיום ההעסקה בפועל."),
+                     current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                     db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -120,16 +124,23 @@ def delete_employee(employee_id: str, current_user: User = Depends(require_roles
         return {"employee_id": employee_id, "deleted": "hard"}
     else:
         # יש היסטוריית grants - אסור למחוק, רק מסמנים TERMINATED.
+        # תאריך סיום ההעסקה הוא עובדת HR, לא רגע הלחיצה. הוא מזין את דדליין
+        # חלון המימוש (termination_date + window_days) ואת נקודת העצירה של
+        # ההבשלה, ולכן כל שעון - גם שעון עסקי מדויק - היה קובע כאן זכות כספית
+        # לפי מתי אדמין הספיק להיכנס למערכת. עזיבה מדווחת כמעט תמיד בדיעבד.
+        # השרת דורש את התאריך ואינו מנחש: 400 עדיף על ערך סביר-אך-שגוי שנרשם
+        # ב-ledger_events, שהיא טבלה append-only שאין בה UPDATE.
+        if termination_date is None:
+            raise HTTPException(
+                status_code=400,
+                detail=("Employee has grants, so this is a termination, not a delete. "
+                        "Pass the actual last day of employment as ?termination_date=YYYY-MM-DD "
+                        "- it sets the post-termination exercise deadline and stops vesting."),
+            )
+
         before_status = emp.status
         emp.status = EmployeeStatus.TERMINATED
-        # חייב להיות *אותו* שעון כמו check_post_termination_exercise_window, כי
-        # הדדליין נגזר מכאן: termination_date + window_days. עד v0.9.1 זה היה
-        # date.today() (שעון המארח) בעוד הבדיקה רצה על שעון אחר - הן הסכימו רק
-        # כל עוד המארח מוגדר לישראל, כלומר בזכות תצורה ולא בזכות הקוד.
-        # ⚠️ החוב עצמו לא נסגר: תאריך סיום העסקה הוא עובדת HR שלרוב מתרחשת
-        # בעבר, ואין לגזור אותה משעון ברגע שאדמין לוחץ. הפתרון הוא קלט מפורש -
-        # רשום ב-HANDOFF.md. השינוי כאן רק מסיר את התלות במארח.
-        emp.termination_date = business_today()
+        emp.termination_date = termination_date
         append_event(db, event_type="EMPLOYEE_STATUS_CHANGED", aggregate_type="Employee",
                     aggregate_id=employee_id,
                     payload={"status": "TERMINATED", "termination_date": emp.termination_date},
