@@ -7,9 +7,16 @@
 חייב להיחסם לפני הכתיבה, לא להוסיף אפקט שני.
 """
 
+from datetime import timedelta
+
 from fastapi import HTTPException
 
-from backend.app.models import DocumentStatus
+from backend.app.models import Document, DocumentStatus
+from backend.app.types import utcnow
+
+# תוקף בקשת אישור קבלה. 30 יום הוא הנוהג המקובל בבקשות אישור, והוא מדיניות
+# מוצר בלבד - אין בסעיף 102 תקופת תוקף לבקשת אישור, ולכן אין כאן כלל מס.
+ACKNOWLEDGMENT_WINDOW_DAYS = 30
 
 # מצב -> המצבים שמותר לעבור אליהם ממנו. מצב שלא מופיע כמפתח הוא סופי.
 ALLOWED_TRANSITIONS = {
@@ -18,6 +25,42 @@ ALLOWED_TRANSITIONS = {
 }
 
 TERMINAL_STATUSES = {DocumentStatus.ACKNOWLEDGED, DocumentStatus.DECLINED, DocumentStatus.EXPIRED}
+
+
+def expire_due(db, documents) -> None:
+    """מפקיע כל מסמך SENT ברשימה שעבר את מועד התוקף שלו.
+
+    "טאטוא עצל" ולא scheduler: למערכת אין תהליך רקע, והוספת אחד רק בשביל
+    המעבר הזה הייתה מוסיפה רכיב תפעולי שלם לפיצ'ר בגודל עמודה. במקום זה
+    ההפקעה מתרחשת בכל נתיב שטוען מסמך - צפייה או פעולה - ולכן מצב ה-DB ומה
+    שמוצג על המסך תמיד מסכימים. אין כאן "GET שכותב" מסוכן: המעבר
+    SENT -> EXPIRED הוא חד-כיווני, אידמפוטנטי, ותלוי אך ורק בערך שכבר מאוחסן.
+
+    commit אחד לכל הרשימה ולא אחד לכל מסמך: ספריית המסמכים של חברה גדולה
+    נטענת במלואה, ואותה הקפדה שמנעה שם N+1 בשאילתות תקפה גם לכתיבות.
+
+    ``expires_at is None`` הוא "אין דדליין" ולא "פג" - כך מסמכים שנשלחו לפני
+    v0.9.1 נשארים פתוחים במקום להיסגר ברגע השדרוג בלי שאיש הודיע לעובד.
+    """
+    now = utcnow()
+    due = [d for d in documents
+           if d.status == DocumentStatus.SENT and d.expires_at is not None and now > d.expires_at]
+    if not due:
+        return
+    for document in due:
+        document.status = DocumentStatus.EXPIRED
+    db.commit()
+
+
+def expire_if_due(db, document: Document) -> Document:
+    expire_due(db, [document])
+    return document
+
+
+def deadline_for(sent_at):
+    """מועד הפקיעה הנגזר משליחה. פונקציה ולא חישוב inline כדי שיהיה מקום אחד
+    יחיד שהבדיקות והקוד מסכימים עליו."""
+    return sent_at + timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
 
 
 def assert_is_current_version(is_latest: bool, target: DocumentStatus) -> None:

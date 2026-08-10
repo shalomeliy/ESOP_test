@@ -16,7 +16,9 @@ from backend.app.services.documents import (
     TEMPLATE_BUILDERS, MissingDocumentDataError, DocumentRenderingError, DOCUMENT_STORE_DIR,
 )
 from backend.app.services.document_access import assert_document_access
-from backend.app.services.document_status import assert_is_current_version, assert_transition_allowed
+from backend.app.services.document_status import (
+    assert_is_current_version, assert_transition_allowed, deadline_for, expire_due, expire_if_due,
+)
 from backend.app.auth import require_roles
 from backend.app.api.exercise_requests import _company_id_of_grant
 
@@ -39,6 +41,10 @@ def _documents_out(db: Session, documents: List[Document]) -> List[DocumentOut]:
     המסמכים של חברה גדולה לא תייצר N+1."""
     if not documents:
         return []
+    # ההפקעה יושבת כאן ולא בכל endpoint בנפרד: זו נקודת החנק היחידה שכל
+    # נתיבי הקריאה (אדמין/עובד/נאמן, רשימה ופריט) עוברים דרכה. הוספתה לכל
+    # endpoint לחוד היא בדיוק P3 - ולידציה שקיימת בנתיב אחד וחסרה במקביל לו.
+    expire_due(db, documents)
     employees = {
         e.employee_id: e for e in db.query(Employee)
         .filter(Employee.employee_id.in_({d.employee_id for d in documents})).all()
@@ -55,7 +61,7 @@ def _documents_out(db: Session, documents: List[Document]) -> List[DocumentOut]:
             document_id=d.document_id, template_type=d.template_type, grant_id=d.grant_id,
             status=d.status.value, version=d.version, is_latest=d.is_latest,
             file_sha256=d.file_sha256, generated_at=d.generated_at,
-            sent_at=d.sent_at, acknowledged_at=d.acknowledged_at,
+            sent_at=d.sent_at, expires_at=d.expires_at, acknowledged_at=d.acknowledged_at,
             # None ולא "" - ראו ההערה ב-DocumentOut. שורה יתומה היא באג נתונים
             # שה-UI צריך להראות ככזה, לא שם ריק שנראה תקין.
             employee_name=f"{employee.first_name} {employee.last_name}" if employee else None,
@@ -73,7 +79,9 @@ def _load_document_or_404(db: Session, document_id: str, current_user: User) -> 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     assert_document_access(document, current_user)
-    return document
+    # ההפקעה קודמת לכל פעולה, ולכן אישור של מסמך שפג תוקפו נחסם ב-409 של
+    # מכונת המצבים ("EXPIRED הוא סופי") ולא נופל בין הכיסאות.
+    return expire_if_due(db, document)
 
 
 def _transition_document(db: Session, document: Document, target: DocumentStatus,
@@ -87,6 +95,7 @@ def _transition_document(db: Session, document: Document, target: DocumentStatus
     now = utcnow()
     if target == DocumentStatus.SENT:
         document.sent_at = now
+        document.expires_at = deadline_for(now)
     elif target == DocumentStatus.ACKNOWLEDGED:
         document.acknowledged_at = now
         document.acknowledged_by_user_id = current_user.user_id

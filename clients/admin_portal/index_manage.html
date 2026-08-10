@@ -950,7 +950,10 @@
                             v${d.version}
                             ${ESOPDocuments.supersededMarker(d)}
                         </td>
-                        <td class="p-3">${ESOPDocuments.statusBadge(d.status)}</td>
+                        <td class="p-3">
+                            ${ESOPDocuments.statusBadge(d.status)}
+                            ${ESOPDocuments.deadlineMarker(d)}
+                        </td>
                         <td class="p-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.sent_at)}</td>
                         <td class="p-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.acknowledged_at)}</td>
                         <td class="p-3 whitespace-nowrap">

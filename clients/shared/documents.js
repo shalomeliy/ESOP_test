@@ -17,9 +17,9 @@
     SENT: { label: "נשלח לאישור", cls: "bg-amber-500/10 text-amber-400" },
     ACKNOWLEDGED: { label: "אושרה קבלה", cls: "bg-emerald-500/10 text-emerald-400" },
     DECLINED: { label: "נדחה", cls: "bg-rose-500/10 text-rose-400" },
-    // EXPIRED מוגדר במכונת המצבים אבל שום קוד לא מייצר אותו - אין scheduler
-    // ואין מדיניות תפוגה. לכן: תווית בלבד, בלי ספירת ימים לתפוגה בשום מסך.
-    // ספירה כזו הייתה מרמזת על דיוק שלא קיים (docs/qa/v0.9.0.md סיכון 8).
+    // מ-v0.9.1 יש מדיניות תפוגה אמיתית (30 יום מהשליחה, expires_at על השורה),
+    // ולכן ספירת הימים ב-deadlineMarker מותרת: היא נגזרת מערך מאוחסן ולא
+    // ממדיניות משוערת. סיכון 8 ב-docs/qa/v0.9.0.md נסגר.
     EXPIRED: { label: "פג תוקף", cls: "bg-slate-600/10 text-slate-500" },
   };
 
@@ -115,8 +115,25 @@
     return doc.is_latest ? "" : '<span class="block text-[10px] text-slate-500">גרסה מיושנת</span>';
   }
 
+  /* מועד פקיעת בקשת האישור. מוצג רק על מסמך SENT שיש לו expires_at: מסמך
+   * שנשלח לפני v0.9.1 חסר דדליין, ו"נותרו 0 ימים" עליו הוא בדיוק השקר ש-P4
+   * מזהיר מפניו - נתון חסר שמוצג כערך עסקי. הספירה בימים שלמים כלפי מעלה,
+   * כך ש"נותר יום אחד" נכון עד הרגע האחרון ולא הופך ל-0 בבוקר האחרון. */
+  function deadlineMarker(doc) {
+    if (doc.status !== "SENT" || !doc.expires_at) return "";
+    var deadline = parseServerTimestamp(doc.expires_at);
+    if (isNaN(deadline.getTime())) return "";
+    var daysLeft = Math.ceil((deadline.getTime() - Date.now()) / 86400000);
+    var urgent = daysLeft <= 3;
+    return '<span class="block text-[10px] ' + (urgent ? "text-amber-400" : "text-slate-500") + '">'
+      + "לאישור עד " + escapeHtml(deadline.toLocaleDateString("he-IL"))
+      + (daysLeft > 0 ? " · נותרו " + daysLeft + " ימים" : "")
+      + "</span>";
+  }
+
   global.ESOPDocuments = {
     statusBadge: statusBadge,
+    deadlineMarker: deadlineMarker,
     templateLabel: templateLabel,
     escapeHtml: escapeHtml,
     orDash: orDash,

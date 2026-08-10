@@ -572,7 +572,10 @@
                             v${d.version}
                             ${ESOPDocuments.supersededMarker(d)}
                         </td>
-                        <td class="py-3">${ESOPDocuments.statusBadge(d.status)}</td>
+                        <td class="py-3">
+                            ${ESOPDocuments.statusBadge(d.status)}
+                            ${ESOPDocuments.deadlineMarker(d)}
+                        </td>
                         <td class="py-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(d.sent_at)}</td>
                         <td class="py-3 whitespace-nowrap">
                             <button onclick="downloadMyDocument('${d.document_id}')" class="text-emerald-400 hover:text-emerald-300 text-xs"><i class="fa-solid fa-download"></i> הורדה</button>

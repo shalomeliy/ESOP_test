@@ -624,3 +624,117 @@ def test_download_still_works_after_the_document_was_acknowledged(client, world,
     assert response.status_code == 200
     assert response.content.startswith(b"%PDF")
 
+
+# ===================================================================
+# תפוגת בקשת אישור (v0.9.1). EXPIRED היה עד כאן ערך במכונת המצבים שאף קוד
+# לא ייצר - מצב שקיים בסכמה ולא בעולם. ההכרעה: 30 יום מהשליחה.
+# ===================================================================
+
+from backend.app.services.document_status import ACKNOWLEDGMENT_WINDOW_DAYS
+
+
+def _document(world, document_id):
+    return world.db.query(Document).filter(Document.document_id == document_id).first()
+
+
+def test_sending_sets_a_deadline_thirty_days_out(client, world, sent_document):
+    """הדדליין נקבע בשליחה ונגזר מ-sent_at, לא מרגע היצירה של הטיוטה."""
+    doc = _document(world, sent_document)
+
+    assert doc.expires_at is not None
+    assert doc.expires_at - doc.sent_at == timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
+
+
+def test_the_deadline_is_exposed_to_the_portals(client, world, sent_document):
+    """בלי השדה בתגובה אין למסך על מה לבסס ספירת ימים, והוא היה חוזר להצגת
+    סטטוס בלבד - בדיוק המצב שסיכון 8 תיאר."""
+    row = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+               if d["document_id"] == sent_document)
+    assert row["expires_at"] is not None
+
+
+def test_a_document_is_still_open_up_to_its_deadline(client, world, sent_document):
+    """רגע לפני הדדליין המסמך פתוח לחלוטין. גבול ``>`` ולא ``>=``."""
+    doc = _document(world, sent_document)
+    doc.expires_at = utcnow() + timedelta(seconds=2)
+    world.db.commit()
+
+    response = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                           headers=world.employee_a)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ACKNOWLEDGED"
+
+
+def test_a_document_past_its_deadline_is_reported_as_expired(client, world, sent_document):
+    """הטאטוא העצל: אין scheduler, ולכן הקריאה עצמה מפקיעה. מצב ה-DB ומה
+    שמוצג חייבים להסכים - סטטוס SENT בטבלה מול "פג תוקף" במסך הוא בדיוק
+    הפער ש-P4 מזהיר מפניו."""
+    doc = _document(world, sent_document)
+    doc.expires_at = utcnow() - timedelta(seconds=1)
+    world.db.commit()
+
+    row = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+               if d["document_id"] == sent_document)
+
+    assert row["status"] == "EXPIRED"
+    assert _document(world, sent_document).status == DocumentStatus.EXPIRED
+
+
+def test_an_expired_document_cannot_be_acknowledged(client, world, sent_document):
+    """זו הנקודה שבה התפוגה שווה משהו: בלעדיה אישור מגיע אחרי שהבקשה כבר
+    אינה רלוונטית, ורשומת הציות נראית תקינה."""
+    doc = _document(world, sent_document)
+    doc.expires_at = utcnow() - timedelta(seconds=1)
+    world.db.commit()
+
+    response = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                           headers=world.employee_a)
+
+    assert response.status_code == 409
+    assert "EXPIRED" in response.json()["detail"]
+    assert _document(world, sent_document).status == DocumentStatus.EXPIRED
+
+
+def test_an_expired_document_cannot_be_declined_either(client, world, sent_document):
+    """P3: שני נתיבי הפעולה, לא רק זה שנבדק."""
+    doc = _document(world, sent_document)
+    doc.expires_at = utcnow() - timedelta(seconds=1)
+    world.db.commit()
+
+    response = client.post(f"{API}/employee/documents/{sent_document}/decline",
+                           headers=world.employee_a)
+    assert response.status_code == 409
+
+
+def test_a_document_without_a_deadline_stays_open(client, world, sent_document):
+    """``expires_at is None`` הוא "אין דדליין", לא "פג" - זה מצבם של מסמכים
+    שנשלחו לפני v0.9.1. פירוש הפוך היה מפקיע כל בקשה פתוחה ברגע השדרוג, בלי
+    שאיש הודיע לעובד."""
+    doc = _document(world, sent_document)
+    doc.expires_at = None
+    world.db.commit()
+
+    listed = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+                  if d["document_id"] == sent_document)
+    assert listed["status"] == "SENT"
+    assert listed["expires_at"] is None
+
+    response = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                           headers=world.employee_a)
+    assert response.status_code == 200
+
+
+def test_expiry_does_not_touch_an_already_acknowledged_document(client, world, sent_document):
+    """הטריגר מקפיא סטטוס של מסמך מאושר. הפקעה שהייתה חלה עליו לא רק שוגה
+    לוגית - היא נופלת ב-IntegrityError, כלומר 500."""
+    acked = client.post(f"{API}/employee/documents/{sent_document}/acknowledge",
+                        headers=world.employee_a)
+    assert acked.status_code == 200
+
+    doc = _document(world, sent_document)
+    assert doc.expires_at is not None, "האישור לא אמור למחוק את הדדליין ההיסטורי"
+
+    listed = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+                  if d["document_id"] == sent_document)
+    assert listed["status"] == "ACKNOWLEDGED"

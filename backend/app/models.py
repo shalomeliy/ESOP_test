@@ -484,6 +484,11 @@ class Document(Base):
     file_sha256 = Column(String, nullable=False)
     generated_at = Column(UtcDateTime, default=utcnow, nullable=False)
     sent_at = Column(UtcDateTime, nullable=True)
+    # מועד פקיעת בקשת האישור, נקבע בשליחה. חותמת זמן ולא תאריך בכוונה: רגע
+    # פיזי מדויק אינו נזקק להכרעה בין UTC לשעון העסקי, וגבול שנמדד בימים
+    # קלנדריים היה מחזיר את שאלת ח1/ח2 דרך הדלת האחורית.
+    # NULL = אין דדליין (מסמכים שנשלחו לפני v0.9.1), ולא "פג".
+    expires_at = Column(UtcDateTime, nullable=True)
     acknowledged_at = Column(UtcDateTime, nullable=True)
     acknowledged_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
     created_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)

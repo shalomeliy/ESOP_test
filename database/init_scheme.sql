@@ -320,7 +320,10 @@ CREATE TABLE IF NOT EXISTS documents (
 	file_path VARCHAR NOT NULL, 
 	file_sha256 VARCHAR NOT NULL, 
 	generated_at DATETIME NOT NULL, 
-	sent_at DATETIME, 
+	sent_at DATETIME,
+	-- מועד פקיעת בקשת האישור (sent_at + 30 יום), נקבע בשליחה. NULL = אין
+	-- דדליין, ולא "פג" - כך מסמכים שנשלחו לפני v0.9.1 נשארים פתוחים.
+	expires_at DATETIME,
 	acknowledged_at DATETIME, 
 	acknowledged_by_user_id VARCHAR, 
 	created_by_user_id VARCHAR, 

@@ -327,6 +327,9 @@ class DocumentOut(BaseModel):
     file_sha256: str
     generated_at: datetime
     sent_at: Optional[datetime] = None
+    # None = טרם נשלח, או נשלח לפני v0.9.1 ולכן אין לו דדליין. המסך חייב
+    # להבחין בין השניים לבין "פג" - ראו P4 ב-QA_TESTBOOK.md.
+    expires_at: Optional[datetime] = None
     acknowledged_at: Optional[datetime] = None
     # שני השדות האחרונים אינם על שורת ה-Document אלא מגיעים מ-Employee/Grant,
     # ולכן מורכבים ב-_documents_out ולא דרך from_attributes. בלעדיהם רשימת
