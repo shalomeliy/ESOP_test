@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from backend.app import types as types_module
-from backend.app.api import routes as routes_module
+from backend.app.api import exercise_requests as exercise_requests_module
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, Grant, GrantType, LedgerEvent, OptionPool,
@@ -117,14 +117,14 @@ def _submit(client, headers):
 
 def test_window_is_open_on_the_deadline_day_itself(client, terminated_world, monkeypatch):
     """QA-091-18. יום הדדליין עצמו עדיין מותר (התנאי הוא ``<=``)."""
-    monkeypatch.setattr(routes_module, "business_today", lambda: DEADLINE)
+    monkeypatch.setattr(exercise_requests_module, "business_today", lambda: DEADLINE)
     assert _submit(client, terminated_world).status_code == 200
 
 
 def test_window_is_closed_the_day_after_the_deadline(client, terminated_world, monkeypatch):
     """QA-091-19 - **הבדיקה שח1 נכשל בה.** ב-11/04 בשעה 01:00 בירושלים ה-UTC
     עדיין מראה 10/04, ולכן הגרסה שלפני התיקון הייתה מקבלת את הבקשה."""
-    monkeypatch.setattr(routes_module, "business_today", lambda: DEADLINE + timedelta(days=1))
+    monkeypatch.setattr(exercise_requests_module, "business_today", lambda: DEADLINE + timedelta(days=1))
     response = _submit(client, terminated_world)
     assert response.status_code == 400
     assert str(DEADLINE) in response.json()["detail"]
@@ -134,7 +134,7 @@ def test_ledger_effective_date_is_the_business_day(client, db_session, terminate
                                                    monkeypatch):
     """QA-091-20 - ח2. ``effective_date`` של האירוע חייב להיות יום העסקים, ולא
     תאריך ה-UTC של אותו רגע. זו הרשומה שאי אפשר לתקן בדיעבד."""
-    monkeypatch.setattr(routes_module, "business_today", lambda: DEADLINE)
+    monkeypatch.setattr(exercise_requests_module, "business_today", lambda: DEADLINE)
     assert _submit(client, terminated_world).status_code == 200
 
     event = (db_session.query(LedgerEvent)

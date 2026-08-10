@@ -18,7 +18,7 @@ from backend.app.models import (
     Trustee, User, UserRole, UserSession,
 )
 import backend.app.services.documents as documents_module
-import backend.app.api.routes as routes_module
+import backend.app.api.documents as api_documents_module
 
 API = "/api/v1"
 
@@ -27,11 +27,11 @@ API = "/api/v1"
 def isolated_document_store(tmp_path, monkeypatch):
     """מפנה את קבצי ה-PDF לתיקיית tmp_path של הבדיקה, לא ל-document_store/
     האמיתי בשורש הפרויקט - אחרת כל הרצת בדיקות משאירה קבצים אמיתיים מאחור.
-    שני המודולים (documents.py ו-routes.py) מחזיקים כל אחד binding נפרד
-    לקבוע הזה (import ישיר, לא import module) - שניהם צריכים תיקון."""
+    שני המודולים (services/documents.py ו-api/documents.py) מחזיקים כל אחד
+    binding נפרד לקבוע הזה (import ישיר, לא import module) - שניהם צריכים תיקון."""
     test_store = tmp_path / "document_store"
     monkeypatch.setattr(documents_module, "DOCUMENT_STORE_DIR", test_store)
-    monkeypatch.setattr(routes_module, "DOCUMENT_STORE_DIR", test_store)
+    monkeypatch.setattr(api_documents_module, "DOCUMENT_STORE_DIR", test_store)
     return test_store
 
 
@@ -623,3 +623,4 @@ def test_download_still_works_after_the_document_was_acknowledged(client, world,
 
     assert response.status_code == 200
     assert response.content.startswith(b"%PDF")
+

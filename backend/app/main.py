@@ -3,7 +3,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from backend.app.api.routes import router
+from backend.app.api import (
+    auth, employees, company, grants, exercise_requests, audit, ledger,
+    trustee, employee_dashboard, documents, notifications, search_meta,
+)
 from backend.app.version import VERSION, get_version
 
 # רשימת מקורות מפורשת במקום "*". ברירת המחדל מכסה שני דפוסי השימוש בפועל:
@@ -37,7 +40,21 @@ app.add_middleware(
     allow_headers=["*"],  # מאפשר את כל ה-Headers
 )
 
-app.include_router(router, prefix="/api/v1")
+# פיצול הראוטר המונוליטי לפי תחום (v0.9.1) - ראו HANDOFF.md. כל APIRouter()
+# נשאר bare (בלי prefix משלו): /api/v1 הוא הקידומת היחידה, tags= כאן קובע
+# את הקיבוץ ב-/docs בלי לשנות אף נתיב בפועל.
+app.include_router(search_meta.router, prefix="/api/v1", tags=["search_meta"])
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+app.include_router(notifications.router, prefix="/api/v1", tags=["notifications"])
+app.include_router(employees.router, prefix="/api/v1", tags=["employees"])
+app.include_router(company.router, prefix="/api/v1", tags=["company"])
+app.include_router(grants.router, prefix="/api/v1", tags=["grants"])
+app.include_router(exercise_requests.router, prefix="/api/v1", tags=["exercise_requests"])
+app.include_router(audit.router, prefix="/api/v1", tags=["audit"])
+app.include_router(ledger.router, prefix="/api/v1", tags=["ledger"])
+app.include_router(trustee.router, prefix="/api/v1", tags=["trustee"])
+app.include_router(employee_dashboard.router, prefix="/api/v1", tags=["employee_dashboard"])
+app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
 
 # הגשת הקליינטים (UI) ישירות מהשרת
 app.mount("/clients", StaticFiles(directory="clients"), name="clients")

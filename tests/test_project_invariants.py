@@ -292,3 +292,86 @@ def test_init_scheme_sql_documents_the_triggers():
         "trg_documents_no_update_once_acknowledged",
         "trg_documents_no_delete_once_acknowledged",
     }, f"טריגרים חסרים ב-init_scheme.sql. נמצאו: {sorted(triggers)}"
+
+
+# ---------------------------------------------------------------------------
+# פיצול routes.py (v0.9.1). הקובץ המונוליטי (1,507 שורות, 48 endpoints) פוצל
+# ל-12 ראוטרים לפי תחום תחת backend/app/api/. שני הכשלים שריפקטור כזה עלול
+# להכניס בשקט: שני routers שנרשמים על אותו path בטעות (אחד מסתיר את השני),
+# וקובץ ראוטר חדש שנוצר אבל נשכח מ-include_router ב-main.py (שקט לגמרי -
+# ה-import לא נכשל, ה-endpoint פשוט לא קיים).
+# ---------------------------------------------------------------------------
+
+def _all_mounted_api_routes():
+    """כל ה-APIRoute-ים שבאמת מורכבים על ה-app, כולל אלה שיושבים מאחורי
+    ה-wrapper של include_router (``_IncludedRouter.original_router``) -
+    ב-FastAPI העדכני include_router לא שוטח את הראוטרים מיד."""
+    from fastapi.routing import APIRoute
+    from backend.app.main import app
+
+    def walk(routes):
+        for r in routes:
+            if isinstance(r, APIRoute):
+                yield r
+            elif hasattr(r, "original_router"):
+                yield from walk(r.original_router.routes)
+            elif hasattr(r, "routes"):
+                yield from walk(r.routes)
+
+    return list(walk(app.routes))
+
+
+def _api_router_module_names() -> list[str]:
+    """כל קובץ תחת backend/app/api/ שמגדיר router משלו (כל .py חוץ מ-__init__)."""
+    api_dir = ROOT / "backend" / "app" / "api"
+    return sorted(p.stem for p in api_dir.glob("*.py") if p.stem != "__init__")
+
+
+def test_no_duplicate_path_method_pairs_across_routers():
+    """שני ראוטרים (בקבצים שונים) שנרשמים בטעות על אותו (path, method) - אחד
+    מהם מסתיר את השני לפי סדר הרישום ב-main.py, בלי שגיאה. עם קובץ אחד זה
+    היה בולט לעין; מפוצל בין 12 קבצים זה לא."""
+    seen: dict[tuple[str, str], object] = {}
+    duplicates = []
+    for route in _all_mounted_api_routes():
+        for method in route.methods:
+            key = (route.path, method)
+            owner = seen.get(key)
+            if owner is not None and owner is not route:
+                duplicates.append(f"{method} {route.path}")
+            seen[key] = route
+
+    assert not duplicates, (
+        "יותר מ-route אחד רשום על אותו (path, method) - הראשון שנכלל ב-main.py "
+        f"זוכה, השני מוסתר בשקט: {sorted(set(duplicates))}"
+    )
+
+
+def test_every_api_router_module_is_mounted_in_main():
+    """כל קובץ תחת backend/app/api/ שמגדיר router חייב להיות מוכלל ב-main.py
+    בדיוק פעם אחת. קובץ ראוטר חדש ש"נשכח" מ-include_router לא נכשל בשום
+    import - ה-endpoints שבו פשוט לא קיימים, בלי אינדיקציה."""
+    import importlib
+
+    mounted_router_ids = {id(r.original_router) for r in _iter_included_routers()}
+
+    unmounted = []
+    for name in _api_router_module_names():
+        module = importlib.import_module(f"backend.app.api.{name}")
+        router = getattr(module, "router", None)
+        assert router is not None, f"backend/app/api/{name}.py חסר משתנה module-level בשם router"
+        if id(router) not in mounted_router_ids:
+            unmounted.append(name)
+
+    assert not unmounted, (
+        f"הקבצים האלה מגדירים router אבל הוא לא מוכלל ב-main.py: {unmounted}\n"
+        f"הוסף app.include_router({unmounted[0] if unmounted else '...'}.router, prefix=\"/api/v1\") שם."
+    )
+
+
+def _iter_included_routers():
+    from backend.app.main import app
+
+    for r in app.routes:
+        if hasattr(r, "original_router"):
+            yield r
