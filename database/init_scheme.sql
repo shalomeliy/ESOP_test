@@ -16,6 +16,11 @@
 --     documents (v0.9.0) - וכל ארבעת הטריגרים. CLAUDE.md שורה 17 מפנה לכאן
 --     כמקור לאימות לוגיקת דומיין, כך שקובץ מיושן כאן אינו ליקוי תיעוד אלא
 --     מקור מטעה. מאז נאכף ב-tests/test_project_invariants.py ולא בזיכרון.
+-- (3) ותיקון (2) עצמו היה חלקי: רק *הטבלאות החדשות* נוספו, והטבלאות שקדמו
+--     ל-0.5.0 לא נבנו מחדש - כך שנשארו חסרות שש עמודות, שני מפתחות זרים
+--     ושלושה אילוצי UNIQUE. הבדיקה שנכתבה כדי למנוע את זה השוותה שמות טבלאות
+--     בלבד ולכן אישרה את הדריפט. מאז ההשוואה היא עמודה-עמודה, כולל טיפוס,
+--     NOT NULL, מפתחות זרים ואילוצי UNIQUE.
 --
 -- שתי הערות על "מה לא רואים כאן":
 -- 1. ב-SQLite אכיפת Foreign Key כבויה כברירת מחדל בכל connection.
@@ -69,7 +74,10 @@ CREATE TABLE IF NOT EXISTS employees (
     status VARCHAR(10),
     hire_date DATE NOT NULL,
     termination_date DATE,
-    birth_date DATE
+    birth_date DATE,
+    -- ת.ז./SSN. nullable בכוונה: נוסף ב-v0.9.0 על עובדים קיימים, ואין דרך
+    -- להשלים אותו רטרואקטיבית. משמש למסמכי 102 שדורשים זיהוי הנישום.
+    national_id VARCHAR
 );
 CREATE INDEX IF NOT EXISTS ix_employees_company_id ON employees(company_id);
 
@@ -109,7 +117,15 @@ CREATE TABLE IF NOT EXISTS tax_rates_history (
     grant_type VARCHAR NOT NULL,
     effective_start_date DATE NOT NULL,
     capital_gains_rate FLOAT NOT NULL,
-    official_source_url VARCHAR NOT NULL
+    official_source_url VARCHAR NOT NULL,
+    -- היחס ל-tax_rule_packs הוא 1:1, ולכן UNIQUE ולא רק FK: בלי האילוץ שתי
+    -- שורות עם אותו pack_id היו מתחרות על ה-.first() ב-_calculate_flat בלי
+    -- סדר מובטח. שימו לב שב-income_tax_brackets זה בכוונה *לא* ייחודי -
+    -- שם כמה מדרגות חולקות pack_id אחד.
+    pack_id VARCHAR REFERENCES tax_rule_packs(pack_id),
+    CONSTRAINT uq_tax_rates_history_country_type_date
+        UNIQUE (country_code, grant_type, effective_start_date),
+    CONSTRAINT uq_tax_rates_history_pack_id UNIQUE (pack_id)
 );
 CREATE INDEX IF NOT EXISTS ix_tax_rates_history_country_code ON tax_rates_history(country_code);
 CREATE INDEX IF NOT EXISTS ix_tax_rates_history_grant_type ON tax_rates_history(grant_type);
@@ -127,7 +143,12 @@ CREATE TABLE IF NOT EXISTS income_tax_brackets (
     -- max_amount NULL = המדרגה העליונה הפתוחה (בלי תקרה)
     max_amount FLOAT,
     rate FLOAT NOT NULL,
-    official_source_url VARCHAR NOT NULL
+    official_source_url VARCHAR NOT NULL,
+    pack_id VARCHAR REFERENCES tax_rule_packs(pack_id),
+    -- הייחוד כולל את bracket_order ולכן אינו חוסם כמה מדרגות באותה גרסה;
+    -- הוא חוסם רק "אותה מדרגה פעמיים באותה גרסה".
+    CONSTRAINT uq_income_tax_brackets_country_type_date_order
+        UNIQUE (country_code, grant_type, effective_start_date, bracket_order)
 );
 CREATE INDEX IF NOT EXISTS ix_income_tax_brackets_country_code ON income_tax_brackets(country_code);
 CREATE INDEX IF NOT EXISTS ix_income_tax_brackets_grant_type ON income_tax_brackets(grant_type);
@@ -158,7 +179,14 @@ CREATE TABLE IF NOT EXISTS users (
     trustee_id VARCHAR REFERENCES trustees(trustee_id),
     employee_id VARCHAR REFERENCES employees(employee_id),
     is_active BOOLEAN NOT NULL,
-    created_at DATETIME
+    created_at DATETIME,
+    -- שלוש עמודות נעילת החשבון (v0.5.0). ה-DEFAULT כאן הוא היחיד בקובץ שמגיע
+    -- מה-DB ולא מ-Python: המיגרציה חייבת server_default כדי להוסיף עמודת
+    -- NOT NULL על טבלה מאוכלסת, וברירת המחדל משאירה כל משתמש קיים לא-נעול
+    -- ובלי חובת החלפת סיסמה - נעילה גורפת של כל המשתמשים היא מה שהיה קורה אחרת.
+    must_change_password BOOLEAN NOT NULL DEFAULT 0,
+    failed_login_attempts INTEGER NOT NULL DEFAULT '0',
+    locked_until DATETIME
 );
 -- ייחודיות ה-username נאכפת דרך האינדקס הייחודי הזה ולא דרך UNIQUE בהגדרת הטבלה.
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users(username);
@@ -324,7 +352,7 @@ CREATE TABLE IF NOT EXISTS documents (
 	-- מועד פקיעת בקשת האישור (sent_at + 30 יום), נקבע בשליחה. NULL = אין
 	-- דדליין, ולא "פג" - כך מסמכים שנשלחו לפני v0.9.1 נשארים פתוחים.
 	expires_at DATETIME,
-	acknowledged_at DATETIME, 
+	acknowledged_at DATETIME,
 	acknowledged_by_user_id VARCHAR, 
 	created_by_user_id VARCHAR, 
 	PRIMARY KEY (document_id), 

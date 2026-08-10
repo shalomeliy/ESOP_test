@@ -251,22 +251,64 @@ def test_the_clock_is_never_the_source_of_a_tax_date():
 # ארבע טבלאות וכל הטריגרים - כלומר הוא לא היה מיושן, הוא היה מטעה.
 # ---------------------------------------------------------------------------
 
-def test_init_scheme_sql_documents_every_table_in_the_models():
-    import sqlite3
+def _sqlite_shape(conn):
+    """צורת הסכמה כפי ש-SQLite עצמו רואה אותה, לא כפי שהיא כתובה.
 
-    from backend.app.database import Base
-    import backend.app.models  # noqa: F401  -- רושם את הטבלאות על Base.metadata
-
-    conn = sqlite3.connect(":memory:")
-    conn.executescript((ROOT / "database" / "init_scheme.sql").read_text(encoding="utf-8"))
-    documented = {
+    דרך PRAGMA ולא דרך טקסט ה-DDL בכוונה: אילוץ שנכתב בשורת העמודה
+    (``pack_id VARCHAR UNIQUE``) ואילוץ שנכתב בסוף הטבלה (``CONSTRAINT ... UNIQUE``)
+    הם אותו דבר עבור ה-DB ושונים לחלוטין כטקסט. השוואת טקסט הייתה נכשלת על
+    עיצוב ועוברת על דריפט אמיתי - בדיוק הפוך מהנדרש.
+    """
+    shape = {}
+    tables = [
         row[0]
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
-    } - {"alembic_version"}
+    ]
+    for table in tables:
+        if table == "alembic_version":
+            continue  # טבלת הניהול של Alembic - לא מודל, ואין לה מקבילה ב-models.py
+        shape[table] = {
+            # (type, notnull, pk) לכל עמודה. ברירות מחדל *לא* נכללות: רובן
+            # מיושמות ב-Python בזמן INSERT ולא ב-DB, ולכן הן לא נמצאות בשני הצדדים.
+            "columns": {row[1]: (row[2].upper(), row[3], row[5]) for row in conn.execute(f"PRAGMA table_info('{table}')")},
+            "foreign_keys": {(row[3], row[2], row[4]) for row in conn.execute(f"PRAGMA foreign_key_list('{table}')")},
+            "unique": {
+                tuple(part[2] for part in conn.execute(f"PRAGMA index_info('{row[1]}')"))
+                for row in conn.execute(f"PRAGMA index_list('{table}')")
+                if row[2]
+            },
+        }
+    return shape
 
-    modelled = set(Base.metadata.tables)
+
+def _documented_shape():
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript((ROOT / "database" / "init_scheme.sql").read_text(encoding="utf-8"))
+    return _sqlite_shape(conn)
+
+
+def _modelled_shape():
+    import sqlalchemy as sa
+
+    from backend.app.database import Base
+    import backend.app.models  # noqa: F401  -- רושם את הטבלאות על Base.metadata
+
+    engine = sa.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    connection = engine.raw_connection()
+    try:
+        return _sqlite_shape(connection.driver_connection)
+    finally:
+        connection.close()
+
+
+def test_init_scheme_sql_documents_every_table_in_the_models():
+    documented, modelled = set(_documented_shape()), set(_modelled_shape())
+
     assert not modelled - documented, (
         "טבלאות שקיימות במודלים ולא מתועדות ב-init_scheme.sql: "
         f"{sorted(modelled - documented)}"
@@ -274,6 +316,49 @@ def test_init_scheme_sql_documents_every_table_in_the_models():
     assert not documented - modelled, (
         "טבלאות שמתועדות ב-init_scheme.sql ולא קיימות במודלים: "
         f"{sorted(documented - modelled)}"
+    )
+
+
+def test_init_scheme_sql_matches_the_models_column_by_column():
+    """שמות טבלאות בלבד אינם סנכרון - זו הייתה התקלה עצמה.
+
+    הבדיקה הקודמת השוותה רק את קבוצת שמות הטבלאות, ולכן הייתה ירוקה מול קובץ
+    שחסרו בו ``employees.national_id``, שלוש עמודות נעילת החשבון ב-``users``,
+    ``pack_id`` ושני מפתחות זרים ושלושה אילוצי UNIQUE. כלומר היא *אישרה* את
+    הדריפט כמתוקן. בדיקה שירוקה מול הבאג שהיא נכתבה כדי לתפוס גרועה מאין בדיקה,
+    כי היא מסירה את הדריכות.
+    """
+    documented, modelled = _documented_shape(), _modelled_shape()
+    problems = []
+
+    for table in sorted(set(documented) & set(modelled)):
+        doc, mod = documented[table], modelled[table]
+
+        for column in sorted(set(mod["columns"]) - set(doc["columns"])):
+            problems.append(f"{table}.{column} - קיימת במודל וחסרה ב-init_scheme.sql")
+        for column in sorted(set(doc["columns"]) - set(mod["columns"])):
+            problems.append(f"{table}.{column} - מתועדת ב-init_scheme.sql ואינה קיימת במודל")
+        for column in sorted(set(mod["columns"]) & set(doc["columns"])):
+            if mod["columns"][column] != doc["columns"][column]:
+                problems.append(
+                    f"{table}.{column} - (type, notnull, pk) שונה: "
+                    f"מודל={mod['columns'][column]} init_scheme={doc['columns'][column]}"
+                )
+
+        for fk in sorted(mod["foreign_keys"] - doc["foreign_keys"]):
+            problems.append(f"{table} - מפתח זר חסר ב-init_scheme.sql: {fk}")
+        for fk in sorted(doc["foreign_keys"] - mod["foreign_keys"]):
+            problems.append(f"{table} - מפתח זר מתועד שאינו במודל: {fk}")
+
+        for uniq in sorted(mod["unique"] - doc["unique"]):
+            problems.append(f"{table} - אילוץ UNIQUE חסר ב-init_scheme.sql: {uniq}")
+        for uniq in sorted(doc["unique"] - mod["unique"]):
+            problems.append(f"{table} - אילוץ UNIQUE מתועד שאינו במודל: {uniq}")
+
+    assert not problems, (
+        "init_scheme.sql אינו תואם את המודלים. הקובץ מצהיר בכותרתו שהוא נגזר "
+        "מ-alembic upgrade head, ולכן דריפט כאן הוא תיעוד מטעה ולא תיעוד חסר:\n  "
+        + "\n  ".join(problems)
     )
 
 
