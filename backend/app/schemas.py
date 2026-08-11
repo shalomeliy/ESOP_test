@@ -375,5 +375,9 @@ class ImportDryRunReportOut(BaseModel):
     rows_attempted: int
     rows_new: int
     rows_skipped_existing: int
+    # שורה חדשה בטבלה עם FK חובה ל-users (notification_preferences/dismissals) -
+    # users לעולם לא מיובאת, אז שורה כזו לעולם לא תיכתב ב-commit. לא NEW (היה
+    # משקר) ולא rows_failed (לא חוסמת ייבוא של שאר החבילה) - ראו services/import_.py.
+    rows_not_portable: int = 0
     rows_failed: int
     errors: List[ImportRowErrorOut]

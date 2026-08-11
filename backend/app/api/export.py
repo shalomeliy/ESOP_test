@@ -158,7 +158,7 @@ def import_dry_run(file: UploadFile = File(...),
     return ImportDryRunReportOut(
         run_id=run.run_id, status=run.status.value, rows_attempted=report.rows_attempted,
         rows_new=report.rows_new, rows_skipped_existing=report.rows_skipped_existing,
-        rows_failed=report.rows_failed,
+        rows_not_portable=report.rows_not_portable, rows_failed=report.rows_failed,
         errors=[ImportRowErrorOut(table=o.table, index=o.index, row_id=o.row_id, error=o.error)
                for o in report.errors],
     )

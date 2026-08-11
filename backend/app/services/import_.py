@@ -1,6 +1,6 @@
-"""ייבוא נתוני חברה (v0.9.1 שלב ב) - דריי-ראן בלבד (PLAN.md §8 step 6).
+"""ייבוא נתוני חברה (v0.9.1 שלב ב) - דריי-ראן + commit (PLAN.md §8 steps 6-7).
 
-**מודל היעד**: הייבוא תמיד נכתב (בשלב ה-commit, task #7) תחת company_id של
+**מודל היעד**: הייבוא תמיד נכתב תחת company_id של
 המשתמש המאשר את הבקשה - לעולם לא לפי company_id שכתוב בקובץ, ולעולם לא יוצר
 חברה חדשה. זה מניח שלמשתמש המייבא כבר יש חברה קיימת במערכת היעד (נוצרה דרך
 ה-onboarding הרגיל, לא דרך הפיצ'ר הזה) - "ייצוא/ייבוא" הוא ה*תוכן* של החברה,
@@ -42,13 +42,33 @@ bracket_order]) - בדיוק כמו שהוחלט בייצוא, ובלי pack_id 
 (ב-AuditLog) ו-user_id (בשתי הטבלאות האחרות) לא מאומתים מול ה-scope - טבלת
 users אינה חלק מהיקף הייצוא/ייבוא הזה (decision 1), ולכן אין כנגד מה לאמת.
 נבדקת רק התנגשות מפתח ראשי, לא שרשור FK מלא.
+
+**נמצא בזמן תכנון commit() (task #7), לא היה מפורש קודם**: users אינה רק "לא
+מאומתת" - היא *לעולם לא קיימת* ביעד (מעולם לא מיובאת). כל עמודת *_user_id
+היא FK אמיתי ל-users עם אכיפה בפועל (PRAGMA foreign_keys=ON, database.py),
+ולכן commit() מאפס אותה תמיד לפני כתיבה - documents.acknowledged_by_user_id/
+created_by_user_id, exercise_requests.reviewed_by_user_id, audit_log.actor_user_id,
+ledger_events.actor_user_id. לא "לפעמים, אם המשתמש קיים גם ביעד" - איפוס
+עקבי, כדי שההתנהגות לא תהיה תלויה בצירוף מקרים (אותו employee_id/admin
+שקיים גם ביעד). ייחוס "מי ביצע" לא שורד מעבר לגבול המערכת; הפעולה עצמה שורדת.
+
+**notification_preferences/notification_dismissals הן חריג נוסף, חמור יותר**:
+ה-user_id שלהן הוא NOT NULL (init_scheme.sql), לא nullable כמו כל שאר עמודות
+ה-*_user_id - כלומר אי אפשר לאפס אותו. מכיוון ש-users לעולם לא מיובאת, שורה
+*חדשה* בטבלאות האלה לא ניתנת לכתיבה בשום מצב (תפגע תמיד ב-FK), לא רק "תיכשל
+אם המשתמש לא קיים". commit() אף פעם לא כותב לשתי הטבלאות האלה; dry_run
+מסמן שורה חדשה בהן כ-NOT_PORTABLE (סטטוס נפרד מ-NEW/SKIP_EXISTING/ERROR) -
+לא ERROR (לא חוסם ייבוא של שאר החבילה בגלל הגדרות התראה אישיות), ולא NEW
+(היה משקר - השורה לעולם לא באמת תיכתב). שורה קיימת עדיין SKIP_EXISTING
+כרגיל (היא כבר ביעד, אין מה לכתוב מלכתחילה).
 """
 
 import json
 from dataclasses import dataclass, field
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime
 from typing import Dict, List, Optional, Set, Tuple
 
+from sqlalchemy import Date as _SADate, Enum as _SQLEnum
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
@@ -57,6 +77,8 @@ from backend.app.models import (
     OptionPool, TaxRatesHistory, TaxRulePack, Trustee, VestingSchedule,
 )
 from backend.app.services.export import EXPORT_SCHEMA_VERSION, CompanyScope, build_company_scope
+from backend.app.services.ledger import project, record_ownership
+from backend.app.types import UtcDateTime
 
 # ===================================================================
 # מגבלות על קלט לא-ידוע (decision 9) - נבדקות לפני שנוגעים בתוכן בכלל.
@@ -162,6 +184,10 @@ def parse_and_validate_bundle_shape(raw: bytes) -> dict:
 NEW = "NEW"
 SKIP_EXISTING = "SKIP_EXISTING"
 ERROR = "ERROR"
+# שורה חדשה בטבלה שיש לה FK חובה (NOT NULL) ל-users, שלעולם לא מיובאת (decision 1) -
+# ראו הפסקה על notification_preferences/notification_dismissals בראש הקובץ. לא ERROR
+# (לא חוסם את שאר החבילה) ולא NEW (commit() לעולם לא כותב שורה כזו בפועל).
+NOT_PORTABLE = "NOT_PORTABLE"
 
 
 @dataclass
@@ -179,8 +205,9 @@ class ImportDryRunReport:
     rows_attempted: int = 0
     rows_new: int = 0
     rows_skipped_existing: int = 0
+    rows_not_portable: int = 0
     rows_failed: int = 0
-    # outcomes כולל כל שורה (גם NEW/SKIP) - task #7 (commit) צריך את זה כדי
+    # outcomes כולל כל שורה (גם NEW/SKIP/NOT_PORTABLE) - commit() צריך את זה כדי
     # לדעת בדיוק מה לכתוב ומה לדלג עליו, לא רק את השגיאות.
     outcomes: List[RowOutcome] = field(default_factory=list)
     errors: List[RowOutcome] = field(default_factory=list)
@@ -229,6 +256,21 @@ _PK_COLUMN = {
     "documents": Document.document_id,
     "exercise_requests": ExerciseRequest.request_id,
     "exercise_tax_records": ExerciseTaxRecord.record_id,
+}
+
+# אותן שמונה טבלאות, המודל עצמו - task #7 (commit) בונה שורת ORM ישירות מ-
+# _TABLE_SPECS, באותו סדר טופולוגי שכבר נבדק (§3): pools/employees/trustees
+# לפני grants, grants לפני vesting_schedules/documents/exercise_requests,
+# exercise_requests לפני exercise_tax_records.
+_MODEL_BY_TABLE = {
+    "option_pools": OptionPool,
+    "employees": Employee,
+    "trustees": Trustee,
+    "grants": Grant,
+    "vesting_schedules": VestingSchedule,
+    "documents": Document,
+    "exercise_requests": ExerciseRequest,
+    "exercise_tax_records": ExerciseTaxRecord,
 }
 
 
@@ -390,12 +432,17 @@ def _validate_ledger_events(db: Session, bundle: dict, target_scope: CompanyScop
 # user_id לא מאומתים - טבלת users מחוץ להיקף (decision 1), ראו docstring.
 # ===================================================================
 
-def _validate_by_pk_only(db: Session, bundle: dict, table_name: str, model, pk_field: str) -> List[RowOutcome]:
+def _validate_by_pk_only(db: Session, bundle: dict, table_name: str, model, pk_field: str,
+                         *, not_portable: bool = False) -> List[RowOutcome]:
+    """not_portable=True: טבלה שבה שורה *חדשה* לעולם לא ניתנת לכתיבה (FK חובה
+    ל-users שלעולם לא קיימת ביעד - ראו הפסקה בראש הקובץ). שורה קיימת עדיין
+    SKIP_EXISTING כרגיל; רק הענף החדש מסומן NOT_PORTABLE במקום NEW."""
     existing = {row[0] for row in db.query(getattr(model, pk_field)).all()}
+    new_status = NOT_PORTABLE if not_portable else NEW
     outcomes = []
     for index, row in enumerate(bundle["tables"].get(table_name, [])):
         pk_value = row.get(pk_field)
-        status = SKIP_EXISTING if pk_value in existing else NEW
+        status = SKIP_EXISTING if pk_value in existing else new_status
         outcomes.append(RowOutcome(table_name, index, pk_value, status))
     return outcomes
 
@@ -403,8 +450,10 @@ def _validate_by_pk_only(db: Session, bundle: dict, table_name: str, model, pk_f
 def _validate_audit_and_notifications(db: Session, bundle: dict) -> List[RowOutcome]:
     return (
         _validate_by_pk_only(db, bundle, "audit_log", AuditLog, "audit_id")
-        + _validate_by_pk_only(db, bundle, "notification_preferences", NotificationPreference, "preference_id")
-        + _validate_by_pk_only(db, bundle, "notification_dismissals", NotificationDismissal, "dismissal_id")
+        + _validate_by_pk_only(db, bundle, "notification_preferences", NotificationPreference,
+                               "preference_id", not_portable=True)
+        + _validate_by_pk_only(db, bundle, "notification_dismissals", NotificationDismissal,
+                               "dismissal_id", not_portable=True)
     )
 
 
@@ -432,7 +481,295 @@ def dry_run(db: Session, bundle: dict, target_company_id: str) -> ImportDryRunRe
         rows_attempted=len(outcomes),
         rows_new=sum(1 for o in outcomes if o.status == NEW),
         rows_skipped_existing=sum(1 for o in outcomes if o.status == SKIP_EXISTING),
+        rows_not_portable=sum(1 for o in outcomes if o.status == NOT_PORTABLE),
         rows_failed=len(errors),
         outcomes=outcomes,
         errors=errors,
+    )
+
+
+# ===================================================================
+# commit() - הכתיבה בפועל (PLAN.md §8 step 7). מריץ dry_run מחדש מול ה-bundle
+# שהתקבל - לא סומך על דוח ישן שיכול היה להתיישן בין הרגע שהוא חושב לרגע
+# ה-commit (למשל: מישהו אחר ייבא בינתיים וייצר התנגשות חדשה). לא כותב שום
+# דבר אם dry_run לא תקין - decision 3 הוא all-or-nothing, לא כתיבה חלקית של
+# השורות שכן היו תקינות. לא עושה db.commit() - אותה מוסכמה כמו שאר ה-services
+# (append_event/run_export/dry_run עצמו): ה-caller (endpoint עתידי, task #8)
+# סוגר את הטרנזקציה.
+# ===================================================================
+
+# הטבלאות היחידות עם עמודת company_id בפועל (models.py) - decision 9: לעולם
+# לא מהקובץ, נאכף כאן ולא ב-dry_run כי dry_run לא כותב כלום. Grant/VestingSchedule/
+# ExerciseRequest/ExerciseTaxRecord אין להן עמודת company_id בכלל (ה-scoping
+# שלהן נגזר דרך שרשור FK, כבר אומת ב-dry_run).
+_FORCE_COMPANY_ID_TABLES = {"option_pools", "employees", "trustees", "documents"}
+
+# עמודות *_user_id שמאופסות תמיד בכתיבה - ראו הפסקה המורחבת בראש הקובץ:
+# users לעולם לא מיובאת (decision 1), אז כל reference אליה מהקובץ לא יכול
+# לפתור ביעד. ledger_events/audit_log לא ב-_MODEL_BY_TABLE (מטופלים בנפרד
+# למטה) אבל חולקים את אותו העיקרון בדיוק.
+_NULLED_USER_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "documents": ("acknowledged_by_user_id", "created_by_user_id"),
+    "exercise_requests": ("reviewed_by_user_id",),
+    "audit_log": ("actor_user_id",),
+    "ledger_events": ("actor_user_id",),
+}
+
+# aggregate_type (ledger.py) לכל טבלה שהיא גם "בעלת" LedgerOwnership. Trustee/
+# Document/ExerciseTaxRecord לא ברשימה בכוונה - הן לא סוגי aggregate בעצמן
+# (LEDGER_AGGREGATE_TYPES ב-models.py), רק תכונות על ישויות אחרות.
+_AGGREGATE_TYPE_BY_TABLE = {
+    "option_pools": "OptionPool",
+    "employees": "Employee",
+    "grants": "Grant",
+    "vesting_schedules": "VestingSchedule",
+    "exercise_requests": "ExerciseRequest",
+}
+
+
+def _deserialize_value(column, value):
+    """הופך ערך JSON-safe (isoformat string, ערך Enum כ-str) בחזרה לטיפוס
+    שהעמודה מצפה לו - ההפך המדויק של export.py::_serialize_row. בלי זה
+    UtcDateTime.process_bind_param נופל על value.tzinfo (ל-str אין), ו-SQLEnum
+    מקבל str גולמי שלא בהכרח שווה לחבר ה-Enum שהעמודה מצפה לו."""
+    if value is None:
+        return None
+    col_type = column.type
+    if isinstance(col_type, UtcDateTime):
+        return _datetime.fromisoformat(value) if isinstance(value, str) else value
+    if isinstance(col_type, _SQLEnum) and col_type.enum_class is not None:
+        return value if isinstance(value, col_type.enum_class) else col_type.enum_class(value)
+    if isinstance(col_type, _SADate) and isinstance(value, str):
+        return _date.fromisoformat(value)
+    return value
+
+
+def _deserialize_row(model, row: dict) -> dict:
+    columns = model.__table__.columns
+    return {name: _deserialize_value(columns[name], value) for name, value in row.items() if name in columns}
+
+
+@dataclass
+class ImportCommitReport:
+    valid: bool
+    rows_attempted: int = 0
+    rows_written: int = 0
+    rows_skipped_existing: int = 0
+    rows_not_portable: int = 0
+    rows_failed: int = 0
+    errors: List[RowOutcome] = field(default_factory=list)
+
+
+def _build_row(table_name: str, model, row: dict, *, target_company_id: str) -> object:
+    values = _deserialize_row(model, row)
+    if table_name in _FORCE_COMPANY_ID_TABLES:
+        values["company_id"] = target_company_id
+    for column_name in _NULLED_USER_COLUMNS.get(table_name, ()):
+        if column_name in values:
+            values[column_name] = None
+    return model(**values)
+
+
+def _grant_ownership_fields(db: Session, grant_id: str) -> Tuple[Optional[str], str]:
+    """trustee_id/employee_id של מענק, ל-record_ownership על ישויות שנגזרות
+    ממנו (VestingSchedule) - שאילתה ולא cache, כי בנקודה הזו כל grant (חדש
+    או קיים) כבר flushed ל-DB (grants מעובד לפני vesting_schedules, §3)."""
+    grant = db.query(Grant).filter(Grant.grant_id == grant_id).one()
+    return grant.trustee_id, grant.employee_id
+
+
+def _record_ownership_for_new_row(db: Session, table_name: str, obj, target_company_id: str) -> None:
+    """LedgerOwnership לעולם לא מיובאת כטבלה (decision 1) - כל שורת ownership
+    לישות חדשה נבנית כאן מחדש, בדיוק כמו backfill_ledger.py בזמנו. company_id
+    הוא תמיד target_company_id ולא נגזר דרך pool כמו בזרימה החיה (grants.py) -
+    היעד תמיד חברה אחת, זו של המייבא (ההבהרה המפורשת מ-task #6)."""
+    aggregate_type = _AGGREGATE_TYPE_BY_TABLE.get(table_name)
+    if aggregate_type is None:
+        return
+    if table_name == "option_pools":
+        record_ownership(db, aggregate_id=obj.pool_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id)
+    elif table_name == "employees":
+        record_ownership(db, aggregate_id=obj.employee_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id, employee_id=obj.employee_id)
+    elif table_name == "grants":
+        record_ownership(db, aggregate_id=obj.grant_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id, trustee_id=obj.trustee_id,
+                         employee_id=obj.employee_id)
+    elif table_name == "vesting_schedules":
+        trustee_id, employee_id = _grant_ownership_fields(db, obj.grant_id)
+        record_ownership(db, aggregate_id=obj.schedule_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id, trustee_id=trustee_id, employee_id=employee_id)
+    elif table_name == "exercise_requests":
+        record_ownership(db, aggregate_id=obj.request_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id, employee_id=obj.employee_id)
+
+
+def _write_normal_tables(db: Session, bundle: dict, outcomes_by_table: Dict[str, Dict[int, RowOutcome]],
+                         target_company_id: str) -> int:
+    """כותב את שמונה טבלאות _TABLE_SPECS בסדר הטופולוגי הקבוע שלו (אותו סדר
+    שכבר אומת ב-dry_run, §3), flush בין טבלה לטבלה - הלקח מ-task #2
+    (HANDOFF.md): SQLAlchemy לא מבטיח סדר INSERT בין טבלאות שחולקות FK גולמי
+    בלי relationship()."""
+    written = 0
+    for table_name, model in _MODEL_BY_TABLE.items():
+        rows = bundle["tables"].get(table_name, [])
+        table_outcomes = outcomes_by_table.get(table_name, {})
+        new_objects = [
+            _build_row(table_name, model, row, target_company_id=target_company_id)
+            for index, row in enumerate(rows)
+            if table_outcomes.get(index) is not None and table_outcomes[index].status == NEW
+        ]
+        if not new_objects:
+            continue
+        db.add_all(new_objects)
+        db.flush()
+        written += len(new_objects)
+        for obj in new_objects:
+            _record_ownership_for_new_row(db, table_name, obj, target_company_id)
+    return written
+
+
+def _write_tax_tables(db: Session, bundle: dict, outcomes_by_table: Dict[str, Dict[int, RowOutcome]]) -> int:
+    """tax_rule_packs.pack_id מוסר בייצוא (export.py::_TAX_TABLE_EXCLUDED_COLUMNS) -
+    כולל על tax_rule_packs עצמו, לא רק על שתי הטבלאות המפנות אליו. כל pack חדש
+    מקבל pack_id טרי (generate_uuid(), models.py default), ו-tax_rates_history/
+    income_tax_brackets מפנים אליו מחדש לפי natural key - בקובץ אין להן בכלל
+    pack_id להסתמך עליו (בדיוק הסיבה ש-decision 1 קיים: pack_id לא שורד
+    seed/backfill חדש, ו-tax_engine.py._calculate_flat/_calculate_progressive
+    מסננים דווקא לפי pack_id - בלי הפתרון הזה חישוב מס על היעד לא היה מוצא
+    את שורות הפירוט בכלל)."""
+    written = 0
+
+    pack_outcomes = outcomes_by_table.get("tax_rule_packs", {})
+    new_packs = [
+        TaxRulePack(**_deserialize_row(TaxRulePack, row))
+        for index, row in enumerate(bundle["tables"].get("tax_rule_packs", []))
+        if pack_outcomes.get(index) is not None and pack_outcomes[index].status == NEW
+    ]
+    if new_packs:
+        db.add_all(new_packs)
+        db.flush()
+        written += len(new_packs)
+
+    pack_id_by_key = {
+        (p.country_code, p.grant_type, p.effective_start_date): p.pack_id
+        for p in db.query(TaxRulePack).all()
+    }
+
+    for table_name, model in (("tax_rates_history", TaxRatesHistory), ("income_tax_brackets", IncomeTaxBracket)):
+        table_outcomes = outcomes_by_table.get(table_name, {})
+        new_objects = []
+        for index, row in enumerate(bundle["tables"].get(table_name, [])):
+            outcome = table_outcomes.get(index)
+            if outcome is None or outcome.status != NEW:
+                continue
+            values = _deserialize_row(model, row)
+            key = (values["country_code"], values["grant_type"], values["effective_start_date"])
+            values["pack_id"] = pack_id_by_key[key]  # dry_run כבר אימת שה-key הזה קיים
+            new_objects.append(model(**values))
+        if new_objects:
+            db.add_all(new_objects)
+            db.flush()
+            written += len(new_objects)
+
+    return written
+
+
+def _write_ledger_events(db: Session, bundle: dict,
+                         outcomes_by_table: Dict[str, Dict[int, RowOutcome]]) -> Tuple[int, Set[str]]:
+    """מכניס LedgerEvent ישירות (LedgerEvent(...)), *לעולם לא* דרך append_event -
+    append_event היה מייחס sequence_no חדש ומברירת מחדל recorded_at לרגע ה-
+    commit, ומוחק בדיוק את מה שהאידמפוטנטיות של decision 5 אמורה לשמר
+    (recorded_at ההיסטורי האמיתי - ראו §7 סיכון 1). מחזיר גם את קבוצת ה-
+    aggregate_id-ים מסוג OptionPool שקיבלו אירוע חדש, לשימוש בפרויקציה
+    שרצה פעם אחת אחרי כל הבאטש (§3)."""
+    table_outcomes = outcomes_by_table.get("ledger_events", {})
+    new_objects = []
+    touched_pool_ids: Set[str] = set()
+    for index, row in enumerate(bundle["tables"].get("ledger_events", [])):
+        outcome = table_outcomes.get(index)
+        if outcome is None or outcome.status != NEW:
+            continue
+        values = _deserialize_row(LedgerEvent, row)
+        values["actor_user_id"] = None
+        new_objects.append(LedgerEvent(**values))
+        if row.get("aggregate_type") == "OptionPool":
+            touched_pool_ids.add(row["aggregate_id"])
+    if new_objects:
+        db.add_all(new_objects)
+        db.flush()
+    return len(new_objects), touched_pool_ids
+
+
+def _write_audit_log(db: Session, bundle: dict, outcomes_by_table: Dict[str, Dict[int, RowOutcome]]) -> int:
+    table_outcomes = outcomes_by_table.get("audit_log", {})
+    new_objects = []
+    for index, row in enumerate(bundle["tables"].get("audit_log", [])):
+        outcome = table_outcomes.get(index)
+        if outcome is None or outcome.status != NEW:
+            continue
+        values = _deserialize_row(AuditLog, row)
+        values["actor_user_id"] = None
+        new_objects.append(AuditLog(**values))
+    if new_objects:
+        db.add_all(new_objects)
+        db.flush()
+    return len(new_objects)
+
+
+def _recompute_option_pool_projections(db: Session, pool_ids: Set[str]) -> None:
+    """אחרי כל הבאטש, לא אירוע-אירוע (§3) - מונע דריפט בין העמודה המוטטת
+    לבין קיפול ה-ledger כשפול שכבר קיים ביעד (SKIP_EXISTING, decision D)
+    מקבל אירועים היסטוריים חדשים מהייבוא: השורה עצמה לא נדרסת, אבל היתרה
+    המוטטת שלה חייבת לשקף את ההיסטוריה המלאה עכשיו - לא רק את מה שהייתה
+    ב-snapshot של המקור בזמן הייצוא."""
+    for pool_id in pool_ids:
+        state = project(db, "OptionPool", pool_id)
+        if state is None:
+            continue
+        pool = db.get(OptionPool, pool_id)
+        if pool is None:
+            continue
+        pool.allocated_shares = state["allocated_shares"]
+        pool.unallocated_shares = state["unallocated_shares"]
+    if pool_ids:
+        db.flush()
+
+
+def commit(db: Session, bundle: dict, target_company_id: str) -> ImportCommitReport:
+    """נקודת הכניסה של הכתיבה בפועל (PLAN.md §8 step 7, HANDOFF.md task #7).
+    מריץ dry_run מחדש - ראו הערת המודול על כך למעלה. אם לא תקין, לא נוגע ב-DB
+    בכלל (ImportCommitReport(valid=False), rows_written=0).
+
+    notification_preferences/notification_dismissals לעולם לא נכתבות כאן -
+    שורה חדשה בהן היא NOT_PORTABLE (ולא NEW) כבר ב-dry_run, ולכן לולאות הכתיבה
+    למטה, שכולן פועלות רק על status == NEW, לא נוגעות בהן מעולם. ראו הפסקה
+    המורחבת בראש הקובץ."""
+    report = dry_run(db, bundle, target_company_id)
+    if not report.valid:
+        return ImportCommitReport(
+            valid=False, rows_attempted=report.rows_attempted, rows_written=0,
+            rows_skipped_existing=report.rows_skipped_existing,
+            rows_not_portable=report.rows_not_portable,
+            rows_failed=report.rows_failed, errors=report.errors,
+        )
+
+    outcomes_by_table: Dict[str, Dict[int, RowOutcome]] = {}
+    for outcome in report.outcomes:
+        outcomes_by_table.setdefault(outcome.table, {})[outcome.index] = outcome
+
+    rows_written = 0
+    rows_written += _write_normal_tables(db, bundle, outcomes_by_table, target_company_id)
+    rows_written += _write_tax_tables(db, bundle, outcomes_by_table)
+    ledger_written, touched_pool_ids = _write_ledger_events(db, bundle, outcomes_by_table)
+    rows_written += ledger_written
+    rows_written += _write_audit_log(db, bundle, outcomes_by_table)
+
+    _recompute_option_pool_projections(db, touched_pool_ids)
+
+    return ImportCommitReport(
+        valid=True, rows_attempted=report.rows_attempted, rows_written=rows_written,
+        rows_skipped_existing=report.rows_skipped_existing,
+        rows_not_portable=report.rows_not_portable, rows_failed=0, errors=[],
     )
