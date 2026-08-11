@@ -13,8 +13,8 @@ from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, ExerciseRequest, ExerciseRequestStatus,
-    Grant, GrantType, LedgerEvent, LedgerOwnership, OptionPool, Trustee, User,
-    UserRole, UserSession, VestingSchedule,
+    Grant, GrantType, LedgerEvent, LedgerOwnership, OptionPool, TaxRatesHistory,
+    TaxRulePack, Trustee, User, UserRole, UserSession, VestingSchedule,
 )
 from backend.app.services.ledger import LEDGER_EPOCH, append_event, project, record_ownership
 
@@ -72,6 +72,20 @@ def world(db_session):
     append_event(db, event_type="EMPLOYEE_STATE_ESTABLISHED", aggregate_type="Employee",
                 aggregate_id="E-1", payload={"status": "ACTIVE", "termination_date": None},
                 effective_date=date(2020, 1, 1))
+
+    # v0.9.1 שלב ב: אישור אמיתי מחשב מס עכשיו (_compute_exercise_tax_record) -
+    # בלי חבילת מס שחלה על IL/IL_102_CAPITAL_GAINS, אישור בקובץ הזה היה נחסם
+    # ב-409 (MissingTaxRuleError) לפני שמגיע לחיווט שהוא בפועל אמור לבדוק.
+    tax_pack = TaxRulePack(country_code="IL", grant_type=GrantType.IL_102_CAPITAL_GAINS.value,
+                           effective_start_date=date(2000, 1, 1), calculation_method="FLAT_RATE",
+                           official_source_url="https://test.invalid/qa-fixture-not-a-real-tax-source")
+    db.add(tax_pack)
+    db.flush()
+    db.add(TaxRatesHistory(country_code="IL", grant_type=GrantType.IL_102_CAPITAL_GAINS.value,
+                           effective_start_date=date(2000, 1, 1), capital_gains_rate=0.25,
+                           official_source_url="https://test.invalid/qa-fixture-not-a-real-tax-source",
+                           pack_id=tax_pack.pack_id))
+    db.flush()
 
     admin = _user(db, "U-ADMIN", UserRole.COMPANY_ADMIN, company_id="C-A")
     trustee_user = _user(db, "U-TRUSTEE", UserRole.TRUSTEE, trustee_id="T-1")

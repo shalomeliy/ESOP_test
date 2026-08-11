@@ -15,8 +15,8 @@ from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
     Company, Employee, EmployeeStatus, ExerciseRequest, ExerciseRequestStatus,
-    Grant, GrantType, OptionPool, Trustee, User, UserRole, UserSession,
-    VestingSchedule,
+    Grant, GrantType, OptionPool, TaxRatesHistory, TaxRulePack, Trustee, User, UserRole,
+    UserSession, VestingSchedule,
 )
 
 API = "/api/v1"
@@ -119,6 +119,19 @@ def world(db_session):
         db.add(VestingSchedule(schedule_id=f"SCHED-{grant_id}", grant_id=grant_id,
                                start_date=_months_ago(13), cliff_months=12,
                                total_months=48, paused_days_total=0))
+
+    # v0.9.1 שלב ב: אישור אמיתי מחשב מס עכשיו (_compute_exercise_tax_record) -
+    # בלי חבילת מס שחלה על IL/IL_102_CAPITAL_GAINS, כל אישור בקובץ הזה היה
+    # נחסם ב-409 (MissingTaxRuleError) לפני שמגיע לבדיקה שהוא בפועל אמור לתפוס.
+    tax_pack = TaxRulePack(country_code="IL", grant_type=GrantType.IL_102_CAPITAL_GAINS.value,
+                           effective_start_date=date(2000, 1, 1), calculation_method="FLAT_RATE",
+                           official_source_url="https://test.invalid/qa-fixture-not-a-real-tax-source")
+    db.add(tax_pack)
+    db.flush()
+    db.add(TaxRatesHistory(country_code="IL", grant_type=GrantType.IL_102_CAPITAL_GAINS.value,
+                           effective_start_date=date(2000, 1, 1), capital_gains_rate=0.25,
+                           official_source_url="https://test.invalid/qa-fixture-not-a-real-tax-source",
+                           pack_id=tax_pack.pack_id))
     db.flush()
 
     admin_a = _user(db, "USER-ADMIN-A", UserRole.COMPANY_ADMIN, company_id="COMP-A")

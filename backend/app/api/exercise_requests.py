@@ -5,9 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.types import utcnow, business_today
+from backend.app.types import utcnow, business_today, business_date_of
 from backend.app.models import (
     Grant, OptionPool, StockPricesHistory, User, UserRole, ExerciseRequest, ExerciseRequestStatus,
+    ExerciseTaxRecord,
 )
 from backend.app.schemas import (
     ExerciseSimulationRequest, ExerciseSimulationResponse,
@@ -48,6 +49,69 @@ def _vested_or_conflict(grant: Grant, on_date: date) -> float:
             detail=(f"Grant {grant.grant_id} has no vesting schedule - the vested amount "
                     "cannot be determined. Attach a vesting schedule before proceeding."),
         )
+
+
+def _latest_stock_price(db: Session, grant: Grant) -> float:
+    """FMV אחרון לחברת המענק, עם נפילה למחיר המימוש עצמו כשאין עדיין היסטוריה -
+    יושבת כאן ולא רק ב-simulate_exercise כי v0.9.1 שלב ב מוסיף צרכן שני (אישור
+    אמיתי) לאותה בדיקה בדיוק, ו-P3 (QA_TESTBOOK.md) הוא כפילות ולא שיתוף."""
+    latest_price = (
+        db.query(StockPricesHistory)
+        .filter(StockPricesHistory.company_id == grant.employee.company_id)
+        .order_by(StockPricesHistory.price_date.desc())
+        .first()
+    )
+    return latest_price.fmv_price if latest_price else grant.exercise_price
+
+
+def _compute_exercise_tax_record(db: Session, req: ExerciseRequest, grant: Grant) -> ExerciseTaxRecord:
+    """סוגר את הפער שהתגלה בתכנון שלב ב: TaxCalculationEngine נקרא עד היום רק
+    מ-/simulate-exercise (בדיקה) - אישור מימוש **אמיתי** מעולם לא חישב מס בכלל,
+    ותוצאתו לא נרשמה במקום מבני. בלי הרשומה הזו דוח ההתאמה (שלב ב) יכול לשחזר
+    חישוב מס על סימולציה בלבד, לא על מימוש שבאמת קרה.
+
+    תאריך המימוש הוא **תאריך הבקשה של העובד** (``req.requested_at``, מומר ליום
+    עסקים דרך ``business_date_of``) - לא ``business_today()`` ברגע האישור.
+    הניסוח הראשון שנבדק כאן היה בדיוק זה, ונפל על אינווריאנט קיים ולא שרירותי:
+    ``test_the_clock_is_never_the_source_of_a_tax_date`` אוסר על תאריך בעל
+    משמעות מסית לצאת משעון, בכל אזור זמן - וזה בדיוק העיקרון שח1/ח2 (ראו
+    HANDOFF.md) הקימו את השעון העסקי כדי לתקן, לא לעקוף. שעה נוספת מסתדרת גם
+    מבחינה מסית: תאריך המימוש הוא היום שהעובד בפועל ביקש למכור, לא היום שהאדמין
+    הספיק לאשר את הטופס - שני אלה יכולים להיות ימים או שבועות מרוחקים.
+
+    ``MissingTaxRuleError`` חוסם את האישור (409) ולא רק מדווח עליו: מספר בלי
+    שרשור מקורות הוא בדיוק ההפרה ש-GOAL.md קריטריון 5 נועד למנוע - מימוש אמיתי
+    לא יכול "לעבור בלי מס" רק כי החבילה חסרה, בדיוק כמו שלא-מבשילים לא יכול
+    "לעבור בלי לוח הבשלה" (ראו _vested_or_conflict).
+    """
+    exercise_date = business_date_of(req.requested_at)
+    stock_price = _latest_stock_price(db, grant)
+    gain = max(0.0, (stock_price - grant.exercise_price) * req.options_requested)
+    grant_type_value = grant.grant_type.value if hasattr(grant.grant_type, "value") else grant.grant_type
+
+    try:
+        tax_result = TaxCalculationEngine.calculate_tax(
+            db, grant.employee.country_code, grant_type_value, exercise_date, gain,
+        )
+    except MissingTaxRuleError:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"No tax rule found for {grant.employee.country_code}/{grant_type_value} "
+                    f"as of {exercise_date} - cannot approve without a computable, sourced tax amount."),
+        )
+
+    return ExerciseTaxRecord(
+        request_id=req.request_id,
+        country_code=grant.employee.country_code,
+        grant_type=grant_type_value,
+        effective_start_date=tax_result.table_effective_date,
+        calculation_method=tax_result.method,
+        gain=gain,
+        tax_amount=tax_result.tax_amount,
+        effective_rate=tax_result.effective_rate,
+        official_source_url=tax_result.source_url,
+        computed_at=utcnow(),
+    )
 
 
 def _company_id_of_grant(db: Session, grant: Grant) -> "str | None":
@@ -109,17 +173,25 @@ def _assert_request_approvable(db: Session, req: ExerciseRequest, grant: Grant) 
 
 
 def _decide_exercise_request(db: Session, req: ExerciseRequest, payload: ExerciseRequestReview,
-                              actor_user_id: str) -> ExerciseRequest:
+                              actor_user_id: str, grant: Grant) -> ExerciseRequest:
     """נקודת כתיבה אחת ויחידה לשני נתיבי האישור (admin+trustee) - v0.6.0.
 
     קודם כל נתיב שיכפל את השינוי בעצמו, וזה בדיוק דפוס P3 (QA_TESTBOOK.md):
     ולידציה/לוגיקה שקיימת בנתיב אחד וחסרה/שונה בשני. חייבת להיקרא בתוך אותה
     טרנזקציה כמו _assert_request_approvable (אם approve=True) ולא אחריה בנפרד -
-    אחרת יש חלון TOCTOU בין הבדיקה לכתיבה (ראו סקירת האבטחה לתכנון v0.6.0)."""
+    אחרת יש חלון TOCTOU בין הבדיקה לכתיבה (ראו סקירת האבטחה לתכנון v0.6.0).
+
+    v0.9.1 שלב ב: חישוב המס (אם approve=True) קורה *לפני* כל כתיבה אחרת בפונקציה
+    הזו בכוונה - אם MissingTaxRuleError נזרק, אף שינוי (status/audit/ledger) לא
+    קרה עדיין באותה קריאה, אז אין מה "לבטל" בלוגיקה - הסשן פשוט לא ה-commit."""
+    tax_record = _compute_exercise_tax_record(db, req, grant) if payload.approve else None
+
     req.status = ExerciseRequestStatus.APPROVED if payload.approve else ExerciseRequestStatus.REJECTED
     req.reviewed_by_user_id = actor_user_id
     req.reviewed_at = utcnow()
     req.review_notes = payload.notes
+    if tax_record is not None:
+        db.add(tax_record)
     record_audit_event(db, "ExerciseRequest", req.request_id,
                         "APPROVE" if payload.approve else "REJECT", actor_user_id,
                         before={"status": "PENDING"}, after={"status": req.status.value, "notes": payload.notes})
@@ -152,7 +224,7 @@ def review_exercise_request_admin(request_id: str, payload: ExerciseRequestRevie
     if payload.approve:
         _assert_request_approvable(db, req, grant)
 
-    _decide_exercise_request(db, req, payload, current_user.user_id)
+    _decide_exercise_request(db, req, payload, current_user.user_id, grant)
     db.commit()
     db.refresh(req)
     return req
@@ -179,7 +251,7 @@ def review_exercise_request_trustee(request_id: str, payload: ExerciseRequestRev
     if payload.approve:
         _assert_request_approvable(db, req, grant)
 
-    _decide_exercise_request(db, req, payload, current_user.user_id)
+    _decide_exercise_request(db, req, payload, current_user.user_id, grant)
     db.commit()
     db.refresh(req)
     return req
@@ -201,8 +273,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
         grant, grant.employee, payload.exercise_date
     )
 
-    latest_price = db.query(StockPricesHistory).filter(StockPricesHistory.company_id == grant.employee.company_id).order_by(StockPricesHistory.price_date.desc()).first()
-    stock_price = latest_price.fmv_price if latest_price else grant.exercise_price
+    stock_price = _latest_stock_price(db, grant)
 
     total_cost = payload.options_to_exercise * grant.exercise_price
     gain = max(0.0, (stock_price - grant.exercise_price) * payload.options_to_exercise)
