@@ -82,6 +82,9 @@ def test_export_round_trips_company_and_employee_data(client, world):
     assert bundle["tables"]["companies"] == [{
         "company_id": "COMP-EXP-A", "name": "Alpha", "country_code": "IL",
         "is_active": True, "created_at": bundle["tables"]["companies"][0]["created_at"],
+        # v1.0.0 שלב א: עמודה חדשה, nullable - חברה קיימת שנזרעה לפני שלב א
+        # מייצאת None, לא 0/מוסתר. ראו models.py.Company.total_authorized_shares.
+        "total_authorized_shares": None,
     }]
     employees = bundle["tables"]["employees"]
     assert len(employees) == 1

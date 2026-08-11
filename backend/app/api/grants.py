@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import OptionPool, Grant, Employee, Trustee, VestingSchedule, User, UserRole
+from backend.app.models import OptionPool, Grant, Employee, Trustee, ShareClass, VestingSchedule, User, UserRole
 from backend.app.schemas import (
     PoolOut, GrantOut, CreateGrantRequest, CreateGrantResponse,
-    VestingPauseRequest, VestingPauseResponse,
+    VestingPauseRequest, VestingPauseResponse, CreatePoolRequest,
 )
 from backend.app.services.engine import shift_months
 from backend.app.services.audit import record_audit_event
@@ -33,6 +33,46 @@ MINIMUM_GRANT_AGE_YEARS = 18
 @router.get("/admin/pools", response_model=List[PoolOut])
 def list_pools(current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     return db.query(OptionPool).filter(OptionPool.company_id == current_user.company_id).all()
+
+
+@router.post("/admin/pools", response_model=PoolOut)
+def create_pool(payload: CreatePoolRequest,
+                current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
+    """v1.0.0 שלב א: פול אופציות נוסף - עד כה רק seed_data.py יצר פול, ואין
+    endpoint אמיתי (ראו התכנון). מתמיכה במספר פולים לחברה (למשל פול לכל סוג מניה)."""
+    if payload.total_shares <= 0:
+        raise HTTPException(status_code=400, detail="total_shares must be positive")
+
+    if payload.share_class_id:
+        share_class = db.query(ShareClass).filter(ShareClass.share_class_id == payload.share_class_id).first()
+        if not share_class:
+            raise HTTPException(status_code=404, detail="Share class not found")
+        if share_class.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Cannot use a share class outside your company")
+
+    pool = OptionPool(
+        company_id=current_user.company_id,
+        total_shares=payload.total_shares,
+        allocated_shares=0.0,
+        unallocated_shares=payload.total_shares,
+        share_class_id=payload.share_class_id,
+    )
+    db.add(pool)
+    db.flush()  # pool.pool_id זמין מכאן
+
+    record_ownership(db, aggregate_id=pool.pool_id, aggregate_type="OptionPool",
+                     company_id=pool.company_id)
+    append_event(db, event_type="POOL_BALANCE_ESTABLISHED", aggregate_type="OptionPool", aggregate_id=pool.pool_id,
+                payload={"allocated_shares": 0.0, "unallocated_shares": payload.total_shares,
+                        "total_shares": payload.total_shares},
+                effective_date=payload.established_date, actor_user_id=current_user.user_id)
+
+    record_audit_event(db, "OptionPool", pool.pool_id, "CREATE", current_user.user_id,
+                        after={"total_shares": pool.total_shares, "share_class_id": pool.share_class_id})
+
+    db.commit()
+    db.refresh(pool)
+    return pool
 
 
 @router.get("/admin/grants", response_model=List[GrantOut])

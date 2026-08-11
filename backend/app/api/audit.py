@@ -4,7 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import Employee, Grant, OptionPool, ExerciseRequest, AuditLog, User, UserRole
+from backend.app.models import (
+    Employee, Grant, OptionPool, ExerciseRequest, AuditLog, User, UserRole,
+    ShareClass, Shareholder, ShareIssuance,
+)
 from backend.app.schemas import AuditLogOut
 from backend.app.auth import require_roles
 
@@ -34,6 +37,24 @@ def get_audit_log(entity_type: str, entity_id: str,
         pool = db.query(OptionPool).filter(OptionPool.pool_id == grant.pool_id).first() if grant else None
         if not req or not pool or pool.company_id != current_user.company_id:
             raise HTTPException(status_code=403, detail="Not your company's exercise request")
+    elif entity_type == "OptionPool":
+        pool = db.query(OptionPool).filter(OptionPool.pool_id == entity_id).first()
+        if not pool or pool.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Not your company's pool")
+    elif entity_type == "ShareClass":
+        # company_id ישיר על השורה (בלי join) - v1.0.0 שלב א, ראו models.py.ShareClass.
+        share_class = db.query(ShareClass).filter(ShareClass.share_class_id == entity_id).first()
+        if not share_class or share_class.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Not your company's share class")
+    elif entity_type == "Shareholder":
+        shareholder = db.query(Shareholder).filter(Shareholder.shareholder_id == entity_id).first()
+        if not shareholder or shareholder.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Not your company's shareholder")
+    elif entity_type == "ShareIssuance":
+        # company_id ישיר על השורה (בלי join) - אותו דפוס הגנתי כמו Document.
+        issuance = db.query(ShareIssuance).filter(ShareIssuance.share_issuance_id == entity_id).first()
+        if not issuance or issuance.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Not your company's share issuance")
     else:
         raise HTTPException(status_code=400, detail="Unsupported entity_type")
 

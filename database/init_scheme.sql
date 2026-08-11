@@ -1,4 +1,4 @@
--- SQL Schema Reference - 21 טבלאות, משקף את backend/app/models.py בגרסה 0.9.1.
+-- SQL Schema Reference - 24 טבלאות, משקף את backend/app/models.py בגרסה 1.0.0 (שלב א).
 --
 -- זהו קובץ תיעוד/reference בלבד. ה-DB בפועל נבנה על ידי Alembic
 -- (python -m alembic upgrade head) מאז גרסה 0.4.0 - לא על ידי הקובץ הזה
@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS companies (
     name VARCHAR NOT NULL,
     country_code VARCHAR NOT NULL,
     is_active BOOLEAN NOT NULL,
-    created_at DATETIME
+    created_at DATETIME,
+    -- v1.0.0 שלב א: nullable כי אי אפשר להמציא ערך לחברות קיימות שנזרעו לפני
+    -- הגרסה הזו. שלב ב (חישוב דילול) חייב להתייחס במפורש ל-NULL כ"לא זמין".
+    total_authorized_shares FLOAT
 );
 
 CREATE TABLE IF NOT EXISTS option_pools (
@@ -45,12 +48,16 @@ CREATE TABLE IF NOT EXISTS option_pools (
     allocated_shares FLOAT NOT NULL,
     unallocated_shares FLOAT NOT NULL,
     created_at DATETIME,
+    -- v1.0.0 שלב א: nullable - פולים קיימים/מזרוקעים אין להם עדיין שיוך לסוג
+    -- מניה, אותו דפוס כמו grants.trustee_id.
+    share_class_id VARCHAR REFERENCES share_classes(share_class_id),
     -- מונע דריפט שקט בין allocated_shares ל-unallocated_shares (שני שדות שמתעדכנים
     -- ידנית בקוד האפליקציה) - הם חייבים תמיד לסכם בדיוק לגודל הפול.
     CONSTRAINT ck_option_pools_shares_balance
         CHECK (allocated_shares + unallocated_shares = total_shares)
 );
 CREATE INDEX IF NOT EXISTS ix_option_pools_company_id ON option_pools(company_id);
+CREATE INDEX IF NOT EXISTS ix_option_pools_share_class_id ON option_pools(share_class_id);
 
 CREATE TABLE IF NOT EXISTS trustees (
     trustee_id VARCHAR NOT NULL PRIMARY KEY,
@@ -414,6 +421,61 @@ CREATE TABLE IF NOT EXISTS data_transfer_runs (
 
 CREATE INDEX IF NOT EXISTS ix_data_transfer_runs_source_company_id ON data_transfer_runs (source_company_id);
 CREATE INDEX IF NOT EXISTS ix_data_transfer_runs_target_company_id ON data_transfer_runs (target_company_id);
+
+
+-- ===================================================================
+-- טבלת הון (Cap Table) - סוגי מניות, בעלי מניות, הקצאות מניות (v1.0.0 שלב א)
+-- ===================================================================
+-- שלב א בלבד: מודל דאטה + אינטגרציית ledger. אין כאן חישוב דילול ואין UI.
+-- share_issuances הוא ledger-native מהיום הראשון (ראו ledger_events.event_type
+-- SHARE_ISSUANCE_ESTABLISHED למטה) - shares היא עמודת פרויקציה מוטטת, אותו
+-- דפוס בדיוק כמו option_pools.allocated_shares.
+
+CREATE TABLE IF NOT EXISTS share_classes (
+    share_class_id VARCHAR NOT NULL PRIMARY KEY,
+    company_id VARCHAR NOT NULL REFERENCES companies(company_id),
+    name VARCHAR NOT NULL,
+    -- COMMON / PREFERRED / ... אוצר מילים פתוח, אין CHECK ב-DB (אותה מוסכמה
+    -- כמו ledger_events.event_type).
+    class_type VARCHAR NOT NULL,
+    -- מספר קטן יותר = משולם קודם ב-waterfall של פירוק. החלטה עסקית לכל
+    -- חברה, לא אינווריאנט דאטה - בלי UNIQUE ב-DB.
+    seniority_order INTEGER NOT NULL,
+    created_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS ix_share_classes_company_id ON share_classes(company_id);
+
+CREATE TABLE IF NOT EXISTS shareholders (
+    shareholder_id VARCHAR NOT NULL PRIMARY KEY,
+    -- חד-חברתי בכוונה (מראה את trustees, לא ישות חוצת-חברות) - זה מה שפותר
+    -- ארכיטקטונית את חשש ה-IDOR שהועלה בסקירת אבטחה בתכנון v1.0.0.
+    company_id VARCHAR NOT NULL REFERENCES companies(company_id),
+    name VARCHAR NOT NULL,
+    -- FOUNDER / INVESTOR / EMPLOYEE / ENTITY - אוצר מילים פתוח, אין CHECK ב-DB.
+    shareholder_type VARCHAR NOT NULL,
+    -- NULL למשקיע חיצוני; מאוכלס רק כשבעל המניות הוא גם עובד קיים במערכת.
+    employee_id VARCHAR REFERENCES employees(employee_id),
+    created_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS ix_shareholders_company_id ON shareholders(company_id);
+CREATE INDEX IF NOT EXISTS ix_shareholders_employee_id ON shareholders(employee_id);
+
+CREATE TABLE IF NOT EXISTS share_issuances (
+    share_issuance_id VARCHAR NOT NULL PRIMARY KEY,
+    -- מוכפל ישירות על השורה ולא נגזר דרך shareholder_id - אותו דפוס הגנתי
+    -- "עמודה ישירה, לא join" כמו documents/ledger_ownership.
+    company_id VARCHAR NOT NULL REFERENCES companies(company_id),
+    shareholder_id VARCHAR NOT NULL REFERENCES shareholders(shareholder_id),
+    share_class_id VARCHAR NOT NULL REFERENCES share_classes(share_class_id),
+    shares FLOAT NOT NULL,
+    -- קלט מפורש מהקורא, לעולם לא נגזר מהשעון - אותו דפוס כמו grants.grant_date.
+    -- זה מה שהופך הזנת נתונים היסטוריים ו-snapshot-לפי-תאריך עתידי לנכונים.
+    issue_date DATE NOT NULL,
+    created_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS ix_share_issuances_company_id ON share_issuances(company_id);
+CREATE INDEX IF NOT EXISTS ix_share_issuances_shareholder_id ON share_issuances(shareholder_id);
+CREATE INDEX IF NOT EXISTS ix_share_issuances_share_class_id ON share_issuances(share_class_id);
 
 
 -- ===================================================================

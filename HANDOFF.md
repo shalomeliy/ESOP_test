@@ -8,26 +8,83 @@
 ולא עם קושי המשימה. `CLAUDE.md` שורה 57 כבר אמרה `/clear between unrelated
 exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ביצוע: יש לאן להעביר את ההקשר.
 
-עדכון אחרון: **2026-08-11** (v0.9.1 שלב ב — **13/13 משימות, הושלם**)
+עדכון אחרון: **2026-08-11** (v1.0.0 שלב א — **הושלם ונדחף. ה-DB החי עלה ל-head, אחרי תיקון באג מיגרציה שנתפס בדרך.**)
 
-> **זו סגירת גבול גרסה.** משימה #13 (release-manager) בוצעה: `VERSION`
-> נשאר `0.9.1` — הוא כבר עודכן לערך הזה בשלב א (commit `a86bfea`), ואף
-> מסמך בתוכנית לא דרש מספר נוסף, כך שאין מה לשנות בקובץ עצמו; הבדיקה
-> `test_version_file_is_not_behind_the_qa_testbook` לא דורשת שוויון, רק
-> `VERSION >= newest QA doc`, וזה כבר מתקיים. מה שכן בוצע: שורת v0.9.1
-> באינדקס `QA_TESTBOOK.md` עודכנה לתאר את שני השלבים כהושלמו (במקום רק שלב
-> א), ותג annotated `v0.9.1` נוצר על ה-HEAD שהיה אז (`066766c`). commit
-> ההנדאוף שסגר את המשימה (`6ef1e04`) והתג `v0.9.1` **נדחפו ל-`origin`**
-> ב-11/08/2026 (אישור מפורש מהמשתתף) — `main` המקומי תואם `origin/main`
-> בדיוק. הסוויטה המלאה: 332 עוברות. **תוכנית העבודה המלאה יושבת
-> ב-`PLAN.md`** (13 צעדים, §8, כולם עם "Implementation notes") — שיחה
-> הבאה על v0.9.1 (אם תידרש תחזוקה) צריכה לקרוא אותו במלואו, לא רק את הקובץ
-> הזה.
+> **זו סגירת גבול שלב, לא סגירת גבול גרסה.** v1.0.0 נפתחת בשני שלבים
+> (ראו `C:\Users\Shalom\.claude\plans\parallel-jingling-bear.md`): **שלב א**
+> — מודל דאטה + ledger + CRUD/list API לטבלת ההון (`ShareClass`,
+> `Shareholder`, `ShareIssuance`) + תמיכה במספר פולים לחברה. **שלב ב**
+> — חישוב דילול/fully-diluted + מסכי UI — **טרם תוכנן ולא התחיל.** שני
+> השלבים חייבים להיסגר לפני שהתג `v1.0.0` נוצר, בדיוק כמו התקדים ב-v0.9.1
+> (VERSION זז בסוף שלב א, התג רק בסוף שלב ב).
+>
+> **שלב א בפועל:** שלוש טבלאות חדשות (`ShareClass`/`Shareholder`/
+> `ShareIssuance` — האחרונה ledger-native מהיום הראשון, לא פרויקציה
+> שנוספה בדיעבד, כדי ש-snapshot היסטורי בשלב ב יהיה אפשרי מבנית), שתי
+> עמודות nullable (`Company.total_authorized_shares`,
+> `OptionPool.share_class_id`), מיגרציה אחת אדיטיבית (`bd65db40f654`,
+> upgrade/downgrade אומתו ידנית במחזור מלא על sandbox), ראוטר חדש
+> `backend/app/api/cap_table.py`, ו-`POST /admin/pools` חדש (עד כה רק
+> `seed_data.py` יצר פול). **שני באגים אמיתיים נמצאו ותוקנו בסקירת ה-QA
+> של השלב הזה** ב-`create_shareholder`: `employee_id` חוצה-חברה עבר בלי
+> 403 (IDOR), ו-`employee_id` שלא קיים קרס ב-`IntegrityError` לא מטופל
+> (500 במקום 404) — שניהם נעולים כעת בבדיקת רגרסיה (`tests/test_cap_table.py`).
+> **סקירה עצמאית (change-reviewer): `PASS`, אפס חוסמים.** הסוויטה המלאה:
+> **372 עוברות, 0 נכשלות** (הבדיקה שחסמה עד עכשיו,
+> `test_version_file_is_not_behind_the_qa_testbook`, עברה אחרי bump
+> ה-`VERSION`). 6 commits נפרדים על `feat/1.0.0/database`, **לא נדחפו**.
 
-> **ה-DB החי הועלה ל-head ב-09/08/2026.** הוא היה שלוש מיגרציות מאחור ובלי
-> טבלת `documents` — כלומר כל v0.9.0 לא היה קיים בו. גיבוי לפני:
-> `db_backups/esop_database.20260809-030922.db` (מחוץ ל-git, מכיל נתונים
-> אמיתיים). אחרי: תקין, 4 טריגרים, ספירות זהות, אפס דריפט מול המודלים.
+> **ה-DB החי עלה ל-head ב-11/08/2026 (סבב שני, אחרי בקשה מפורשת של המשתתף).**
+> נכון ל-11/08/2026 בבוקר הוא היה בסטייה — `b7c4d1e9f2a3`, שלוש מיגרציות
+> מאחורי `bd65db40f654` (ראו ההערה הבאה למטה לפירוט המקורי). המשתתף אישר
+> במפורש להריץ `alembic upgrade head` עם גיבוי קודם, כמו ב-09/08.
+>
+> **הריצה הראשונה נכשלה — וחשפה באג אמיתי במיגרציה `bd65db40f654`, לא
+> תקלת סביבה.** `option_pools` הוא FK target קיים מ-`grants.pool_id`
+> (251 שורות אמיתיות ב-DB החי). `create_foreign_key` על `option_pools`
+> (הוספת ה-FK ל-`share_classes`) מחייב SQLite לבצע recreate מלא של הטבלה
+> ב-batch mode (טבלה חדשה + copy + **DROP הישנה** + rename) — וה-DROP נכשל
+> ב-`FOREIGN KEY constraint failed` כל עוד `grants` מפנה אליה. המיגרציה
+> נעצרה אחרי שיצרה בהצלחה `share_classes`/`shareholders`/`share_issuances`
+> אך לפני שסיימה לגעת ב-`option_pools`, והשאירה טבלת עזר תקועה
+> (`_alembic_tmp_option_pools`) — **לא** קרס ה-DB (`integrity_check: ok`,
+> `alembic_version` נשאר על הגרסה הקודמת), אבל היה במצב לא-עקבי. **שוחזר
+> מהגיבוי** (`db_backups/esop_database.20260811-114806.db`, שנלקח מיד לפני
+> הריצה) לפני שנעשה עוד דבר.
+>
+> **הבדיקה המקורית לא תפסה את זה כי היא רצה מול סכימה ריקה** — גם סוויטת
+> ה-pytest וגם אימות ה-sandbox של שלב א (upgrade→downgrade→upgrade,
+> מתועד למטה) בדקו את המיגרציה על DB בלי שורות `grants` אמיתיות. הבאג
+> מתגלה רק כששורה קיימת מפנה בפועל ל-`option_pools`.
+>
+> **תוקן**: `PRAGMA foreign_keys=OFF/ON` סביב בלוק ה-`batch_alter_table`
+> על `option_pools`, גם ב-`upgrade()` וגם ב-`downgrade()` (אותו דפוס
+> בדיוק כמו 56baedac6e53/`national_id` — תועד בהערת קוד במיגרציה עצמה).
+> **אומת בשלושה שלבים לפני שהופעל שוב על ה-DB החי**: (1) עותק של הגיבוי
+> האמיתי (251 grants/19 pools) עבר `upgrade head`→`downgrade -1`→
+> `upgrade head` בלי שגיאה, `foreign_key_check` ריק בכל שלב; (2) נוספה
+> בדיקת רגרסיה (`tests/test_migrations.py`) שמזריעה שורת `grants` שמפנה
+> ל-`option_pools` לפני ההעלאה — **אומתה שאינה ריקה**: נכשלת בפועל מול
+> הגרסה הלא-מתוקנת של המיגרציה (הוחזרה זמנית ב-`git stash`), עוברת עם
+> התיקון; (3) הסוויטה המלאה: **373 עוברות** (הייתה 372, +1 הבדיקה החדשה).
+> `esop_database.db` עלה ל-head בהצלחה בריצה השנייה — `alembic_version =
+> bd65db40f654`, `integrity_check: ok`, `foreign_key_check: []`, כל
+> הנתונים הקיימים ללא שינוי (251 grants, 19 pools, 260 employees, 1035
+> ledger_events). שלוש הטבלאות החדשות קיימות וריקות (`share_classes`/
+> `shareholders`/`share_issuances` — 0 שורות, כצפוי — שום UI/ייבוא לא
+> כתב אליהן עדיין). שלושה commits נפרדים על `feat/1.0.0/database`:
+> תיקון המיגרציה, בדיקת הרגרסיה, ותיעוד ב-`docs/qa/v1.0.0.md` (`QA-100-41`).
+>
+> **גם ה-6 commits הקודמים של שלב א נדחפו** (`git push -u origin
+> feat/1.0.0/database`) — לפני כן היו רק מקומיים.
+
+> **ה-DB החי הועלה ל-head ב-09/08/2026 (הערה מקורית, לא לפתוח מחדש).** הוא
+> היה שלוש מיגרציות מאחור ובלי טבלת `documents` — כלומר כל v0.9.0 לא היה
+> קיים בו. גיבוי לפני: `db_backups/esop_database.20260809-030922.db`
+> (מחוץ ל-git, מכיל נתונים אמיתיים). אחרי: תקין, 4 טריגרים, ספירות זהות,
+> אפס דריפט מול המודלים. **הדריפט המחודש המתועד בהערה שלמעלה הוא אירוע
+> חדש, נפרד** — הצטבר מאז דרך שתי גרסאות שהמיגרציה שלהן לא הוחלה על ה-DB
+> החי.
 
 ---
 
@@ -35,22 +92,40 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
 
 | | |
 |---|---|
-| גרסה | **v0.9.1 — הושלם.** שלב א ✅ (כולל פיצול `routes.py`). שלב ב (ייצוא/ייבוא) ✅ **13/13 משימות** |
-| תוכנית טכנית | **`PLAN.md`** — 13/13 צעדים הושלמו (§8), עם סעיף "Implementation notes" אחרי כל משימה. סטטוס הקובץ: `COMPLETE` |
-| `VERSION` | `0.9.1` — ללא שינוי במשימה 13 (ראו ההסבר למעלה); תג `v0.9.1` נוצר מקומית, לא נדחף |
-| בדיקות | `332 passed`, אזהרה אחת (ספרייה חיצונית) |
-| git | `main` @ `6ef1e04` — **נדחף ל-`origin`** (11/08/2026), תואם בדיוק; תג `v0.9.1` גם הוא ב-`origin` |
-| תלות חדשה | `python-multipart==0.0.20` — נוסף ב-`requirements.txt`, נדרש ל-`UploadFile` (ייבוא) |
+| גרסה | **v1.0.0 — שלב א ✅ הושלם (מודל דאטה + ledger + API). שלב ב (דילול + UI) ⬜ טרם תוכנן.** |
+| תוכנית טכנית | `C:\Users\Shalom\.claude\plans\parallel-jingling-bear.md` — מכיל פירוט מלא לשלב א בלבד; שלב ב טעון תכנון נפרד |
+| `VERSION` | `1.0.0` — bump ע"י release-manager בסוף שלב א (מיישר קו עם `test_version_file_is_not_behind_the_qa_testbook`); תג `v1.0.0` **לא** נוצר - ימתין לסוף שלב ב |
+| בדיקות | `373 passed, 0 failed` |
+| git | 9 commits על `feat/1.0.0/database`, **נדחפו ל-origin**: `1971b03` (מודל+ledger), `0e726ed` (API), `a3956a2` (fix IDOR/404), `7eed45b` (test), `23a8129` (docs/qa), `835cc68` (VERSION), `3b39907` (handoff), `466ea81` (fix מיגרציה - FK על option_pools), `d11ad02` (test רגרסיה למיגרציה), `6f3486e` (docs/qa - QA-100-41) |
+| מיגרציה | `bd65db40f654` - אדיטיבית טהורה. **תוקנה 11/08/2026** אחרי כשל מול DB חי (ראו למעלה) - upgrade→downgrade→upgrade אומת מול עותק עם grants אמיתיים, לא רק סכימה ריקה |
+| DB חי | **על head.** `alembic_version = bd65db40f654`, `integrity_check: ok`, אפס דריפט. גיבוי אחרון: `db_backups/esop_database.20260811-114806.db` |
 
 ## הצעד הבא
 
-**v0.9.1 סגורה משני השלבים. אין משימה פתוחה בגרסה הזו.** לפי "איך סוגרים
-שיחה" למטה: מקרי הבדיקה מעודכנים (✅ משימה 12), הסוויטה ירוקה (✅ 332),
-הקובץ הזה מעודכן (✅ עכשיו), commit + push בוצעו (✅ 11/08/2026, אושר
-מפורשות ע"י המשתתף - `main`@`6ef1e04` ותג `v0.9.1` שניהם ב-`origin`).
-**השיחה הזו נסגרת - הגרסה הבאה נפתחת בשיחה חדשה**, לא ממשיכה כאן. חוב
-פתוח שלא נסגר בגרסה הזו נמצא למטה ב"חוב פתוח" ו"סיכונים אמיתיים שנותרו" -
-זה חומר גלם אפשרי למשימה הראשונה של הגרסה הבאה, לא רשימת TODO מחייבת.
+**שלב א של v1.0.0 סגור והדחוף. שלב ב (חישוב דילול + UI) הוא המשימה הראשונה
+של השיחה הבאה, ועוד לא תוכנן.** `parallel-jingling-bear.md` מכיל רק את היקף
+שלב א בפירוט - שלב ב דורש תכנון נפרד (product/architecture/design/QA/security),
+שמתחיל מהגדרת "fully-diluted מול outstanding" (שאלה מוצרית פתוחה שהתוכנית
+המאושרת עצמה מציינת ולא מכריעה - ראו סיכון 1 ב-`docs/qa/v1.0.0.md`).
+
+**שתי נקודות חוב שהשיחה הבאה חייבת לקרוא לפני שהיא מתחילה לתכנן שלב ב**
+(נקודת החוב השלישית - DB חי בסטייה - **נסגרה** ב-11/08/2026, ראו ההערה
+למעלה):
+
+1. **שלב ב טרם תוכנן בפירוט.** התוכנית המאושרת מכילה רק את היקף שלב א;
+   שלב ב דורש מחזור תכנון נפרד, מתחיל מהגדרת fully-diluted/outstanding
+   (שאלת מוצר פתוחה, לא לענות עליה כאן).
+2. **ייצוא/ייבוא (v0.9.1) לא כולל את טבלאות ההון החדשות.** `ShareClass`/
+   `Shareholder`/`ShareIssuance`/`OptionPool.share_class_id`/
+   `Company.total_authorized_shares` נעדרים מ-`services/export.py`'s table
+   registry - חברה שמעבירה נתונים בין מופעים מאבדת את כל טבלת ההון בלי
+   אזהרה. מתועד כסיכון 4 ב-`docs/qa/v1.0.0.md`, **לא נסגר** - מחוץ להיקף
+   שלב א/ב במפורש.
+
+לפי "איך סוגרים שיחה" למטה: מקרי הבדיקה מעודכנים (✅ `docs/qa/v1.0.0.md`,
+כולל `QA-100-41` על תיקון המיגרציה), הסוויטה ירוקה (✅ 373), הקובץ הזה
+מעודכן (✅ עכשיו), commit בוצע ונדחף (✅ 9 commits, כולם על `origin`).
+**השיחה הזו נסגרת - שלב ב נפתח בשיחה חדשה**, לא ממשיך כאן.
 
 **משימה #12 הושלמה (עדכון `docs/qa/v0.9.1.md`).** סעיף `(א2) מקרי בדיקה —
 שלב ב` חדש, `QA-091-39` עד `QA-091-86`, מחולק לפי משימה (מס על מימוש #2,
@@ -89,6 +164,71 @@ scope creep. **אומת ידנית מקצה לקצה מול סנדבוקס חי*
 הפוך על `entity_id` בטבלת אי-ההתאמות תוקן (escape רק *אחרי* הקיצוץ, לא
 לפני). פירוט מלא ב-`PLAN.md` ("Implementation notes added during task
 #11").
+
+## מה נבנה ב-11/08/2026 (v1.0.0 שלב א - הושלם)
+
+תוכנית מלאה ב-`C:\Users\Shalom\.claude\plans\parallel-jingling-bear.md`.
+תמצית:
+
+- **מודל דאטה (3 טבלאות חדשות):** `ShareClass` (name/class_type/
+  seniority_order, בלי `UNIQUE` על הסדר - החלטה עסקית מוצהרת), `Shareholder`
+  (`company_id` NOT NULL - חד-חברתי בכוונה, זה מה שפותר ארכיטקטונית את
+  חשש ה-IDOR שהועלה בסקירת אבטחה בתכנון; `employee_id` nullable לתמיכה
+  במשקיעים חיצוניים), `ShareIssuance` (**ledger-native מהיום הראשון** -
+  ההחלטה הארכיטקטונית המרכזית שכל המומחים התכנסו עליה, כדי ש-snapshot
+  היסטורי בשלב ב יהיה אפשרי מבנית ולא ידרוש מיגרציה שוברת). שתי עמודות
+  nullable על טבלאות קיימות: `Company.total_authorized_shares`,
+  `OptionPool.share_class_id` (nullable כי אין ערך להמציא לחברות/פולים
+  קיימים שנזרעו לפני v1.0.0).
+- **Ledger:** `SHARE_ISSUANCE_ESTABLISHED` נוסף ל-`LEDGER_EVENT_TYPES`,
+  `"ShareIssuance"` ל-`LEDGER_AGGREGATE_TYPES`, `project_share_issuance`
+  נרשם ב-`PROJECTORS`. מספר-פולים לא דרש סוג אירוע חדש - פול נוסף ממחזר
+  את `POOL_BALANCE_ESTABLISHED` הקיים, חי (`source=LIVE`) ולא backfill.
+- **API:** `POST`/`GET /admin/pools` (חדש - עד כה רק `seed_data.py` יצר
+  פול), ראוטר חדש `backend/app/api/cap_table.py` עם `POST`/`GET` לכל
+  אחת משלוש הישויות, הרחבת `PUT /admin/company` ל-`total_authorized_shares`
+  (סמנטיקת "לא נגיעה" ל-`None`, לא איפוס), הרחבת `audit.py` לענפי
+  `OptionPool`/`ShareClass`/`Shareholder`/`ShareIssuance`. תקרת
+  `total_authorized_shares` נבדקת מול **סכום** ההנפקות הקיימות, רק כשהערך
+  לא `None`, גבול `>` לא `>=` (שוויון מותר).
+- **שני באגים אמיתיים נמצאו ותוקנו בסקירת ה-QA של השלב הזה**, שניהם
+  ב-`create_shareholder` (`backend/app/api/cap_table.py`): (1) `employee_id`
+  ששייך לעובד של חברה **אחרת** עבר בשקט עם `200` - IDOR, אין בדיקת
+  `company_id`. (2) `employee_id` שלא קיים בכלל קרס ב-`IntegrityError` לא
+  מטופל (500 גולמי במקום 404 נקי) - אין בדיקת קיום מוקדמת לפני ה-`INSERT`.
+  שני התיקונים מראים את אותו דפוס בדיקה שכבר קיים ב-`create_share_issuance`
+  (בדוק קיום → בדוק שיוך לחברה → 404/403 מוקדם, לפני כל כתיבה). נעולים
+  ב-`tests/test_cap_table.py::test_create_shareholder_linked_to_another_companys_employee_is_403`
+  ו-`test_create_shareholder_with_unknown_employee_id_is_404_not_500`.
+- **מיגרציה `bd65db40f654`** - אדיטיבית טהורה, בלי `UPDATE`/מחיקה על
+  שורות קיימות. **אומתה בפועל, לא הונחה**: מחזור מלא `upgrade head` →
+  `downgrade -1` → `upgrade head` על sandbox נפרד (לא `esop_database.db`),
+  אפס שגיאות, `alembic current` נכון בכל שלב.
+- **בדיקות:** `tests/test_cap_table.py` חדש (כיסוי מלא לארבעת ה-endpoints:
+  happy path, cross-company 403/404, positivity, תקרת מניות, audit log,
+  ledger replay-equivalence ל-`ShareIssuance`). `tests/test_export.py`
+  תוקן (עמודה חדשה `total_authorized_shares` בייצוא - רגרסיית בדיקה,
+  לא באג ייצור). הסוויטה המלאה: **372 עוברות, 0 נכשלות** (הייתה 371+1
+  נכשלת-בכוונה שחסמה עד ל-bump ה-`VERSION`).
+- **`docs/qa/v1.0.0.md` חדש** - `QA-100-01` עד `QA-100-40`, טבלת סיכונים
+  עם 7 סיכונים (אין חישוב דילול, אין UI, סוג אירוע ledger יחיד ל-
+  `ShareIssuance`, טבלת ההון חסרה מייצוא/ייבוא v0.9.1, אין RBAC דק יותר
+  מ-`COMPANY_ADMIN`, `seniority_order` בלי `UNIQUE`, `nullable=True` על
+  שני שדות חדשים). `QA_TESTBOOK.md`: v1.0.0 סומן פעיל, v0.9.1 עבר לארכיון.
+- **סקירה עצמאית (change-reviewer, 11/08/2026): `PASS`, אפס חוסמים.**
+- **`VERSION` → `1.0.0`** (release-manager, אני, 11/08/2026) - הצעד
+  המסיים של שלב א, בדיוק כמו התקדים ב-v0.9.1. **אין תג `v1.0.0`** - ימתין
+  לסוף שלב ב, כנדרש.
+- **6 commits נפרדים** על `feat/1.0.0/database`, **לא נדחפו**:
+  `1971b03 feat(cap-table): add ShareClass/Shareholder/ShareIssuance models and ledger integration`,
+  `0e726ed feat(api): add multi-pool and cap-table CRUD endpoints`,
+  `a3956a2 fix(cap-table): validate employee_id ownership on shareholder creation`,
+  `7eed45b test(cap-table): add coverage for pools/share-classes/shareholders/share-issuances`,
+  `23a8129 docs(qa): open v1.0.0 phase A test cases and risk table`,
+  `835cc68 chore(release): bump VERSION to 1.0.0 for v1.0.0 phase A`.
+
+**מה לא בוצע כאן, בכוונה:** מיזוג ל-`release/1.0.0`/`main`, יצירת תג,
+push, ותכנון שלב ב. אלה ממתינים לשיחה הבאה ולהחלטת המשתתף.
 
 ## מה נבנה ב-10-11/08/2026 (שלב ב, משימות 1-13 מתוך 13 - הושלם)
 
@@ -312,6 +452,20 @@ processor מייצר. חיזוק `TaxCalculationResult` הוא החלק החזק
   *תוכן* האישור בלבד ומאפשר `is_latest` להשתנות (מיגרציה `b7c4d1e9f2a3`).
 
 ## חוב פתוח
+
+**פתוח מ-v1.0.0 שלב א (11/08/2026) - שני פריטים לשיחה הבאה** (הפריט השלישי,
+DB חי בסטייה, **נסגר 11/08/2026** - ראו ההערה בראש הקובץ; המיגרציה `bd65db40f654`
+תוקנה בעקבות כשל אמיתי מולה, `esop_database.db` עלה ל-head):
+
+- ⬜ **שלב ב (חישוב דילול + UI) טרם תוכנן.** `parallel-jingling-bear.md`
+  מכיל רק את היקף שלב א; שלב ב דורש מחזור תכנון מלא (5 מומחים read-only),
+  ומתחיל מהגדרת "fully-diluted מול outstanding" - שאלה מוצרית פתוחה
+  שהתוכנית המאושרת מציינת ולא מכריעה.
+- ⬜ **ייצוא/ייבוא (v0.9.1) לא כולל את טבלאות ההון החדשות.** `ShareClass`/
+  `Shareholder`/`ShareIssuance`/`OptionPool.share_class_id`/
+  `Company.total_authorized_shares` נעדרים מרישום הטבלאות ב-
+  `services/export.py`. מתועד כסיכון 4 ב-`docs/qa/v1.0.0.md`, מחוץ להיקף
+  שלב א/ב במפורש - לא באג, אבל לא נסגר.
 
 **נסגר ב-v0.9.1 שלב א (09/08/2026):**
 
