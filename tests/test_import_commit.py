@@ -1,9 +1,11 @@
-"""ייבוא - commit (v0.9.1 שלב ב, PLAN.md §8 step 7).
+"""ייבוא - commit (v0.9.1 שלב ב, PLAN.md §8 steps 7-8).
 
-dry_run (task #6) קובע מה מותר; commit (task #7) הוא הכתיבה בפועל. כל בדיקה
-כאן קוראת ל-services.import_.commit ישירות (ברמת השירות, לא HTTP) - ה-
-endpoint עצמו (POST /admin/import/commit) הוא task #8, שגם מוסיף את אכיפת
-שני-השלבים (409 על דריי-ראן מיושן/מנוצל). ראו HANDOFF.md.
+dry_run (task #6) קובע מה מותר; commit (task #7) הוא הכתיבה בפועל, ברמת
+השירות. task #8 מוסיף מעליו את ה-endpoint (POST /admin/import/commit,
+שני שלבים: dry_run_id בלבד, לא upload חוזר) ואת אכיפת "לא נוצל/לא מיושן" -
+409 כשה-dry-run כבר COMMITTED, נכשל מלכתחילה, שייך לחברה אחרת, או שה-DB
+השתנה מתחתיו בין הדריי-ראן לניסיון ה-commit. שני חלקי הקובץ: HTTP-level
+(האנדפוינט) למעלה, service-level (import_service.commit ישירות) למטה.
 """
 
 import json
@@ -14,10 +16,10 @@ import pytest
 from backend.app.types import utcnow
 from backend.app.auth import hash_password
 from backend.app.models import (
-    AuditLog, Company, Document, Employee, EmployeeStatus, ExerciseRequest,
-    ExerciseTaxRecord, Grant, GrantType, LedgerEvent, NotificationPreference,
-    OptionPool, TaxRatesHistory, TaxRulePack, Trustee, User, UserRole, UserSession,
-    VestingSchedule,
+    AuditLog, Company, DataTransferDirection, DataTransferRun, DataTransferStatus,
+    Document, Employee, EmployeeStatus, ExerciseRequest, ExerciseTaxRecord, Grant,
+    GrantType, LedgerEvent, NotificationPreference, OptionPool, TaxRatesHistory,
+    TaxRulePack, Trustee, User, UserRole, UserSession, VestingSchedule,
 )
 from backend.app.services.export import EXPORT_SCHEMA_VERSION
 from backend.app.services import import_ as import_service
@@ -217,8 +219,101 @@ def _bundle_shape(company_id: str, **table_overrides) -> dict:
                      **tables}}
 
 
+def _upload_dry_run(client, headers, bundle: dict, filename: str = "export.json"):
+    return client.post(f"{API}/admin/import/dry-run", headers=headers,
+                       files={"file": (filename, json.dumps(bundle).encode("utf-8"), "application/json")})
+
+
+def _commit(client, headers, dry_run_id: str):
+    return client.post(f"{API}/admin/import/commit", headers=headers, json={"dry_run_id": dry_run_id})
+
+
 # ===================================================================
-# כתיבה בפועל, וסירוב מלא כשה-dry_run הפנימי לא תקין (all-or-nothing)
+# HTTP-level - האנדפוינט עצמו ואכיפת שני-השלבים (task #8)
+# ===================================================================
+
+def test_commit_endpoint_writes_the_bundle_and_marks_the_dry_run_committed(client, world):
+    dry_resp = _upload_dry_run(client, world.admin_b, _full_synthetic_bundle())
+    assert dry_resp.status_code == 200, dry_resp.text
+    dry_run_id = dry_resp.json()["run_id"]
+
+    commit_resp = _commit(client, world.admin_b, dry_run_id)
+    assert commit_resp.status_code == 200, commit_resp.text
+    body = commit_resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["rows_written"] > 0
+
+    assert world.db.query(Employee).filter(Employee.employee_id == "CMT-SYN-EMP",
+                                           Employee.company_id == "CMT-COMP-B").one()
+
+    dry_row = world.db.query(DataTransferRun).filter(DataTransferRun.run_id == dry_run_id).one()
+    assert dry_row.status == DataTransferStatus.COMMITTED
+    commit_row = world.db.query(DataTransferRun).filter(DataTransferRun.run_id == body["run_id"]).one()
+    assert commit_row.direction == DataTransferDirection.IMPORT_COMMIT
+    assert commit_row.based_on_run_id == dry_run_id
+
+
+def test_commit_endpoint_rejects_an_unknown_dry_run_id(client, world):
+    response = _commit(client, world.admin_b, "NO-SUCH-RUN-ID")
+    assert response.status_code == 404
+
+
+def test_commit_endpoint_rejects_a_dry_run_belonging_to_another_company(client, world):
+    dry_resp = _upload_dry_run(client, world.admin_a, _bundle_shape("CMT-IRRELEVANT"))
+    dry_run_id = dry_resp.json()["run_id"]
+
+    response = _commit(client, world.admin_b, dry_run_id)
+    assert response.status_code == 403
+
+
+def test_commit_endpoint_rejects_a_dry_run_that_already_failed(client, world):
+    """חבילה עם עובד שכבר שייך ל-A (חוסמת) - הדריי-ראן עצמו FAILED, ואף
+    פעם לא היה תקין ל-commit."""
+    bundle = _bundle_shape("CMT-IRRELEVANT", employees=[
+        {"employee_id": "CMT-EMP-A1", "company_id": "CMT-IRRELEVANT", "first_name": "X", "last_name": "Y",
+        "email": "clash@x.example", "country_code": "IL", "status": "ACTIVE", "hire_date": "2020-01-01",
+        "termination_date": None, "birth_date": None, "national_id": None},
+    ])
+    dry_resp = _upload_dry_run(client, world.admin_b, bundle)
+    assert dry_resp.json()["status"] == "FAILED"
+    dry_run_id = dry_resp.json()["run_id"]
+
+    response = _commit(client, world.admin_b, dry_run_id)
+    assert response.status_code == 409
+
+
+def test_commit_endpoint_rejects_reusing_an_already_committed_dry_run(client, world):
+    dry_resp = _upload_dry_run(client, world.admin_b, _full_synthetic_bundle())
+    dry_run_id = dry_resp.json()["run_id"]
+    first = _commit(client, world.admin_b, dry_run_id)
+    assert first.status_code == 200, first.text
+
+    second = _commit(client, world.admin_b, dry_run_id)
+    assert second.status_code == 409
+
+
+def test_commit_endpoint_rejects_when_state_changed_since_the_dry_run(client, world):
+    """הדריי-ראן היה תקין ברגע שנוצר; לפני ה-commit, employee_id שהבאנדל
+    מכריז עליו כ-NEW נתפס ע"י חברה שלישית - commit() מריץ dry_run מחדש
+    ומגלה את זה, לא סומך על הדוח הישן."""
+    bundle = _full_synthetic_bundle()
+    dry_resp = _upload_dry_run(client, world.admin_b, bundle)
+    assert dry_resp.json()["status"] == "SUCCESS"
+    dry_run_id = dry_resp.json()["run_id"]
+
+    world.db.add(Company(company_id="CMT-THIRD-PARTY", name="Third", country_code="IL"))
+    world.db.add(Employee(employee_id="CMT-SYN-EMP", company_id="CMT-THIRD-PARTY", first_name="Race",
+                          last_name="Condition", email="race@x.example", country_code="IL",
+                          status=EmployeeStatus.ACTIVE, hire_date=date(2020, 1, 1)))
+    world.db.commit()
+
+    response = _commit(client, world.admin_b, dry_run_id)
+    assert response.status_code == 409
+
+
+# ===================================================================
+# Service-level - services.import_.commit ישירות, כתיבה בפועל וסירוב מלא
+# כשה-dry_run הפנימי לא תקין (all-or-nothing)
 # ===================================================================
 
 def test_commit_writes_a_full_synthetic_bundle_into_a_fresh_company_and_nulls_user_references(db_session):

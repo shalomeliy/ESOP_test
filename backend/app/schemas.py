@@ -381,3 +381,20 @@ class ImportDryRunReportOut(BaseModel):
     rows_not_portable: int = 0
     rows_failed: int
     errors: List[ImportRowErrorOut]
+
+
+class ImportCommitRequest(BaseModel):
+    """PLAN.md §8 step 8 - שני שלבים: אין upload חוזר, רק הפניה לדריי-ראן
+    שכבר נשמר (services/import_.py::commit קורא את החבילה מ-file_path שלו,
+    ומריץ dry_run מחדש מולה - לא סומך על הדוח הישן)."""
+    dry_run_id: str
+
+
+class ImportCommitReportOut(BaseModel):
+    run_id: str
+    status: str
+    rows_attempted: int
+    rows_written: int
+    rows_skipped_existing: int
+    rows_not_portable: int = 0
+    rows_failed: int

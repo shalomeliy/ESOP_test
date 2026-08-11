@@ -6,7 +6,10 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import User, UserRole, DataTransferRun, DataTransferDirection, DataTransferStatus
-from backend.app.schemas import DataTransferRunOut, ImportDryRunReportOut, ImportRowErrorOut
+from backend.app.schemas import (
+    DataTransferRunOut, ImportCommitReportOut, ImportCommitRequest, ImportDryRunReportOut,
+    ImportRowErrorOut,
+)
 from backend.app.services.audit import record_audit_event
 from backend.app.services.export import (
     EXPORT_SCHEMA_VERSION, EXPORT_STORE_DIR, ExportTooLargeError, assert_export_within_size_limit,
@@ -15,7 +18,7 @@ from backend.app.services.export import (
 from backend.app.services.import_ import (
     ImportFileTooLargeError, ImportJsonTooDeepError, ImportSchemaVersionMismatch,
     ImportTooManyRowsError, InvalidImportBundleError, MAX_IMPORT_FILE_BYTES,
-    dry_run, parse_and_validate_bundle_shape,
+    commit as commit_import, dry_run, parse_and_validate_bundle_shape,
 )
 from backend.app.auth import require_roles
 
@@ -161,4 +164,66 @@ def import_dry_run(file: UploadFile = File(...),
         rows_not_portable=report.rows_not_portable, rows_failed=report.rows_failed,
         errors=[ImportRowErrorOut(table=o.table, index=o.index, row_id=o.row_id, error=o.error)
                for o in report.errors],
+    )
+
+
+# ===================================================================
+# ייבוא - commit, שני שלבים (PLAN.md §8 step 8). אין upload חוזר - רק הפניה
+# ל-dry_run_id שכבר נשמר. commit() (task #7) מריץ dry_run מחדש מול הקובץ
+# ולא נוגע ב-DB אם הוא כבר לא תקין - לכן "מצב השתנה מאז הדריי-ראן" הוא
+# 409 לא פחות מ"דריי-ראן שכבר נוצל".
+# ===================================================================
+
+@router.post("/admin/import/commit", response_model=ImportCommitReportOut)
+def import_commit(payload: ImportCommitRequest,
+                  current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                  db: Session = Depends(get_db)):
+    dry_run_row = db.query(DataTransferRun).filter(DataTransferRun.run_id == payload.dry_run_id).first()
+    # אותו דפוס 404/403 בדיוק כמו download_export.
+    if not dry_run_row or dry_run_row.direction != DataTransferDirection.IMPORT_DRY_RUN:
+        raise HTTPException(status_code=404, detail="Dry-run not found")
+    if dry_run_row.target_company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="This dry-run does not belong to your company")
+    # SUCCESS בלבד: FAILED מעולם לא היה תקין לכתיבה, COMMITTED כבר נוצל -
+    # based_on_run_id (models.py) הוא בדיוק מה שהופך את "כבר נוצל" לבר-בדיקה.
+    if dry_run_row.status != DataTransferStatus.SUCCESS:
+        raise HTTPException(status_code=409,
+                            detail=f"Dry-run is not committable (status={dry_run_row.status.value})")
+    if not dry_run_row.file_path:
+        raise HTTPException(status_code=500, detail="Dry-run bundle is missing from storage")
+
+    bundle = read_export_json(dry_run_row.file_path)
+    report = commit_import(db, bundle, current_user.company_id)
+    if not report.valid:
+        # לא הופך את שורת ה-dry-run הישנה ל-FAILED: היא הייתה תקינה כשנוצרה -
+        # ה-DB הוא זה שהשתנה מתחתיה. דריי-ראן חדש יראה את המצב הנוכחי.
+        raise HTTPException(status_code=409,
+                            detail="Bundle is no longer valid to commit - state changed since the dry-run")
+
+    dry_run_row.status = DataTransferStatus.COMMITTED
+
+    run = DataTransferRun(
+        direction=DataTransferDirection.IMPORT_COMMIT,
+        target_company_id=current_user.company_id,
+        initiated_by_user_id=current_user.user_id,
+        export_schema_version=dry_run_row.export_schema_version,
+        based_on_run_id=dry_run_row.run_id,
+        rows_attempted=report.rows_attempted,
+        rows_succeeded=report.rows_written + report.rows_skipped_existing,
+        rows_failed=report.rows_failed,
+        status=DataTransferStatus.SUCCESS,
+    )
+    db.add(run)
+    db.flush()
+    record_audit_event(db, "DataTransferRun", run.run_id, "IMPORT_COMMIT", current_user.user_id,
+                       after={"based_on_run_id": dry_run_row.run_id, "rows_written": report.rows_written,
+                             "rows_skipped_existing": report.rows_skipped_existing,
+                             "rows_not_portable": report.rows_not_portable})
+    db.commit()
+    db.refresh(run)
+
+    return ImportCommitReportOut(
+        run_id=run.run_id, status=run.status.value, rows_attempted=report.rows_attempted,
+        rows_written=report.rows_written, rows_skipped_existing=report.rows_skipped_existing,
+        rows_not_portable=report.rows_not_portable, rows_failed=report.rows_failed,
     )
