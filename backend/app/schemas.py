@@ -358,3 +358,22 @@ class DataTransferRunOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ImportRowErrorOut(BaseModel):
+    """שורה אחת מדוח הדריי-ראן שנכשלה. row_id הוא None כשלא ניתן היה לזהות
+    מפתח ראשי בשורה עצמה (קלט פגום עוד יותר מ"מפתח לא נמצא")."""
+    table: str
+    index: int
+    row_id: Optional[str] = None
+    error: str
+
+
+class ImportDryRunReportOut(BaseModel):
+    run_id: str
+    status: str
+    rows_attempted: int
+    rows_new: int
+    rows_skipped_existing: int
+    rows_failed: int
+    errors: List[ImportRowErrorOut]

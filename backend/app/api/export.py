@@ -1,16 +1,21 @@
 import io
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import User, UserRole, DataTransferRun, DataTransferDirection, DataTransferStatus
-from backend.app.schemas import DataTransferRunOut
+from backend.app.schemas import DataTransferRunOut, ImportDryRunReportOut, ImportRowErrorOut
 from backend.app.services.audit import record_audit_event
 from backend.app.services.export import (
     EXPORT_SCHEMA_VERSION, EXPORT_STORE_DIR, ExportTooLargeError, assert_export_within_size_limit,
     read_export_json, render_bundle_as_csv_zip, run_export, write_export_json,
+)
+from backend.app.services.import_ import (
+    ImportFileTooLargeError, ImportJsonTooDeepError, ImportSchemaVersionMismatch,
+    ImportTooManyRowsError, InvalidImportBundleError, MAX_IMPORT_FILE_BYTES,
+    dry_run, parse_and_validate_bundle_shape,
 )
 from backend.app.auth import require_roles
 
@@ -96,4 +101,64 @@ def download_export(run_id: str, format: str = "json",
     return StreamingResponse(
         io.BytesIO(zip_bytes), media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="export_{run.run_id}.csv.zip"'},
+    )
+
+
+# ===================================================================
+# ייבוא - דריי-ראן בלבד (PLAN.md §8 step 6). לא כותב שורת דומיין אחת; רק
+# מאמת ושומר את החבילה הגולמית (ל-commit עתידי, task #7/8, שמריץ dry_run
+# מחדש מול מה שבאמת נשמר - לא סומך על הדוח הישן שכבר יכול היה להתיישן).
+# ===================================================================
+
+@router.post("/admin/import/dry-run", response_model=ImportDryRunReportOut)
+def import_dry_run(file: UploadFile = File(...),
+                   current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                   db: Session = Depends(get_db)):
+    # נקרא עד תקרה+1 בלבד - לעולם לא בופר בלתי-מוגבל בזיכרון, גם אם הלקוח
+    # מנסה להעלות קובץ ענק בכוונה (decision 9: "נדחה ברמת הבקשה, לא אחרי
+    # buffering מלא").
+    raw = file.file.read(MAX_IMPORT_FILE_BYTES + 1)
+
+    try:
+        bundle = parse_and_validate_bundle_shape(raw)
+    except ImportFileTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except ImportTooManyRowsError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except ImportSchemaVersionMismatch as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except (ImportJsonTooDeepError, InvalidImportBundleError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    report = dry_run(db, bundle, current_user.company_id)
+
+    run = DataTransferRun(
+        direction=DataTransferDirection.IMPORT_DRY_RUN,
+        target_company_id=current_user.company_id,
+        initiated_by_user_id=current_user.user_id,
+        export_schema_version=bundle["export_schema_version"],
+        rows_attempted=report.rows_attempted,
+        rows_succeeded=report.rows_new + report.rows_skipped_existing,
+        rows_failed=report.rows_failed,
+        status=DataTransferStatus.SUCCESS if report.valid else DataTransferStatus.FAILED,
+    )
+    db.add(run)
+    db.flush()
+    # שומר את החבילה הגולמית (לא רק את הדוח) - commit (task #7) קורא אותה
+    # מחדש דרך dry_run_id, ומריץ dry_run עליה שוב לפני שכותב, לא רק מעתיק
+    # את המסקנה הישנה.
+    run.file_path = write_export_json(bundle, run.run_id)
+    record_audit_event(db, "DataTransferRun", run.run_id, "IMPORT_DRY_RUN", current_user.user_id,
+                       after={"valid": report.valid, "rows_new": report.rows_new,
+                             "rows_skipped_existing": report.rows_skipped_existing,
+                             "rows_failed": report.rows_failed})
+    db.commit()
+    db.refresh(run)
+
+    return ImportDryRunReportOut(
+        run_id=run.run_id, status=run.status.value, rows_attempted=report.rows_attempted,
+        rows_new=report.rows_new, rows_skipped_existing=report.rows_skipped_existing,
+        rows_failed=report.rows_failed,
+        errors=[ImportRowErrorOut(table=o.table, index=o.index, row_id=o.row_id, error=o.error)
+               for o in report.errors],
     )

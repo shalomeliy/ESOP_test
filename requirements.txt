@@ -38,6 +38,11 @@ reportlab==5.0.0
 # G-2021-001 (עובד "ישראל ישראלי" נראה כמראה בפלט). python-bidi בלי תלויות נוספות.
 python-bidi==0.6.11
 
+# FastAPI דורש את זה בפירוש בשביל UploadFile/File (v0.9.1 שלב ב, ייבוא
+# חבילת נתונים - POST /admin/import/dry-run) - בלי החבילה כל endpoint שמקבל
+# multipart/form-data נכשל ב-RuntimeError כבר בזמן import, לפני שמגיעים לקוד.
+python-multipart==0.0.20
+
 # מסד אזורי הזמן של IANA. **חובה ולא נוחות**: ל-Windows אין מסד כזה, ולכן
 # ZoneInfo("Asia/Jerusalem") נכשל שם בלי החבילה - ואיתו business_today(), השעון
 # שכל גבול מזכה במערכת נשען עליו (backend/app/types.py). בלינוקס המערכת מספקת
