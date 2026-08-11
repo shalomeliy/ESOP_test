@@ -340,3 +340,21 @@ class DocumentOut(BaseModel):
     grant_date: Optional[date] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DataTransferRunOut(BaseModel):
+    """v0.9.1 שלב ב - שורת היסטוריית ייצוא/ייבוא. file_path לא נחשף כאן בכוונה
+    (אותה סיבה כמו DocumentOut): ההורדה עוברת רק דרך endpoint מאומת שבודק
+    company_id, לא דרך נתיב שהלקוח מקבל ופותח בעצמו."""
+    run_id: str
+    direction: str
+    source_company_id: Optional[str] = None
+    target_company_id: Optional[str] = None
+    export_schema_version: int
+    rows_attempted: int
+    rows_succeeded: int
+    rows_failed: int
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
