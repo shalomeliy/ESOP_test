@@ -9,17 +9,23 @@ v1.0.0 שלב א (טבלת הון - שלב הסכמה בלבד, ראו FEATURE_S
 קיימות בכל המיגרציה הזו - שינוי אדיטיבי טהור, כדרישת CLAUDE.md.
 
 ``share_classes``/``shareholders`` הן CREATE TABLE טרי בלי FK נכנס אליהן
-מטבלה קיימת עדיין - אין כאן את בעיית ה-FK-מונע-recreate שנתקלנו בה ב-
-56baedac6e53 (national_id). ``option_pools.share_class_id`` ו-
-``companies.total_authorized_shares`` הן שתי ADD COLUMN נאלביליות, אותו דפוס
-בדיוק כמו national_id: SQLite מטפל ב-ADD COLUMN נאלבילי בלי בעיה (בשונה
-מ-DROP COLUMN), כך ש-batch_alter_table כאן לא חייב לגעת ב-FK-ים הנכנסים
-ל-companies/option_pools מטבלאות אחרות.
+מטבלה קיימת עדיין. ``companies.total_authorized_shares`` הוא ADD COLUMN
+נאלבילי טהור, אותו דפוס בדיוק כמו national_id - SQLite מטפל בו בלי recreate.
+
+**תוקן 11/08/2026, אחרי כשל בפועל מול esop_database.db החי:**
+``option_pools.share_class_id`` **נראה** כמו ADD COLUMN נאלבילי תמים, אבל
+ה-``create_foreign_key`` הנוסף באותו batch_alter_table מחייב SQLite לבצע
+recreate מלא (טבלה חדשה + copy + DROP הישנה + rename) - וה-DROP נכשל
+ב-FOREIGN KEY constraint failed כל עוד grants.pool_id מפנה אל שורות קיימות.
+ההנחה המקורית כאן (‏"זה רק ADD COLUMN נאלבילי, כמו national_id"‏) פספסה שזו
+לא הסיבה ל-recreate - ה-FK החדש הוא. תוקן ב-PRAGMA foreign_keys=OFF/ON סביב
+הבלוק, אותו דפוס בדיוק שכבר קיים ב-56baedac6e53. **הבדיקה המקורית (שלב א)
+לא תפסה את זה כי היא רצה מול סכימה ריקה** (סוויטת pytest ו-sandbox בלי
+grants מזרוע) - הבאג הופיע רק מול DB עם שורות grants אמיתיות.
 
 שים לב: esop_database.db החי נמצא בפועל שני revisions מאחורי ההד (עומד על
 b7c4d1e9f2a3, לא d9e4f1a2b3c6) - drift קיים שהתגלה בזמן כתיבת המיגרציה הזו
-ותועד ב-HANDOFF.md; המיגרציה הזו נבדקה מול DB זמני שהורץ עד ההד בפועל
-(alembic upgrade head), לא מול esop_database.db.
+ותועד ב-HANDOFF.md.
 """
 from typing import Sequence, Union
 
@@ -88,24 +94,35 @@ def upgrade() -> None:
     with op.batch_alter_table('companies', schema=None) as batch_op:
         batch_op.add_column(sa.Column('total_authorized_shares', sa.Float(), nullable=True))
 
+    # create_foreign_key (לא רק add_column) מחייב SQLite לבצע recreate מלא
+    # של option_pools (batch mode: טבלה חדשה + copy + DROP הישנה + rename) -
+    # וה-DROP נכשל ב-FOREIGN KEY constraint failed כל עוד grants.pool_id
+    # מפנה אל השורות הקיימות ו-PRAGMA foreign_keys=ON פעיל על כל connection
+    # (database.py/env.py). אותו דפוס בדיוק שכבר נתפס ב-56baedac6e53/
+    # employees.national_id - מכבים את האכיפה רק סביב הפעולה הזו.
+    op.execute("PRAGMA foreign_keys=OFF")
     with op.batch_alter_table('option_pools', schema=None) as batch_op:
         batch_op.add_column(sa.Column('share_class_id', sa.String(), nullable=True))
         batch_op.create_index(batch_op.f('ix_option_pools_share_class_id'), ['share_class_id'], unique=False)
         batch_op.create_foreign_key(
             'fk_option_pools_share_class_id_share_classes', 'share_classes', ['share_class_id'], ['share_class_id']
         )
+    op.execute("PRAGMA foreign_keys=ON")
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # option_pools/companies יורדים ראשונים - אחרת ה-FK הנכנס מ-option_pools
-    # אל share_classes חוסם את drop_table('share_classes') בהמשך (PRAGMA
-    # foreign_keys=ON פעיל על כל connection, ראו database.py/env.py), אותו
-    # דפוס בדיוק שכבר נתפס ב-56baedac6e53/documents.
+    # אל share_classes חוסם את drop_table('share_classes') בהמשך. וכמו ב-
+    # upgrade(): drop_constraint/drop_column על option_pools מחייב recreate
+    # מלא, שנכשל ב-FOREIGN KEY constraint failed כל עוד grants.pool_id מפנה
+    # אל השורות הקיימות - מכבים את האכיפה סביב הפעולה הזו גם כאן.
+    op.execute("PRAGMA foreign_keys=OFF")
     with op.batch_alter_table('option_pools', schema=None) as batch_op:
         batch_op.drop_constraint('fk_option_pools_share_class_id_share_classes', type_='foreignkey')
         batch_op.drop_index(batch_op.f('ix_option_pools_share_class_id'))
         batch_op.drop_column('share_class_id')
+    op.execute("PRAGMA foreign_keys=ON")
 
     with op.batch_alter_table('companies', schema=None) as batch_op:
         batch_op.drop_column('total_authorized_shares')
