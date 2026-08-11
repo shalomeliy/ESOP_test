@@ -8,7 +8,7 @@
 ולא עם קושי המשימה. `CLAUDE.md` שורה 57 כבר אמרה `/clear between unrelated
 exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ביצוע: יש לאן להעביר את ההקשר.
 
-עדכון אחרון: **2026-08-11** (v0.9.1 שלב ב — 8 מתוך 13 משימות, נסגר באמצע הפיצ'ר)
+עדכון אחרון: **2026-08-11** (v0.9.1 שלב ב — 9 מתוך 13 משימות, נסגר באמצע הפיצ'ר)
 
 > **הסגירה הזו שונה מכל הקודמות: היא לא בגבול גרסה.** `tools/context_check.py`
 > דיווח `🔴 CLEAN NOW` (421 תורים, ~418k טוקנים מוערכים) באמצע בניית שלב ב,
@@ -28,41 +28,47 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
 
 | | |
 |---|---|
-| גרסה | **v0.9.1 — בבנייה.** שלב א ✅ (כולל פיצול `routes.py`). שלב ב (ייצוא/ייבוא) **באמצע בנייה: 8/13 משימות** |
+| גרסה | **v0.9.1 — בבנייה.** שלב א ✅ (כולל פיצול `routes.py`). שלב ב (ייצוא/ייבוא) **באמצע בנייה: 9/13 משימות** |
 | תוכנית טכנית | **`PLAN.md`** — 13 צעדים מסודרים (§8), עם סעיף "Implementation notes" אחרי כל משימה שהושלמה. **קרא אותו במלואו לפני שממשיכים** |
 | `VERSION` | `0.9.1` — **לא יעודה עד שסעיף ב יושלם** (צעד 13 בתוכנית) |
-| בדיקות | `313 passed`, אזהרה אחת (ספרייה חיצונית) |
-| git | `main` @ `9a62e6c` (pushed). משימה 8 עדיין לא מחויבת בזמן כתיבת השורה הזו — ראו "לפני שממשיכים" |
+| בדיקות | `322 passed`, אזהרה אחת (ספרייה חיצונית) |
+| git | `main` @ `62047e2` (pushed). משימה 9 (`services/reconciliation.py` + `tests/test_reconciliation.py`) עדיין לא מחויבת בזמן כתיבת השורה הזו - ראו "לפני שממשיכים" |
 | תלות חדשה | `python-multipart==0.0.20` — נוסף ב-`requirements.txt`, נדרש ל-`UploadFile` (ייבוא) |
 
 ## הצעד הבא
 
-**משימה #9 (מתוך 13 ב-`PLAN.md` §8): שירות ההתאמה (reconciliation).**
-מריץ מחדש את מנועי ההבשלה (`services/engine.py::DeterministicESOPEngine.
-calculate_vested_options`) ואת מנוע המס (`services/tax_engine.py::
-TaxCalculationEngine.calculate_tax`, בשילוב `ExerciseTaxRecord.gain`
-שכבר נשמר - task #2) על הנתונים שיובאו ביעד, ומשווה לתוצאה המקורית - לא
-רק משווה ספירות שורות. ראו §6 (טבלת בדיקות, שורה 4) ו-§7 סיכון 1 (סטיית
-שעון קדם-עסקי ב-`ledger_events` ישנים - ה-replay לא אמור להתייחס לזה
-כבאג ייבוא).
+**משימה #10 (מתוך 13 ב-`PLAN.md` §8): endpoints היסטוריה + דוח התאמה.**
+`GET /api/v1/admin/export-import/{run_id}/reconciliation` - טוען את ה-
+bundle לפי `based_on_run_id` (אותה שרשרת בדיוק כמו `import_commit`),
+קורא ל-`reconciliation.reconcile()` (task #9) ומחזיר `ReconciliationReportOut`.
+404 אם ה-run אינו `IMPORT_COMMIT` או שטרם הותאם; 403 חוצה-חברות. ראו §8
+צעד 10 ו-PLAN.md טבלת ה-API (§ endpoints).
 
-**משימה #8 נסגרה (endpoint + אכיפת שני-השלבים).**
-`POST /api/v1/admin/import/commit` מקבל `{dry_run_id}` בלבד (לא upload
-חוזר), טוען את ה-bundle השמור, קורא ל-`commit()` (task #7), ומסמן את
-הדריי-ראן `COMMITTED` דרך `based_on_run_id`. 409 על: דריי-ראן שכבר
-`COMMITTED`/`FAILED`, ועל דריי-ראן שהיה תקין אך ה-DB השתנה מתחתיו לפני
-ה-commit (מתגלה כי `commit()` מריץ `dry_run` מחדש - לא מניח שהדוח הישן
-עדיין נכון). שישה בדיקות HTTP-level חדשות. פירוט מלא ב-`PLAN.md`
-("Implementation notes added during task #8").
+**משימה #9 נסגרה (שירות ההתאמה, service-layer בלבד).**
+`services/reconciliation.py::reconcile(db, bundle, as_of=None)` מריץ
+מחדש את `DeterministicESOPEngine.calculate_vested_options` (על אובייקטים
+זמניים שנבנים מה-bundle, לא `db.add`, מול היעד בפועל) ואת
+`TaxCalculationEngine.calculate_tax` (על `ExerciseTaxRecord.gain` +
+`business_date_of(request.requested_at)`, מול חבילות המס *של היעד*,
+משווה `tax_amount`/`effective_rate`/`table_effective_date`/`method` -
+לא רק הסכום). שתי הכרעות מוצר אושרו מראש: (E) בדיקת ההבשלה צרה ומכוונת -
+משווה ישירות בלי `vesting_cutoff_date`/הקשר עובד; (F) ההשוואה אחידה על
+כל שורה בחבילה, בלי לנסות לשחזר סיווג NEW/SKIP_EXISTING שאבד אחרי
+commit - המחיר מוצהר במפורש ב-`known_limitations` של הדוח (גם ledger
+skew מ-§7 סיכון 1, גם עוגן 102 קדם-2006). שמונה בדיקות חדשות, כולל
+בדיקת "שורת יעד מזויפת" שמשנה `VestingSchedule`/`TaxRatesHistory` *ביעד*
+אחרי commit ומוודאת שההתאמה קוראת DB בפועל, לא משווה שורה לעצמה. פירוט
+מלא ב-`PLAN.md` ("Implementation notes added during task #9", כולל
+הכרעות E/F בסעיף ההחלטות).
 
-**אחרי #9:** #10 (endpoints היסטוריה+התאמה) · #11 (UI בפורטל האדמין) ·
-#12 (עדכון `docs/qa/v0.9.1.md`) · #13 (עדכון `VERSION`).
+**אחרי #10:** #11 (UI בפורטל האדמין) · #12 (עדכון `docs/qa/v0.9.1.md`) ·
+#13 (עדכון `VERSION`).
 
 **לפני שממשיכים:** ודאו ש-`git status` נקי ו-`origin/main` מעודכן -
-משימה 8 (endpoint + schemas + בדיקות) הייתה עדיין לא מחויבת כשהשורה הזו
-נכתבה. `git push` דורש אישור מפורש מהמשתתף בכל שיחה - לא מונח מראש.
+משימה 9 (`reconciliation.py` + הבדיקות) הייתה עדיין לא מחויבת כשהשורה
+הזו נכתבה. `git push` דורש אישור מפורש מהמשתתף בכל שיחה - לא מונח מראש.
 
-## מה נבנה ב-10-11/08/2026 (שלב ב, משימות 1-8 מתוך 13)
+## מה נבנה ב-10-11/08/2026 (שלב ב, משימות 1-9 מתוך 13)
 
 פירוט מלא ונימוקים ב-`PLAN.md` (סעיפי "Implementation notes" אחרי כל
 משימה). תמצית למי שלא פותח את הקובץ המלא:
@@ -102,6 +108,29 @@ TaxCalculationEngine.calculate_tax`, בשילוב `ExerciseTaxRecord.gain`
   לא ברמת ה-endpoint). הצלחה מסמנת את הדריי-ראן `COMMITTED` וקושרת
   `DataTransferRun` חדש (`IMPORT_COMMIT`) אליו דרך `based_on_run_id`. שש
   בדיקות חדשות; הסוויטה המלאה: 313 (היו 307).
+- **#9 שירות ההתאמה (reconciliation), service-layer בלבד:**
+  `services/reconciliation.py::reconcile(db, bundle, as_of=None)`. הבשלה:
+  משווה `calculate_vested_options` על אובייקטים זמניים מה-bundle (לא
+  נכתבים ל-DB) מול הרצה על שורות היעד בפועל, לפי `as_of` משותף ומוצהר -
+  לא שעון. מס: לוקח `ExerciseTaxRecord.gain` שכבר נשמר (task #2), גוזר
+  `exercise_date` מ-`business_date_of(request.requested_at)` (אותו כלל
+  כמו אישור אמיתי - decision B), ומריץ מחדש נגד חבילות המס *של היעד* -
+  משווה גם `effective_rate`/`table_effective_date`/`method`, לא רק סכום.
+  שתי הכרעות מוצר אושרו מראש (ר' `PLAN.md` §"Decisions resolved", E/F):
+  היקף ההבשלה צר ומכוון (בלי `vesting_cutoff_date`/הקשר עובד - האובייקט
+  הזמני מה-bundle אין לו), וההשוואה אחידה על כל שורה בלי לשחזר סיווג
+  NEW/SKIP_EXISTING שאבד אחרי commit - המחיר מוצהר ב-`known_limitations`
+  של הדוח (יחד עם ledger skew מ-§7 סיכון 1 ועוגן 102 קדם-2006 מ-HANDOFF).
+  תשע בדיקות חדשות ב-`tests/test_reconciliation.py`, כולל בדיקת
+  "שורת יעד מזויפת" (משנה `VestingSchedule`/`TaxRatesHistory` ביעד אחרי
+  commit ומוודאת שההתאמה מזהה זאת, לא משווה שורה לעצמה); הסוויטה המלאה:
+  322 (היו 313). **סקירה עצמאית (change-reviewer, 11/08/2026): `PASS`**,
+  שלושה ממצאים זעירים תוקנו לפני סגירת המשימה - שדה mismatch שדיווח תמיד
+  `tax_amount` גם כשהשוני היה ב-method/rate/date בלבד (עכשיו כל שדה שסטה
+  מדווח בנפרד עם הערך הנכון), ענף `except MissingVestingScheduleError` מת
+  (הוסר - שני התנאים שקדמו לו כבר שוללים את המקרה היחיד שהיה מפעיל אותו),
+  וכיסוי בדיקה חסר לענף ההגנתי של `ExerciseRequest` חסר ביעד (נוסף). פירוט
+  מלא ב-`PLAN.md` ("Implementation notes added during task #9").
 
 **שני "לקחים" ששווה לזכור לפני שממשיכים ל-#7:**
 
