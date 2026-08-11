@@ -8,7 +8,7 @@
 ולא עם קושי המשימה. `CLAUDE.md` שורה 57 כבר אמרה `/clear between unrelated
 exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ביצוע: יש לאן להעביר את ההקשר.
 
-עדכון אחרון: **2026-08-11** (v1.0.0 שלב א — **הושלם ונדחף. ה-DB החי עלה ל-head, אחרי תיקון באג מיגרציה שנתפס בדרך.**)
+עדכון אחרון: **2026-08-11** (v1.0.0 שלב א — **הושלם, נדחף, ומוזג ל-`main` (PR #3). ה-DB החי עלה ל-head, אחרי תיקון באג מיגרציה שנתפס בדרך.**)
 
 > **זו סגירת גבול שלב, לא סגירת גבול גרסה.** v1.0.0 נפתחת בשני שלבים
 > (ראו `C:\Users\Shalom\.claude\plans\parallel-jingling-bear.md`): **שלב א**
@@ -78,6 +78,18 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
 > **גם ה-6 commits הקודמים של שלב א נדחפו** (`git push -u origin
 > feat/1.0.0/database`) — לפני כן היו רק מקומיים.
 
+> **מוזג ל-`main` ב-11/08/2026 - PR #3, אישור מפורש של המשתתף.** `gh pr
+> create --base main --head feat/1.0.0/database` ואז `gh pr merge 3 --merge`
+> (merge commit, לא squash/rebase - כך כל היסטוריית ה-`release`-ים הקודמת
+> ב-`main` כבר עשתה). `origin/main` עומד עכשיו על `0e06d1f` (11 commits:
+> כל שלב א + תיקון המיגרציה + ה-handoffs). `feat/1.0.0/database` **לא**
+> נמחק - נשאר על ה-remote. **ה-`main` המקומי נשאר מאחור** (`1a51cea`,
+> לפני ה-merge) - המיזוג בוצע ישירות ב-GitHub, לא ב-git מקומי, ולכן
+> `git checkout main && git pull` (fast-forward טהור, בלי conflict אפשרי)
+> נדרש בשיחה הבאה לפני שממשיכים מ-`main`. **אין reviewer שני על ה-PR** -
+> `shalomeliy` הוא ה-collaborator היחיד בריפו, ואי אפשר להקצות מחבר-PR
+> כ-reviewer לעצמו ב-GitHub; המשתתף אישר merge ישיר בלי סקירה שנייה.
+
 > **ה-DB החי הועלה ל-head ב-09/08/2026 (הערה מקורית, לא לפתוח מחדש).** הוא
 > היה שלוש מיגרציות מאחור ובלי טבלת `documents` — כלומר כל v0.9.0 לא היה
 > קיים בו. גיבוי לפני: `db_backups/esop_database.20260809-030922.db`
@@ -96,7 +108,7 @@ exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ב�
 | תוכנית טכנית | `C:\Users\Shalom\.claude\plans\parallel-jingling-bear.md` — מכיל פירוט מלא לשלב א בלבד; שלב ב טעון תכנון נפרד |
 | `VERSION` | `1.0.0` — bump ע"י release-manager בסוף שלב א (מיישר קו עם `test_version_file_is_not_behind_the_qa_testbook`); תג `v1.0.0` **לא** נוצר - ימתין לסוף שלב ב |
 | בדיקות | `373 passed, 0 failed` |
-| git | 9 commits על `feat/1.0.0/database`, **נדחפו ל-origin**: `1971b03` (מודל+ledger), `0e726ed` (API), `a3956a2` (fix IDOR/404), `7eed45b` (test), `23a8129` (docs/qa), `835cc68` (VERSION), `3b39907` (handoff), `466ea81` (fix מיגרציה - FK על option_pools), `d11ad02` (test רגרסיה למיגרציה), `6f3486e` (docs/qa - QA-100-41) |
+| git | **מוזג ל-`main`** - PR #3 (`gh pr merge --merge`), `origin/main` על `0e06d1f`. `feat/1.0.0/database` נשאר קיים ב-remote, לא נמחק. **`main` המקומי בסטייה** (`1a51cea`, לפני ה-merge) - טעון `git checkout main && git pull` בשיחה הבאה |
 | מיגרציה | `bd65db40f654` - אדיטיבית טהורה. **תוקנה 11/08/2026** אחרי כשל מול DB חי (ראו למעלה) - upgrade→downgrade→upgrade אומת מול עותק עם grants אמיתיים, לא רק סכימה ריקה |
 | DB חי | **על head.** `alembic_version = bd65db40f654`, `integrity_check: ok`, אפס דריפט. גיבוי אחרון: `db_backups/esop_database.20260811-114806.db` |
 
