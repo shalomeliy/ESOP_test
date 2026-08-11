@@ -2,7 +2,7 @@
 
 Grounded in the ESOP_test repo as of `VERSION` = `0.9.1` (phase A already shipped per `docs/qa/v0.9.1.md:3-7`). Produced from an approved feature spec (five-perspective expert fan-out + tax-domain-expert sign-off, all approved by the participant). All file:line references below were read directly from the repo.
 
-**Status: APPROVED — all flagged decisions resolved by the participant (see final section). Ready for implementation starting at §8, step 1.**
+**Status: IN PROGRESS — steps 1-6 of §8 complete and committed (see "Implementation notes" after each step below, and `HANDOFF.md` for the session-close context). Next: step 7 (import commit path). The prior session closed mid-feature due to context-length discipline (`tools/context_check.py`), not a version boundary — read this file in full before continuing, not just `HANDOFF.md`.**
 
 ---
 
