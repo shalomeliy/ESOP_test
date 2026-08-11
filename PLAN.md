@@ -2,7 +2,7 @@
 
 Grounded in the ESOP_test repo as of `VERSION` = `0.9.1` (phase A already shipped per `docs/qa/v0.9.1.md:3-7`). Produced from an approved feature spec (five-perspective expert fan-out + tax-domain-expert sign-off, all approved by the participant). All file:line references below were read directly from the repo.
 
-**Status: IN PROGRESS — steps 1-12 of §8 complete (see "Implementation notes" after each step below, and `HANDOFF.md` for the session-close context). Next: step 13 (bump `VERSION` to `0.9.1` — release-manager territory, the final step of phase B). Read this file in full before continuing, not just `HANDOFF.md`.**
+**Status: COMPLETE — all 13 steps of §8 done.** Step 13 (release-manager, 11/08/2026): `VERSION` stayed `0.9.1` — it was already bumped to that value during phase A (commit `a86bfea`), and no plan document called for a further number, so nothing to change there; `QA_TESTBOOK.md`'s v0.9.1 index row was updated to describe both phases as complete; annotated tag `v0.9.1` created locally (not pushed — `066766c`). Full suite: 332 passed. Phase B of v0.9.1 is closed. See `HANDOFF.md` for what's next.
 
 ---
 
