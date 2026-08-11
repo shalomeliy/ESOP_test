@@ -27,6 +27,10 @@ class Company(Base):
     country_code = Column(String, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(UtcDateTime, default=utcnow)
+    # nullable=True: אי אפשר להמציא ערך לחברות קיימות שנזרעו לפני v1.0.0 - שלב ב
+    # (חישוב דילול) חייב להתייחס במפורש ל-None כ"לא זמין" ולעולם לא להציג 0%
+    # דלילות בלי הערך הזה. זה בדיוק דפוס הכשל P4 המתועד ב-QA_TESTBOOK.md.
+    total_authorized_shares = Column(Float, nullable=True)
 
     pools = relationship("OptionPool", back_populates="company")
     employees = relationship("Employee", back_populates="company")
@@ -47,6 +51,11 @@ class OptionPool(Base):
     allocated_shares = Column(Float, default=0.0, nullable=False)
     unallocated_shares = Column(Float, nullable=False)
     created_at = Column(UtcDateTime, default=utcnow)
+    # nullable=True: פולים קיימים/מזרוקעים (seed_data.py) אין להם עדיין שיוך
+    # לסוג מניה - אותו דפוס בדיוק כמו Grant.trustee_id. אין השפעה על
+    # ck_option_pools_shares_balance - האילוץ ההוא per-row וממשיך לחול בלי
+    # שינוי, לא משנה כמה פולים/סוגי מניה קיימים.
+    share_class_id = Column(String, ForeignKey("share_classes.share_class_id"), nullable=True, index=True)
 
     company = relationship("Company", back_populates="pools")
 
@@ -408,9 +417,13 @@ LEDGER_EVENT_TYPES = {
     "VESTING_PAUSE_RECORDED",
     "EXERCISE_REQUEST_SUBMITTED",   # בסיס וגם דלתא חיה: הגשת בקשת מימוש
     "EXERCISE_REQUEST_DECIDED",     # דלתא: אישור/דחייה
+    # בסיס וגם דלתא חיה (v1.0.0 שלב א): הקצאת מניות ל-Shareholder. סוג אירוע
+    # יחיד בלבד בשלב א - אין עדיין תיקון/ביטול/העברה של מניות שהוקצו (v1.4.0/
+    # M&A, לא כאן); ראו ShareIssuance למטה.
+    "SHARE_ISSUANCE_ESTABLISHED",
 }
 
-LEDGER_AGGREGATE_TYPES = {"OptionPool", "Employee", "Grant", "VestingSchedule", "ExerciseRequest"}
+LEDGER_AGGREGATE_TYPES = {"OptionPool", "Employee", "Grant", "VestingSchedule", "ExerciseRequest", "ShareIssuance"}
 
 # מקור האירוע - נדרש כעמודה בסכמה (לא הערה בקוד): אירוע גיבוי חייב להיות מובחן
 # לצמיתות מאירוע אמיתי, כדי שמסך "מה חשבנו בתאריך X" לעולם לא יתחזה לידע
@@ -579,3 +592,69 @@ class DataTransferRun(Base):
     # לעולם לא מוגש כקובץ סטטי, רק דרך endpoint מאומת שמפעיל בדיקת company_id.
     file_path = Column(String, nullable=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+
+
+# ===================================================================
+# טבלת הון (Cap Table) - סוגי מניות, בעלי מניות, הקצאות מניות (v1.0.0 שלב א)
+# ===================================================================
+# שלב א בלבד: מודל דאטה + אינטגרציית ledger. אין כאן חישוב דילול ואין UI -
+# אלה שלב ב, שמתוכנן בנפרד רק אחרי ששלב א יתייצב (ראו FEATURE_SPEC.md).
+# ShareIssuance הוא ledger-native *מהיום הראשון* - לא "פרויקציה מחושבת" שנוספה
+# בדיעבד כמו ב-OptionPool - כדי ש-snapshot היסטורי לפי תאריך (שלב ב) יהיה
+# אפשרי מבנית מהתחלה. זו ההחלטה הארכיטקטונית שכל מומחי התכנון התכנסו עליה.
+
+class ShareClass(Base):
+    # סוג מניה (Common / Preferred A / ...). class_type הוא String חופשי ולא
+    # SQLEnum - אותה מוסכמה בדיוק כמו LEDGER_EVENT_TYPES/TAX_CALCULATION_METHODS:
+    # אוצר מילים סגור שנבדק באפליקציה, לא באילוץ DB, כי סוגי Preferred נוספים
+    # (Preferred B/C...) צפויים להתווסף בלי מיגרציה.
+    # seniority_order: מספר קטן יותר = משולם קודם ב-waterfall של פירוק (v1.4.0
+    # יהיה הצרכן הראשון בפועל) - זו החלטה עסקית לכל חברה, לא אינווריאנט דאטה,
+    # ולכן בלי UNIQUE ברמת ה-DB (אין מניעה משתי שורות לחלוק סדר בכוונה/בטעות -
+    # זה לא תפקיד ה-DB לשפוט).
+    __tablename__ = "share_classes"
+    share_class_id = Column(String, primary_key=True, default=generate_uuid)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    class_type = Column(String, nullable=False)
+    seniority_order = Column(Integer, nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow)
+
+
+class Shareholder(Base):
+    # company_id NOT NULL: חד-חברתי בכוונה, מראה את Trustee ולא ישות
+    # חוצת-חברות - זו ההכרעה שפותרת ארכיטקטונית (לא רק בקוד scoping נוסף) את
+    # חשש ה-IDOR שהועלה בסקירת אבטחה בתכנון: משקיע שמחזיק בשתי חברות-פורטפוליו
+    # מקבל שתי שורות נפרדות, בדיוק כמו כל ישות אחרת בקוד הזה שהיא scoped לחברה.
+    __tablename__ = "shareholders"
+    shareholder_id = Column(String, primary_key=True, default=generate_uuid)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    # FOUNDER / INVESTOR / EMPLOYEE / ENTITY - אוצר מילים פתוח, אותה מוסכמה
+    # כמו ShareClass.class_type למעלה.
+    shareholder_type = Column(String, nullable=False)
+    # nullable=True: מאוכלס רק כשבעל המניות הזה הוא *גם* עובד קיים במערכת
+    # (למשל עובד שמימש אופציות לכדי מניות ממשיות) - כדי לקשר לזהות הקיימת
+    # ולא לשכפל אותה. משקיע חיצוני (investor) פשוט משאיר את זה NULL.
+    employee_id = Column(String, ForeignKey("employees.employee_id"), nullable=True, index=True)
+    created_at = Column(UtcDateTime, default=utcnow)
+
+
+class ShareIssuance(Base):
+    # ledger-native מהיום הראשון (ראו הערת הסעיף למעלה). shares היא עמודת
+    # פרויקציה מוטטת - מתעדכנת באותה טרנזקציה שמוסיפה את אירוע ה-
+    # SHARE_ISSUANCE_ESTABLISHED, אותו דפוס בדיוק כמו OptionPool.allocated_shares.
+    __tablename__ = "share_issuances"
+    share_issuance_id = Column(String, primary_key=True, default=generate_uuid)
+    # מוכפל ישירות על השורה ולא נגזר דרך shareholder_id - אותו דפוס הגנתי
+    # "עמודה ישירה, לא join" כמו Document/LedgerOwnership: בדיקת הרשאה חייבת
+    # להיות השוואת עמודה ישירה וזולה על השורה עצמה.
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    shareholder_id = Column(String, ForeignKey("shareholders.shareholder_id"), nullable=False, index=True)
+    share_class_id = Column(String, ForeignKey("share_classes.share_class_id"), nullable=False, index=True)
+    shares = Column(Float, nullable=False)
+    # קלט מפורש מהקורא, לעולם לא נגזר מהשעון - אותו דפוס כמו Grant.grant_date.
+    # זה מה שהופך הזנת נתונים היסטוריים ו-snapshot-לפי-תאריך עתידי (שלב ב)
+    # לנכונים, בדיוק אותו לקח שכבר נלמד בקודבייס הזה (ח1/ח2).
+    issue_date = Column(Date, nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow)

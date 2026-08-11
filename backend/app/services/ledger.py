@@ -217,12 +217,26 @@ def project_exercise_request(events: list) -> Optional[dict]:
     return state
 
 
+def project_share_issuance(events: list) -> Optional[dict]:
+    """v1.0.0 שלב א: אירוע בסיס יחיד בלבד (SHARE_ISSUANCE_ESTABLISHED) - אין
+    עדיין דלתא מעליו (תיקון/ביטול/העברה נדחים ל-v1.4.0, ראו models.py.ShareIssuance).
+    אותו דפוס בדיוק כמו project_grant."""
+    state = None
+    for e in events:
+        p = json.loads(e.payload)
+        if e.event_type == "SHARE_ISSUANCE_ESTABLISHED":
+            state = {"shares": p["shares"], "shareholder_id": p["shareholder_id"],
+                     "share_class_id": p["share_class_id"], "issue_date": _parse_date(p["issue_date"])}
+    return state
+
+
 PROJECTORS = {
     "OptionPool": project_option_pool,
     "Employee": project_employee,
     "Grant": project_grant,
     "VestingSchedule": project_vesting_schedule,
     "ExerciseRequest": project_exercise_request,
+    "ShareIssuance": project_share_issuance,
 }
 
 
