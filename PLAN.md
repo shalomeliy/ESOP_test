@@ -2,7 +2,7 @@
 
 Grounded in the ESOP_test repo as of `VERSION` = `0.9.1` (phase A already shipped per `docs/qa/v0.9.1.md:3-7`). Produced from an approved feature spec (five-perspective expert fan-out + tax-domain-expert sign-off, all approved by the participant). All file:line references below were read directly from the repo.
 
-**Status: IN PROGRESS — steps 1-7 of §8 complete (see "Implementation notes" after each step below, and `HANDOFF.md` for the session-close context). Next: step 8 (two-step commit enforcement). Read this file in full before continuing, not just `HANDOFF.md`.**
+**Status: IN PROGRESS — steps 1-8 of §8 complete (see "Implementation notes" after each step below, and `HANDOFF.md` for the session-close context). Next: step 9 (reconciliation service). Read this file in full before continuing, not just `HANDOFF.md`.**
 
 ---
 
@@ -224,6 +224,16 @@ No chart library introduced; reconciliation is a plain `<table>`.
 - **New dependency: `python-multipart==0.0.20`.** Required by FastAPI/Starlette for any `UploadFile`/`File(...)` parameter — without it, the app fails at request-handling time with a `RuntimeError`, not an import-time error, so it wasn't caught until the first multipart test ran. Added with the same per-dependency justification comment style as the rest of `requirements.txt`.
 - **Import-side guardrails (file-size cap, JSON-depth cap, row-count cap)** — deferred from task #5 because task #5 covered only the export side — are implemented in `services/import_.py::parse_and_validate_bundle_shape`, checked in this order: size → JSON-parseable → depth → row count → schema version → basic shape (`companies` present). Each gate fails before the next, more expensive one runs. The file is read with a bounded `file.file.read(MAX_IMPORT_FILE_BYTES + 1)` in the endpoint, not `UploadFile.read()` unbounded, so a deliberately huge upload never gets buffered in full.
 - **CSV/multipart import (importing the CSV-zip format the export side can produce) was not built.** Only the JSON bundle format is accepted by `/admin/import/dry-run`. This is a real scope reduction from decision 11's "JSON + CSV" symmetry, not an oversight — flagging it explicitly rather than silently shipping less than planned.
+
+## Implementation notes added during task #8
+
+`POST /api/v1/admin/import/commit` (`backend/app/api/export.py`) wires task #7's already-tested `commit()` behind the two-step contract: request body is `{dry_run_id}` only, never a re-upload — the endpoint reads the bundle back from the `DataTransferRun.file_path` the dry-run endpoint already saved (same `export_store/` convention as export).
+
+- **Ownership/existence checks copy `download_export`'s exact 404-then-403 pattern**: `run_id` not found or not `IMPORT_DRY_RUN` → 404; found but `target_company_id != current_user.company_id` → 403. Kept identical rather than inventing a new shape for the same problem.
+- **"Committable" is `status == SUCCESS`, nothing else** — matches this plan's original decision text ("stale/reused") once traced through `models.py`'s own docstring on `DataTransferStatus.COMMITTED` ("a flag for an `IMPORT_DRY_RUN` that a commit has already 'consumed' — checkable via `based_on_run_id`, not just assumed in code"). No time-based expiry was added; a dry-run that reported `FAILED` was never valid, and one that's `COMMITTED` has already been spent. Both → 409.
+- **A dry-run that *was* valid but no longer is (state changed underneath it before commit) is also 409, not 200 with a report.** This is `commit()`'s own re-run of `dry_run` (task #7) surfacing at the HTTP layer — unlike the dry-run endpoint itself, which always returns 200 with a report (diagnostic, no side effect either way), a *commit* attempt that can't proceed is a failed action, and 409 is the correct code per this plan's original API table. The stale dry-run's own `DataTransferRun` row is deliberately **not** flipped to `FAILED` in this case — it was accurate when created; a fresh dry-run against current state would show what actually changed. Covered by `test_commit_endpoint_rejects_when_state_changed_since_the_dry_run`.
+- **On success, the dry-run row is flipped to `COMMITTED` and a new `IMPORT_COMMIT` `DataTransferRun` is created with `based_on_run_id` pointing at it** — the FK link this plan's schema (task #1) already provisioned for exactly this purpose. `rows_succeeded` on that history row follows the same convention as the export/dry-run endpoints (`rows_written + rows_skipped_existing`).
+- **Six new tests**, split HTTP-level (this task) vs. service-level (task #7, unchanged) within `tests/test_import_commit.py`: successful commit marks the dry-run `COMMITTED` and links `based_on_run_id`; unknown `dry_run_id` → 404; wrong-company `dry_run_id` → 403; an originally-`FAILED` dry-run → 409; re-committing an already-`COMMITTED` dry-run → 409; and the state-changed-since-dry-run race → 409. Full suite: 313 passed (was 307).
 
 ## Implementation notes added during task #7
 
