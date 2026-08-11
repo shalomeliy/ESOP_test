@@ -272,6 +272,37 @@ class ExerciseRequest(Base):
     review_notes = Column(String, nullable=True)
 
 
+class ExerciseTaxRecord(Base):
+    """נקודת המס היחידה שנרשמת בפועל על מימוש **אמיתי** (לא בדיקה/סימולציה) -
+    עד v0.9.1 שלב ב, TaxCalculationEngine נקרא רק מ-/simulate-exercise, ותוצאתו
+    נשמרת כ-JSON חופשי בתוך AuditLog.after_value בלבד. אישור מימוש בפועל
+    (_decide_exercise_request) לא חישב מס כלל - לא רשם אותו אחרת, לא חישב.
+
+    country_code/grant_type/effective_start_date ולא pack_id: pack_id מתחדש
+    בכל seed/backfill (generate_uuid() חדש בכל הרצה) ולכן לא שורד בין שני
+    מופעי DB - בדיוק אותה סיבה שהייצוא (שלב ב) חייב להתאים חבילות מס לפי
+    המפתח הטבעי, לא לפי pack_id מילולי. השלישייה הזו היא הזהות האמיתית של
+    TaxRulePack, לפי uq_tax_rule_packs_country_type_date שלו-עצמו.
+
+    gain נשמר בנוסף ל-tax_amount, לא רק התוצאה: בלי הקלט הגולמי, דוח ההתאמה
+    (שלב ב) יכול להשוות מספר לעצמו בלבד ולא לשחזר את החישוב באמת.
+    """
+    __tablename__ = "exercise_tax_records"
+    record_id = Column(String, primary_key=True, default=generate_uuid)
+    # unique=True: רשומת מס אחת בדיוק לכל בקשת מימוש - מונע שתי רשומות
+    # מתחרות שמתארות את אותו אישור (למשל אם הקוד שקורא לזה ירוץ פעמיים).
+    request_id = Column(String, ForeignKey("exercise_requests.request_id"), nullable=False, unique=True)
+    country_code = Column(String, nullable=False)
+    grant_type = Column(String, nullable=False)
+    effective_start_date = Column(Date, nullable=False)
+    calculation_method = Column(String, nullable=False)
+    gain = Column(Float, nullable=False)
+    tax_amount = Column(Float, nullable=False)
+    effective_rate = Column(Float, nullable=False)
+    official_source_url = Column(String, nullable=False)
+    computed_at = Column(UtcDateTime, default=utcnow, nullable=False)
+
+
 # ===================================================================
 # Notification Center
 # ===================================================================
@@ -492,3 +523,59 @@ class Document(Base):
     acknowledged_at = Column(UtcDateTime, nullable=True)
     acknowledged_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
     created_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
+
+
+# ===================================================================
+# ייצוא / ייבוא וניידות נתונים (v0.9.1 שלב ב)
+# ===================================================================
+# SQLEnum ולא String חופשי (בשונה מ-LEDGER_EVENT_TYPES/TAX_CALCULATION_METHODS):
+# direction/status הן מכונת מצבים סגורה וקבועה כמו DocumentStatus, לא אוצר מילים
+# שצפוי לגדול - אין כאן את בעיית "CHECK דורש בנייה מחדש של הטבלה" שהנחתה את
+# הבחירה בצד השני.
+
+class DataTransferDirection(str, Enum):
+    EXPORT = "EXPORT"
+    IMPORT_DRY_RUN = "IMPORT_DRY_RUN"
+    IMPORT_COMMIT = "IMPORT_COMMIT"
+
+
+class DataTransferStatus(str, Enum):
+    PENDING = "PENDING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    # דגל ל-IMPORT_DRY_RUN שכבר "נוצל" ע"י commit - זה מה ש-based_on_run_id
+    # למטה מאפשר לבדוק: דריי-ראן שכבר יש לו commit לא ניתן להפעיל שוב.
+    COMMITTED = "COMMITTED"
+
+
+class DataTransferRun(Base):
+    """רשומת היסטוריה אחת לכל ייצוא/ייבוא-דריי-ראן/ייבוא-commit - זה מה שמזין
+    את מסך "היסטוריית ייצוא" ואת בדיקת ה-403 בהורדה (השוואה מול
+    source_company_id/target_company_id, לא הנחה על מי שביקש).
+
+    based_on_run_id הוא FK עצמי, באותו דפוס בדיוק כמו LedgerEvent.corrects_event_id:
+    מצביע מ-IMPORT_COMMIT אל ה-IMPORT_DRY_RUN שעליו הוא מבוסס, כדי ש-409 על
+    דריי-ראן ישן/מנוצל (שני השלבים - decision 6/8 בתכנון) יהיה דבר שאפשר
+    לבדוק ב-DB ולא רק להניח בקוד.
+
+    export_schema_version ולא schema_version: LedgerEvent.schema_version מתאר
+    את צורת ה-payload של אירוע בודד - מושג שונה מגרסת חבילת הייצוא כולה. שם
+    זהה היה יוצר קונפליקט שקט במיפוי עמודות בין ה-CSV/JSON של הייצוא לזה
+    של יומן האירועים המיוצא בתוכו.
+    """
+    __tablename__ = "data_transfer_runs"
+    run_id = Column(String, primary_key=True, default=generate_uuid)
+    direction = Column(SQLEnum(DataTransferDirection), nullable=False)
+    source_company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
+    target_company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
+    initiated_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+    export_schema_version = Column(Integer, nullable=False)
+    based_on_run_id = Column(String, ForeignKey("data_transfer_runs.run_id"), nullable=True)
+    rows_attempted = Column(Integer, default=0, nullable=False)
+    rows_succeeded = Column(Integer, default=0, nullable=False)
+    rows_failed = Column(Integer, default=0, nullable=False)
+    status = Column(SQLEnum(DataTransferStatus), default=DataTransferStatus.PENDING, nullable=False)
+    # נתיב יחסי בתוך export_store/, אותה מוסכמה בדיוק כמו Document.file_path -
+    # לעולם לא מוגש כקובץ סטטי, רק דרך endpoint מאומת שמפעיל בדיקת company_id.
+    file_path = Column(String, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)

@@ -1,4 +1,4 @@
--- SQL Schema Reference - 19 טבלאות, משקף את backend/app/models.py בגרסה 0.9.1.
+-- SQL Schema Reference - 21 טבלאות, משקף את backend/app/models.py בגרסה 0.9.1.
 --
 -- זהו קובץ תיעוד/reference בלבד. ה-DB בפועל נבנה על ידי Alembic
 -- (python -m alembic upgrade head) מאז גרסה 0.4.0 - לא על ידי הקובץ הזה
@@ -368,6 +368,52 @@ CREATE INDEX IF NOT EXISTS ix_documents_company_id ON documents (company_id);
 CREATE INDEX IF NOT EXISTS ix_documents_employee_id ON documents (employee_id);
 CREATE INDEX IF NOT EXISTS ix_documents_grant_id ON documents (grant_id);
 CREATE INDEX IF NOT EXISTS ix_documents_trustee_id ON documents (trustee_id);
+
+
+-- ===================================================================
+-- ייצוא / ייבוא וניידות נתונים (v0.9.1 שלב ב)
+-- ===================================================================
+
+CREATE TABLE IF NOT EXISTS exercise_tax_records (
+	record_id VARCHAR NOT NULL,
+	request_id VARCHAR NOT NULL,
+	country_code VARCHAR NOT NULL,
+	grant_type VARCHAR NOT NULL,
+	effective_start_date DATE NOT NULL,
+	calculation_method VARCHAR NOT NULL,
+	gain FLOAT NOT NULL,
+	tax_amount FLOAT NOT NULL,
+	effective_rate FLOAT NOT NULL,
+	official_source_url VARCHAR NOT NULL,
+	computed_at DATETIME NOT NULL,
+	PRIMARY KEY (record_id),
+	FOREIGN KEY(request_id) REFERENCES exercise_requests (request_id),
+	CONSTRAINT uq_exercise_tax_records_request_id UNIQUE (request_id)
+);
+
+CREATE TABLE IF NOT EXISTS data_transfer_runs (
+	run_id VARCHAR NOT NULL,
+	direction VARCHAR(14) NOT NULL,
+	source_company_id VARCHAR,
+	target_company_id VARCHAR,
+	initiated_by_user_id VARCHAR NOT NULL,
+	export_schema_version INTEGER NOT NULL,
+	based_on_run_id VARCHAR,
+	rows_attempted INTEGER NOT NULL,
+	rows_succeeded INTEGER NOT NULL,
+	rows_failed INTEGER NOT NULL,
+	status VARCHAR(9) NOT NULL,
+	file_path VARCHAR,
+	created_at DATETIME NOT NULL,
+	PRIMARY KEY (run_id),
+	FOREIGN KEY(source_company_id) REFERENCES companies (company_id),
+	FOREIGN KEY(target_company_id) REFERENCES companies (company_id),
+	FOREIGN KEY(initiated_by_user_id) REFERENCES users (user_id),
+	FOREIGN KEY(based_on_run_id) REFERENCES data_transfer_runs (run_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_data_transfer_runs_source_company_id ON data_transfer_runs (source_company_id);
+CREATE INDEX IF NOT EXISTS ix_data_transfer_runs_target_company_id ON data_transfer_runs (target_company_id);
 
 
 -- ===================================================================
