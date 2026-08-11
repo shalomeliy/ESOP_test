@@ -58,6 +58,7 @@
                     <button onclick="switchTab('grants')" id="nav-grants" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מענקים ואופציות</span><i class="fa-solid fa-file-contract"></i></button>
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>בקשות מימוש</span><i class="fa-solid fa-hand-holding-dollar"></i></button>
                     <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מסמכים</span><i class="fa-solid fa-file-pdf"></i></button>
+                    <button onclick="switchTab('export-import')" id="nav-export-import" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ייצוא וייבוא</span><i class="fa-solid fa-arrow-right-arrow-left"></i></button>
                     <button onclick="switchTab('company')" id="nav-company" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>פרופיל חברה</span><i class="fa-solid fa-gear"></i></button>
                 </nav>
             </div>
@@ -223,6 +224,46 @@
                             </tr>
                         </thead>
                         <tbody id="documents-table-body"><tr><td colspan="8" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- EXPORT / IMPORT (v0.9.1 שלב ב) -->
+            <section id="tab-export-import" class="tab-content space-y-6">
+                <div class="flex justify-between items-center flex-wrap gap-3">
+                    <div>
+                        <h3 class="text-lg font-bold text-white">ייצוא וייבוא נתונים</h3>
+                        <p class="text-xs text-slate-500 mt-1">מייצא/מייבא את נתוני החברה שלך בלבד. לא כולל משתמשים, cap table או קובץ אירועי ledger גולמי.</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <select id="ei-filter-direction" onchange="loadExportImportHistory()" class="bg-slate-900 border border-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2">
+                            <option value="">כל הכיוונים</option>
+                            <option value="EXPORT">ייצוא</option>
+                            <option value="IMPORT_DRY_RUN">ייבוא (בדיקה)</option>
+                            <option value="IMPORT_COMMIT">ייבוא (בוצע)</option>
+                        </select>
+                        <select id="ei-filter-status" onchange="loadExportImportHistory()" class="bg-slate-900 border border-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2">
+                            <option value="">כל הסטטוסים</option>
+                            <option value="SUCCESS">הצליח</option>
+                            <option value="FAILED">נכשל</option>
+                            <option value="COMMITTED">נוצל</option>
+                        </select>
+                        <button onclick="openActionModal('export')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-file-export"></i> ייצוא חדש</button>
+                        <button onclick="openActionModal('import')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium px-4 py-2 rounded-xl transition border border-slate-700"><i class="fa-solid fa-file-import"></i> ייבוא חדש</button>
+                    </div>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">כיוון</th>
+                                <th class="p-3 font-semibold">סטטוס</th>
+                                <th class="p-3 font-semibold">נוצר</th>
+                                <th class="p-3 font-semibold">שורות</th>
+                                <th class="p-3 font-semibold">פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody id="export-import-table-body"><tr><td colspan="5" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
                     </table>
                 </div>
             </section>
@@ -445,8 +486,73 @@
         </div>
     </div>
 
+    <!-- Modal: Export/Import action panel (v0.9.1 שלב ב, PLAN.md §5 מסך 2).
+         idle → uploading → dry-run-running → dry-run-shown → committing → done|failed. -->
+    <div id="ei-action-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-1">
+                <h3 id="ei-action-title" class="text-lg font-bold text-white">ייצוא נתונים</h3>
+                <button onclick="closeActionModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <!-- מצב: ייצוא -->
+            <div id="ei-export-panel">
+                <div id="ei-export-idle">
+                    <p class="text-sm text-slate-400 mb-4">מייצא את כל נתוני החברה שלך (עובדים, מענקים, לוחות הבשלה, בקשות מימוש, מסמכים, חבילות מס רלוונטיות) לקובץ יחיד. לא כולל משתמשים או cap table.</p>
+                    <button onclick="runExport()" id="ei-export-run-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium py-2 rounded-xl transition"><i class="fa-solid fa-file-export"></i> התחל ייצוא</button>
+                </div>
+                <div id="ei-export-result" class="hidden"></div>
+            </div>
+
+            <!-- מצב: ייבוא -->
+            <div id="ei-import-panel" class="hidden">
+                <div id="ei-import-idle">
+                    <p class="text-sm text-slate-400 mb-3">שלב 1: בדיקה בלבד (dry-run). שום שינוי לא נכתב ל-DB לפני שתאשרו את התוצאה בשלב 2.</p>
+                    <input type="file" id="ei-import-file" accept="application/json" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm mb-3">
+                    <button onclick="runDryRun()" id="ei-dryrun-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium py-2 rounded-xl transition">הרץ בדיקה</button>
+                </div>
+                <div id="ei-import-progress" class="hidden text-sm text-slate-400 text-center py-6"><i class="fa-solid fa-spinner fa-spin"></i> <span id="ei-import-progress-text"></span></div>
+                <div id="ei-dryrun-report" class="hidden"></div>
+                <div id="ei-import-done" class="hidden"></div>
+            </div>
+
+            <div id="ei-action-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+        </div>
+    </div>
+
+    <!-- Modal: פרטי ריצה (בעיקר ל-IMPORT_DRY_RUN שלא נפתח בשלב הזה - הספרות
+         היחידות השמורות על שורת ההיסטוריה עצמה הן attempted/succeeded/failed
+         המצרפי; פירוט new/skipped_existing/errors קיים רק בתגובה החיה של
+         ה-dry-run, ראו ei-dryrun-report לעיל, ולא נשמר בנפרד לשורה). -->
+    <div id="ei-run-detail-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-lg font-bold text-white">פרטי ריצה</h3>
+                <button onclick="closeRunDetailModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+            <div id="ei-run-detail-body" class="space-y-2 text-sm"></div>
+        </div>
+    </div>
+
+    <!-- Modal: דוח התאמה (reconciliation) - PLAN.md §5 מסך 1, טבלה רגילה בלי
+         ספריית תרשימים. חישוב חי בכל פתיחה - אין "עדיין לא הותאם" כסטטוס
+         שמור (ראו api/export.py::export_import_reconciliation). -->
+    <div id="ei-reconciliation-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
+        <div class="bg-slate-900 border border-purple-500/30 rounded-2xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-1">
+                <h3 class="text-lg font-bold text-white"><i class="fa-solid fa-clipboard-check text-purple-400"></i> דוח התאמה</h3>
+                <button onclick="closeReconciliationModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-4 font-mono" id="ei-reconciliation-run-id">-</p>
+            <div id="ei-reconciliation-body">
+                <p class="text-sm text-slate-500 text-center py-4">טוען...</p>
+            </div>
+        </div>
+    </div>
+
     <script src="../shared/notifications.js"></script>
     <script src="../shared/documents.js"></script>
+    <script src="../shared/export_import.js"></script>
     <script>
         // כתובת ה-API נגזרת מהמקור שממנו הדף הוגש, כדי שהרצת סנדבוקס על פורט
         // אחר (ESOP_DATABASE_URL + --port 8001, ראו QA_TESTBOOK.md) תפנה באמת
@@ -527,6 +633,7 @@
             if (tabId === "grants") loadGrants();
             if (tabId === "requests") loadRequests();
             if (tabId === "documents") loadDocuments();
+            if (tabId === "export-import") loadExportImportHistory();
             if (tabId === "company") loadCompany();
         }
 
@@ -1112,6 +1219,286 @@
             } finally {
                 button.disabled = false;
             }
+        }
+
+        // --- ייצוא/ייבוא/התאמה (v0.9.1 שלב ב, PLAN.md §8 step 11) --------
+        // אישור קבלה/מסמכים ומיסוי אמיתיים - ראו clients/shared/export_import.js.
+
+        function authHeaderOnly() {
+            // FormData (העלאת קובץ ב-dry-run) קובעת boundary משלה ב-Content-Type -
+            // authHeaders() הרגיל היה דורס אותו ומפיל את הפענוח בשרת.
+            return session ? { "Authorization": `Bearer ${session.token}` } : {};
+        }
+
+        async function loadExportImportHistory() {
+            const tbody = document.getElementById("export-import-table-body");
+            const direction = document.getElementById("ei-filter-direction").value;
+            const status = document.getElementById("ei-filter-status").value;
+            const query = new URLSearchParams();
+            if (direction) query.set("direction", direction);
+            if (status) query.set("status", status);
+            try {
+                const runs = await apiGet(`/admin/export-import/history${query.toString() ? "?" + query : ""}`);
+                tbody.innerHTML = runs.map(r => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3">${ESOPExportImport.directionBadge(r.direction)}</td>
+                        <td class="p-3">${ESOPExportImport.runStatusBadge(r.status)}</td>
+                        <td class="p-3 text-slate-400 text-xs">${ESOPDocuments.formatTimestamp(r.created_at)}</td>
+                        <td class="p-3 text-xs text-slate-300">${ESOPExportImport.rowsSummary(r)}</td>
+                        <td class="p-3 whitespace-nowrap">
+                            <button onclick='openRunDetailModal(${JSON.stringify(r)})' class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-circle-info"></i> פרטים</button>
+                            ${r.direction === "EXPORT" && r.status === "SUCCESS" ? `
+                                <button onclick="downloadExportRun('${r.run_id}', 'json')" class="text-slate-300 hover:text-white text-xs mr-3"><i class="fa-solid fa-download"></i> JSON</button>
+                                <button onclick="downloadExportRun('${r.run_id}', 'csv')" class="text-slate-300 hover:text-white text-xs mr-2"><i class="fa-solid fa-download"></i> CSV</button>` : ""}
+                            ${r.direction === "IMPORT_COMMIT" ? `<button onclick="openReconciliationModal('${r.run_id}')" class="text-purple-400 hover:text-purple-300 text-xs mr-3"><i class="fa-solid fa-clipboard-check"></i> דוח התאמה</button>` : ""}
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="5" class="p-4 text-center text-slate-500">אין פעולות ייצוא/ייבוא עדיין</td></tr>`;
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+            }
+        }
+
+        let eiCurrentDryRunReport = null;
+
+        function openActionModal(mode) {
+            document.getElementById("ei-action-title").textContent = mode === "export" ? "ייצוא נתונים" : "ייבוא נתונים";
+            document.getElementById("ei-export-panel").classList.toggle("hidden", mode !== "export");
+            document.getElementById("ei-import-panel").classList.toggle("hidden", mode !== "import");
+            resetActionModal();
+            document.getElementById("ei-action-modal").classList.add("open");
+        }
+
+        function closeActionModal() {
+            document.getElementById("ei-action-modal").classList.remove("open");
+            loadExportImportHistory();
+        }
+
+        function resetActionModal() {
+            document.getElementById("ei-action-error").classList.add("hidden");
+            document.getElementById("ei-export-idle").classList.remove("hidden");
+            document.getElementById("ei-export-result").classList.add("hidden");
+            document.getElementById("ei-export-result").innerHTML = "";
+            const exportBtn = document.getElementById("ei-export-run-btn");
+            exportBtn.disabled = false;
+            exportBtn.innerHTML = '<i class="fa-solid fa-file-export"></i> התחל ייצוא';
+
+            document.getElementById("ei-import-file").value = "";
+            document.getElementById("ei-import-idle").classList.remove("hidden");
+            document.getElementById("ei-import-progress").classList.add("hidden");
+            document.getElementById("ei-dryrun-report").classList.add("hidden");
+            document.getElementById("ei-dryrun-report").innerHTML = "";
+            document.getElementById("ei-import-done").classList.add("hidden");
+            document.getElementById("ei-import-done").innerHTML = "";
+            eiCurrentDryRunReport = null;
+        }
+
+        async function runExport() {
+            const btn = document.getElementById("ei-export-run-btn");
+            const errBox = document.getElementById("ei-action-error");
+            errBox.classList.add("hidden");
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> מייצא...';
+            try {
+                const res = await fetch(`${API}/admin/export`, { method: "POST", headers: authHeaders() });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                const run = await res.json();
+                document.getElementById("ei-export-idle").classList.add("hidden");
+                const resultBox = document.getElementById("ei-export-result");
+                // "Done" מפרט בדיוק מה אומת בפועל, לא "הייצוא הצליח" - ראו PLAN.md §5.
+                resultBox.innerHTML = `
+                    <div class="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl text-sm mb-3">
+                        <i class="fa-solid fa-circle-check"></i> ${run.rows_succeeded}/${run.rows_attempted} שורות יוצאו.
+                        שכפול ה-ledger ומיסוי לא אומתו כאן - ראו "דוח התאמה" בהיסטוריה אחרי ייבוא ביעד.
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="downloadExportRun('${run.run_id}', 'json')" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm py-2 rounded-xl transition"><i class="fa-solid fa-download"></i> JSON</button>
+                        <button onclick="downloadExportRun('${run.run_id}', 'csv')" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm py-2 rounded-xl transition"><i class="fa-solid fa-download"></i> CSV (zip)</button>
+                    </div>`;
+                resultBox.classList.remove("hidden");
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-file-export"></i> התחל ייצוא';
+            }
+        }
+
+        async function downloadExportRun(runId, format) {
+            try {
+                await ESOPDocuments.downloadDocument(API, `/admin/export/${runId}/download?format=${format}`,
+                    authHeaders(), `export_${runId}.${format === "csv" ? "csv.zip" : "json"}`);
+            } catch (err) { toast(err.message, true); }
+        }
+
+        async function runDryRun() {
+            const fileInput = document.getElementById("ei-import-file");
+            const errBox = document.getElementById("ei-action-error");
+            errBox.classList.add("hidden");
+            if (!fileInput.files.length) {
+                errBox.textContent = "יש לבחור קובץ ייצוא (JSON) להעלאה";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            document.getElementById("ei-import-idle").classList.add("hidden");
+            document.getElementById("ei-import-progress-text").textContent = "מעלה ומריץ בדיקה...";
+            document.getElementById("ei-import-progress").classList.remove("hidden");
+            try {
+                const form = new FormData();
+                form.append("file", fileInput.files[0]);
+                const res = await fetch(`${API}/admin/import/dry-run`, {
+                    method: "POST", headers: authHeaderOnly(), body: form,
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                eiCurrentDryRunReport = await res.json();
+                renderDryRunReport(eiCurrentDryRunReport);
+            } catch (err) {
+                document.getElementById("ei-import-progress").classList.add("hidden");
+                document.getElementById("ei-import-idle").classList.remove("hidden");
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            }
+        }
+
+        function renderDryRunReport(report) {
+            document.getElementById("ei-import-progress").classList.add("hidden");
+            const box = document.getElementById("ei-dryrun-report");
+            const canCommit = report.status === "SUCCESS";
+            const errorRows = report.errors.map(e => `
+                <tr class="border-b border-slate-800/50">
+                    <td class="p-2 text-xs font-mono">${ESOPDocuments.escapeHtml(e.table)}</td>
+                    <td class="p-2 text-xs">${e.index}</td>
+                    <td class="p-2 text-xs font-mono">${ESOPDocuments.orDash(e.row_id)}</td>
+                    <td class="p-2 text-xs text-rose-400">${ESOPDocuments.escapeHtml(e.error)}</td>
+                </tr>`).join("");
+            box.innerHTML = `
+                <p class="text-sm font-bold text-white mb-2">תוצאות הבדיקה</p>
+                <div class="grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div class="bg-slate-950 border border-slate-800 rounded-lg p-2">נבדקו: <b class="text-white">${report.rows_attempted}</b></div>
+                    <div class="bg-slate-950 border border-slate-800 rounded-lg p-2">חדשות: <b class="text-emerald-400">${report.rows_new}</b></div>
+                    <div class="bg-slate-950 border border-slate-800 rounded-lg p-2">קיימות (יידלגו): <b class="text-slate-300">${report.rows_skipped_existing}</b></div>
+                    <div class="bg-slate-950 border border-slate-800 rounded-lg p-2">לא ניתנות להעברה: <b class="text-amber-400">${report.rows_not_portable}</b></div>
+                </div>
+                ${report.rows_failed ? `
+                    <div class="p-2 mb-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-lg text-xs">
+                        <i class="fa-solid fa-triangle-exclamation"></i> ${report.rows_failed} שורות נכשלו - הייבוא חסום כל עוד יש שגיאה אחת. ראו פירוט:
+                    </div>
+                    <div class="max-h-40 overflow-y-auto border border-slate-800 rounded-lg mb-3">
+                        <table class="w-full text-right text-xs">
+                            <thead><tr class="text-slate-500 border-b border-slate-800"><th class="p-2">טבלה</th><th class="p-2">שורה</th><th class="p-2">מזהה</th><th class="p-2">שגיאה</th></tr></thead>
+                            <tbody>${errorRows}</tbody>
+                        </table>
+                    </div>` : ""}
+                <p class="text-xs text-slate-500 mb-3">בדיקה בלבד - שום שינוי לא נכתב עדיין. "אשר ובצע ייבוא" הוא הפעולה שכותבת בפועל.</p>
+                <div class="flex gap-2">
+                    <button onclick="submitImportCommit()" ${canCommit ? "" : "disabled"} class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium py-2 rounded-xl transition">אשר ובצע ייבוא</button>
+                    <button onclick="resetActionModal()" class="px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm py-2 rounded-xl transition">בטל, התחל מחדש</button>
+                </div>`;
+            box.classList.remove("hidden");
+        }
+
+        async function submitImportCommit() {
+            if (!eiCurrentDryRunReport) return;
+            const box = document.getElementById("ei-dryrun-report");
+            const errBox = document.getElementById("ei-action-error");
+            errBox.classList.add("hidden");
+            box.classList.add("hidden");
+            document.getElementById("ei-import-progress-text").textContent = "מבצע ייבוא...";
+            document.getElementById("ei-import-progress").classList.remove("hidden");
+            try {
+                const res = await fetch(`${API}/admin/import/commit`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ dry_run_id: eiCurrentDryRunReport.run_id }),
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                renderImportDone(await res.json());
+            } catch (err) {
+                document.getElementById("ei-import-progress").classList.add("hidden");
+                box.classList.remove("hidden");
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            }
+        }
+
+        function renderImportDone(report) {
+            document.getElementById("ei-import-progress").classList.add("hidden");
+            const notPortableText = report.rows_not_portable
+                ? ` · ${report.rows_not_portable} לא ניתנות להעברה (הגדרות התראה אישיות - לא נכתבו)` : "";
+            const doneBox = document.getElementById("ei-import-done");
+            // "Done" מפרט מה נכתב ומה לא אומת - ראו PLAN.md §5.
+            doneBox.innerHTML = `
+                <div class="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl text-sm mb-3">
+                    <i class="fa-solid fa-circle-check"></i> ${report.rows_written} שורות נכתבו, ${report.rows_skipped_existing} כבר היו קיימות ולא נכתבו מחדש${notPortableText}.
+                    הבשלה ומיסוי לא אומתו כאן - פתחו את דוח ההתאמה.
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="closeActionModal(); openReconciliationModal('${report.run_id}')" class="flex-1 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium py-2 rounded-xl transition"><i class="fa-solid fa-clipboard-check"></i> פתח דוח התאמה</button>
+                    <button onclick="closeActionModal()" class="px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm py-2 rounded-xl transition">סגור</button>
+                </div>`;
+            doneBox.classList.remove("hidden");
+        }
+
+        function openRunDetailModal(run) {
+            document.getElementById("ei-run-detail-body").innerHTML = `
+                <div class="flex justify-between"><span class="text-slate-500">מזהה ריצה</span><span class="font-mono text-xs text-slate-300">${run.run_id}</span></div>
+                <div class="flex justify-between items-center"><span class="text-slate-500">כיוון</span>${ESOPExportImport.directionBadge(run.direction)}</div>
+                <div class="flex justify-between items-center"><span class="text-slate-500">סטטוס</span>${ESOPExportImport.runStatusBadge(run.status)}</div>
+                <div class="flex justify-between"><span class="text-slate-500">נוצר</span><span class="text-slate-300">${ESOPDocuments.formatTimestamp(run.created_at)}</span></div>
+                <div class="flex justify-between"><span class="text-slate-500">גרסת סכימה</span><span class="text-slate-300 font-mono text-xs">${run.export_schema_version}</span></div>
+                <div class="border-t border-slate-800 my-2"></div>
+                <div class="flex justify-between"><span class="text-slate-500">שורות שנבדקו</span><span class="text-white">${run.rows_attempted}</span></div>
+                <div class="flex justify-between"><span class="text-slate-500">הצליחו</span><span class="text-emerald-400">${run.rows_succeeded}</span></div>
+                <div class="flex justify-between"><span class="text-slate-500">נכשלו</span><span class="${run.rows_failed ? "text-rose-400" : "text-slate-300"}">${run.rows_failed}</span></div>
+                ${run.direction === "IMPORT_DRY_RUN" || run.direction === "IMPORT_COMMIT" ? `<p class="text-xs text-slate-500 pt-2">פירוט "חדשות מול קיימות מול לא-ניתנות-להעברה" ורשימת שגיאות/שורות שנכתבו מוצג רק ברגע הרצת הבדיקה/הייבוא - לא נשמר על שורת ההיסטוריה עצמה.</p>` : ""}
+            `;
+            document.getElementById("ei-run-detail-modal").classList.add("open");
+        }
+
+        function closeRunDetailModal() {
+            document.getElementById("ei-run-detail-modal").classList.remove("open");
+        }
+
+        async function openReconciliationModal(runId) {
+            document.getElementById("ei-reconciliation-run-id").textContent = runId;
+            const body = document.getElementById("ei-reconciliation-body");
+            body.innerHTML = `<p class="text-sm text-slate-500 text-center py-4">טוען...</p>`;
+            document.getElementById("ei-reconciliation-modal").classList.add("open");
+            try {
+                const report = await apiGet(`/admin/export-import/${runId}/reconciliation`);
+                const mismatchRows = report.mismatches.map(m => `
+                    <tr class="border-b border-slate-800/50">
+                        <td class="p-2 text-xs">${ESOPDocuments.escapeHtml(m.entity_type)}</td>
+                        <td class="p-2 text-xs font-mono">${ESOPDocuments.escapeHtml(m.entity_id.slice(0, 8))}...</td>
+                        <td class="p-2 text-xs">${ESOPDocuments.escapeHtml(m.field_name)}</td>
+                        <td class="p-2 text-xs text-slate-300">${ESOPExportImport.mismatchValue(m.source_value)}</td>
+                        <td class="p-2 text-xs text-amber-300">${ESOPExportImport.mismatchValue(m.target_value)}</td>
+                        <td class="p-2 text-xs text-slate-400">${ESOPDocuments.escapeHtml(m.reason)}</td>
+                    </tr>`).join("");
+                body.innerHTML = `
+                    <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+                        <span class="text-xs text-slate-500">נכון ל-<span class="font-mono">${report.as_of}</span> · ${report.grants_checked} מענקים ו-${report.exercises_checked} מימושים נבדקו</span>
+                        ${ESOPExportImport.matchCell(report.clean, report.mismatches.length)}
+                    </div>
+                    ${report.mismatches.length ? `
+                        <div class="border border-slate-800 rounded-xl overflow-x-auto mb-4">
+                            <table class="w-full text-right text-xs">
+                                <thead><tr class="text-slate-500 border-b border-slate-800"><th class="p-2">סוג ישות</th><th class="p-2">מזהה</th><th class="p-2">שדה</th><th class="p-2">ערך במקור</th><th class="p-2">ערך ביעד</th><th class="p-2">הסבר</th></tr></thead>
+                                <tbody>${mismatchRows}</tbody>
+                            </table>
+                        </div>` : ""}
+                    <div class="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                        <p class="text-xs font-bold text-slate-300 mb-1">מגבלות ידועות של הבדיקה הזו</p>
+                        <ul class="text-xs text-slate-500 list-disc pr-4 space-y-1">
+                            ${report.known_limitations.map(l => `<li>${ESOPDocuments.escapeHtml(l)}</li>`).join("")}
+                        </ul>
+                    </div>`;
+            } catch (err) {
+                body.innerHTML = `<p class="text-sm text-red-400 text-center py-4">${ESOPDocuments.escapeHtml(err.message)}</p>`;
+            }
+        }
+
+        function closeReconciliationModal() {
+            document.getElementById("ei-reconciliation-modal").classList.remove("open");
         }
 
         async function reviewRequest(id, approve) {
