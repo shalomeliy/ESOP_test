@@ -1,14 +1,16 @@
 import io
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import User, UserRole, DataTransferRun, DataTransferDirection, DataTransferStatus
 from backend.app.schemas import (
     DataTransferRunOut, ImportCommitReportOut, ImportCommitRequest, ImportDryRunReportOut,
-    ImportRowErrorOut,
+    ImportRowErrorOut, ReconciliationMismatchOut, ReconciliationReportOut,
 )
 from backend.app.services.audit import record_audit_event
 from backend.app.services.export import (
@@ -20,6 +22,7 @@ from backend.app.services.import_ import (
     ImportTooManyRowsError, InvalidImportBundleError, MAX_IMPORT_FILE_BYTES,
     commit as commit_import, dry_run, parse_and_validate_bundle_shape,
 )
+from backend.app.services.reconciliation import reconcile
 from backend.app.auth import require_roles
 
 router = APIRouter()
@@ -226,4 +229,84 @@ def import_commit(payload: ImportCommitRequest,
         run_id=run.run_id, status=run.status.value, rows_attempted=report.rows_attempted,
         rows_written=report.rows_written, rows_skipped_existing=report.rows_skipped_existing,
         rows_not_portable=report.rows_not_portable, rows_failed=report.rows_failed,
+    )
+
+
+# ===================================================================
+# היסטוריה + דוח התאמה (PLAN.md §8 step 10) - שתי קריאות בלבד, לא endpoint
+# חדש לכל כיוון. "היסטוריה" היא מסך אחד בפורטל האדמין (§5) שמציג ייצוא
+# וייבוא יחד - ולכן scoping לפי source_company_id *או* target_company_id,
+# לא רק אחד מהם (בשונה מ-download_export/import_commit, ששייכים תמיד
+# לכיוון יחיד ידוע מראש).
+# ===================================================================
+
+_HISTORY_DIRECTIONS = {d.value for d in DataTransferDirection}
+_HISTORY_STATUSES = {s.value for s in DataTransferStatus}
+
+
+@router.get("/admin/export-import/history", response_model=List[DataTransferRunOut])
+def export_import_history(direction: Optional[str] = None, status: Optional[str] = None,
+                          current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                          db: Session = Depends(get_db)):
+    if direction is not None and direction not in _HISTORY_DIRECTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"direction must be one of {sorted(_HISTORY_DIRECTIONS)}")
+    if status is not None and status not in _HISTORY_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_HISTORY_STATUSES)}")
+
+    query = db.query(DataTransferRun).filter(
+        or_(DataTransferRun.source_company_id == current_user.company_id,
+           DataTransferRun.target_company_id == current_user.company_id)
+    )
+    if direction is not None:
+        query = query.filter(DataTransferRun.direction == DataTransferDirection(direction))
+    if status is not None:
+        query = query.filter(DataTransferRun.status == DataTransferStatus(status))
+    return query.order_by(DataTransferRun.created_at.desc()).all()
+
+
+@router.get("/admin/export-import/{run_id}/reconciliation", response_model=ReconciliationReportOut)
+def export_import_reconciliation(run_id: str,
+                                 current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                                 db: Session = Depends(get_db)):
+    """reconcile() (task #9) הוא חישוב חי, לא מצב שמור - אין "לא הותאם עדיין"
+    במובן של סטטוס שממתין לרקע. run_id שלא קיים או שאינו IMPORT_COMMIT הוא
+    404 רגיל - "אין כאן דוח להציג", אותו דפוס בדיוק כמו download_export/
+    import_commit. bundle חסר (עמודת file_path ריקה, או שהקובץ נמחק
+    מהדיסק אחרי ה-commit) הוא **500**, לא 404 - אותה הבחנה בדיוק שכבר קיימת
+    ב-download_export/import_commit: run שקיים ותקין-לכאורה אבל הארטיפקט
+    שלו נעדר הוא כשל אחסון בשרת, לא "לא נמצא" מנקודת המבט של הלקוח (תוקן
+    מול סקירה עצמאית - הניסוח הקודם כאן טען 404 בלי לבדוק את הדיסק בפועל,
+    ולכן היה קורס ב-500 לא-מטופל בפועל)."""
+    run = db.query(DataTransferRun).filter(DataTransferRun.run_id == run_id).first()
+    if not run or run.direction != DataTransferDirection.IMPORT_COMMIT:
+        raise HTTPException(status_code=404, detail="Reconciliation not available for this run")
+    if run.target_company_id != current_user.company_id:
+        raise HTTPException(status_code=403, detail="This run does not belong to your company")
+
+    dry_run_row = (
+        db.query(DataTransferRun).filter(DataTransferRun.run_id == run.based_on_run_id).first()
+        if run.based_on_run_id else None
+    )
+    if not dry_run_row or not dry_run_row.file_path:
+        raise HTTPException(status_code=500, detail="Reconciliation source bundle is missing from storage")
+    full_path = EXPORT_STORE_DIR / dry_run_row.file_path
+    if not full_path.exists():
+        raise HTTPException(status_code=500, detail="Reconciliation source bundle is missing from storage")
+
+    bundle = read_export_json(dry_run_row.file_path)
+    report = reconcile(db, bundle)
+
+    record_audit_event(db, "DataTransferRun", run.run_id, "RECONCILED", current_user.user_id,
+                       after={"clean": report.clean, "mismatch_count": len(report.mismatches)})
+    db.commit()
+
+    return ReconciliationReportOut(
+        run_id=run.run_id, as_of=report.as_of, grants_checked=report.grants_checked,
+        exercises_checked=report.exercises_checked, clean=report.clean,
+        mismatches=[ReconciliationMismatchOut(entity_type=m.entity_type, entity_id=m.entity_id,
+                                              field_name=m.field_name, source_value=m.source_value,
+                                              target_value=m.target_value, reason=m.reason)
+                   for m in report.mismatches],
+        known_limitations=report.known_limitations,
     )

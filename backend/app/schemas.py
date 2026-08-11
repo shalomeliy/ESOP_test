@@ -398,3 +398,25 @@ class ImportCommitReportOut(BaseModel):
     rows_skipped_existing: int
     rows_not_portable: int = 0
     rows_failed: int
+
+
+class ReconciliationMismatchOut(BaseModel):
+    """שורת אי-התאמה אחת (PLAN.md §8 step 10). source_value/target_value הם
+    Any בכוונה - הערך יכול להיות float (סכום/שיעור), date (table_effective_date)
+    או str (method), תלוי איזה שדה סטה (services/reconciliation.py)."""
+    entity_type: str
+    entity_id: str
+    field_name: str
+    source_value: Optional[Any] = None
+    target_value: Optional[Any] = None
+    reason: str
+
+
+class ReconciliationReportOut(BaseModel):
+    run_id: str
+    as_of: date
+    grants_checked: int
+    exercises_checked: int
+    clean: bool
+    mismatches: List[ReconciliationMismatchOut]
+    known_limitations: List[str]
