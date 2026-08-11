@@ -5,7 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import Company, ShareClass, Shareholder, ShareIssuance, User, UserRole
+from backend.app.models import Company, Employee, ShareClass, Shareholder, ShareIssuance, User, UserRole
 from backend.app.schemas import (
     CreateShareClassRequest, ShareClassOut,
     CreateShareholderRequest, ShareholderOut,
@@ -60,6 +60,18 @@ def list_share_classes(current_user: User = Depends(require_roles(UserRole.COMPA
 def create_shareholder(payload: CreateShareholderRequest,
                        current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                        db: Session = Depends(get_db)):
+    # employee_id הוא FK אופציונלי (בעל מניות לא חייב להיות עובד) - נבדק
+    # מפורשות רק כשניתן, לפני ה-insert: גם קיום השורה (מונע IntegrityError
+    # גולמי שחוזר כ-500) וגם שיוך לחברה הנכונה (מונע קישור בעל-מניות של
+    # חברה A לעובד של חברה B). אותו דפוס בדיוק כמו בדיקת shareholder/share_class
+    # ב-create_share_issuance למעלה.
+    if payload.employee_id is not None:
+        employee = db.query(Employee).filter(Employee.employee_id == payload.employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if employee.company_id != current_user.company_id:
+            raise HTTPException(status_code=403, detail="Cannot link shareholder to an employee outside your company")
+
     shareholder = Shareholder(
         company_id=current_user.company_id,
         name=payload.name,
