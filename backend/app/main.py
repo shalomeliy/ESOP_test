@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api import (
     auth, employees, company, grants, exercise_requests, audit, ledger,
     trustee, employee_dashboard, documents, notifications, search_meta, export,
+    cap_table,
 )
 from backend.app.version import VERSION, get_version
 
@@ -56,6 +57,7 @@ app.include_router(trustee.router, prefix="/api/v1", tags=["trustee"])
 app.include_router(employee_dashboard.router, prefix="/api/v1", tags=["employee_dashboard"])
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
 app.include_router(export.router, prefix="/api/v1", tags=["export"])
+app.include_router(cap_table.router, prefix="/api/v1", tags=["cap_table"])
 
 # הגשת הקליינטים (UI) ישירות מהשרת
 app.mount("/clients", StaticFiles(directory="clients"), name="clients")

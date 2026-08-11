@@ -125,12 +125,17 @@ class EmployeeCreateResponse(EmployeeOut):
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
     country_code: Optional[str] = None
+    # v1.0.0 שלב א: Optional ולא ברירת מחדל - None משמעו "לא נגיעה בערך הקיים",
+    # אותה מוסכמה כמו שאר השדות ב-request הזה, לא "אפס מניות מאושרות".
+    total_authorized_shares: Optional[float] = None
 
 class CompanyOut(BaseModel):
     company_id: str
     name: str
     country_code: str
     is_active: bool
+    # None = לא הוזן עדיין (חברות קיימות שנזרעו לפני v1.0.0) - ראו הערת models.py.Company.
+    total_authorized_shares: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -155,8 +160,20 @@ class PoolOut(BaseModel):
     total_shares: float
     allocated_shares: float
     unallocated_shares: float
+    # v1.0.0 שלב א: None לפולים קיימים/מזורעים שנוצרו לפני שיוך סוגי מניה - ראו
+    # models.py.OptionPool.share_class_id.
+    share_class_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CreatePoolRequest(BaseModel):
+    """v1.0.0 שלב א: יצירת פול אופציות נוסף - עד כה רק seed_data.py יצר פול,
+    ואין endpoint אמיתי (ראו התכנון). established_date הוא קלט מפורש מהקורא,
+    לא מהשעון - אותו דפוס בדיוק כמו Grant.grant_date/ShareIssuance.issue_date."""
+    total_shares: float
+    share_class_id: Optional[str] = None
+    established_date: date
 
 
 # ===================================================================
@@ -420,3 +437,56 @@ class ReconciliationReportOut(BaseModel):
     clean: bool
     mismatches: List[ReconciliationMismatchOut]
     known_limitations: List[str]
+
+
+# ===================================================================
+# טבלת הון (Cap Table) - סוגי מניות, בעלי מניות, הקצאות מניות (v1.0.0 שלב א)
+# ===================================================================
+
+class CreateShareClassRequest(BaseModel):
+    name: str
+    class_type: str
+    seniority_order: int
+
+class ShareClassOut(BaseModel):
+    share_class_id: str
+    company_id: str
+    name: str
+    class_type: str
+    seniority_order: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CreateShareholderRequest(BaseModel):
+    name: str
+    shareholder_type: str
+    # None = משקיע חיצוני שאינו עובד קיים במערכת - ראו models.py.Shareholder.employee_id.
+    employee_id: Optional[str] = None
+
+class ShareholderOut(BaseModel):
+    shareholder_id: str
+    company_id: str
+    name: str
+    shareholder_type: str
+    employee_id: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CreateShareIssuanceRequest(BaseModel):
+    shareholder_id: str
+    share_class_id: str
+    shares: float
+    # קלט מפורש מהקורא, לעולם לא מהשעון - ראו models.py.ShareIssuance.issue_date.
+    issue_date: date
+
+class ShareIssuanceOut(BaseModel):
+    share_issuance_id: str
+    company_id: str
+    shareholder_id: str
+    share_class_id: str
+    shares: float
+    issue_date: date
+
+    model_config = ConfigDict(from_attributes=True)

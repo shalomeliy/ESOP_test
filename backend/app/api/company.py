@@ -27,13 +27,17 @@ def update_my_company(payload: CompanyUpdateRequest, current_user: User = Depend
     comp = db.query(Company).filter(Company.company_id == current_user.company_id).first()
     if not comp:
         raise HTTPException(status_code=404, detail="Company not found")
-    before = {"name": comp.name, "country_code": comp.country_code}
+    before = {"name": comp.name, "country_code": comp.country_code,
+              "total_authorized_shares": comp.total_authorized_shares}
     if payload.name is not None:
         comp.name = payload.name
     if payload.country_code is not None:
         comp.country_code = payload.country_code
+    if payload.total_authorized_shares is not None:
+        comp.total_authorized_shares = payload.total_authorized_shares
     record_audit_event(db, "Company", comp.company_id, "UPDATE", current_user.user_id,
-                        before=before, after={"name": comp.name, "country_code": comp.country_code})
+                        before=before, after={"name": comp.name, "country_code": comp.country_code,
+                                              "total_authorized_shares": comp.total_authorized_shares})
     db.commit()
     db.refresh(comp)
     return comp
