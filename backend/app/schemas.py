@@ -16,7 +16,7 @@ class ExerciseSimulationRequest(BaseModel):
 class ExerciseSimulationResponse(BaseModel):
     grant_id: str
     is_trustee_holding_period_met: bool
-    holding_period_end_date: date
+    holding_period_end_date: Optional[date] = None
     current_stock_price: float
     total_exercise_cost: float
     estimated_tax_amount: float
@@ -128,6 +128,8 @@ class CompanyUpdateRequest(BaseModel):
     # v1.0.0 שלב א: Optional ולא ברירת מחדל - None משמעו "לא נגיעה בערך הקיים",
     # אותה מוסכמה כמו שאר השדות ב-request הזה, לא "אפס מניות מאושרות".
     total_authorized_shares: Optional[float] = None
+    # v1.0.1: אותה מוסכמה בדיוק - None = לא נגיעה בערך הקיים, לא "אפס ימים".
+    acknowledgment_window_days: Optional[int] = None
 
 class CompanyOut(BaseModel):
     company_id: str
@@ -136,6 +138,8 @@ class CompanyOut(BaseModel):
     is_active: bool
     # None = לא הוזן עדיין (חברות קיימות שנזרעו לפני v1.0.0) - ראו הערת models.py.Company.
     total_authorized_shares: Optional[float] = None
+    # None = אין override, המסמכים משתמשים ב-ACKNOWLEDGMENT_WINDOW_DAYS הגלובלי.
+    acknowledgment_window_days: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

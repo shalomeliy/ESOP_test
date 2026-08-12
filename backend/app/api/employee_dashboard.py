@@ -6,7 +6,7 @@ from backend.app.types import business_today
 from backend.app.models import Employee, User, UserRole
 from backend.app.services.engine import DeterministicESOPEngine, MissingVestingScheduleError
 from backend.app.auth import require_roles
-from backend.app.api.exercise_requests import _vested_at
+from backend.app.api.exercise_requests import _vested_at, _trustee_holding_status
 
 router = APIRouter()
 
@@ -29,7 +29,7 @@ def get_employee_dashboard(employee_id: str, current_user: User = Depends(requir
     today = business_today()
 
     for grant in employee.grants:
-        is_trustee_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, today)
+        is_trustee_met, end_date = _trustee_holding_status(grant, today)
         is_within_ptw, ptw_deadline = DeterministicESOPEngine.check_post_termination_exercise_window(
             grant, employee, today
         )
@@ -49,7 +49,7 @@ def get_employee_dashboard(employee_id: str, current_user: User = Depends(requir
             "vesting_data_missing": vesting_data_missing,
             "exercise_price": grant.exercise_price,
             "is_trustee_holding_period_met": is_trustee_met,
-            "holding_period_end_date": str(end_date),
+            "holding_period_end_date": str(end_date) if end_date else None,
             "is_within_post_termination_window": is_within_ptw,
             "post_termination_exercise_deadline": str(ptw_deadline) if ptw_deadline else None,
         })
