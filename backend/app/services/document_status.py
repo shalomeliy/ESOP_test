@@ -57,10 +57,16 @@ def expire_if_due(db, document: Document) -> Document:
     return document
 
 
-def deadline_for(sent_at):
+def deadline_for(sent_at, window_days: "int | None" = None):
     """מועד הפקיעה הנגזר משליחה. פונקציה ולא חישוב inline כדי שיהיה מקום אחד
-    יחיד שהבדיקות והקוד מסכימים עליו."""
-    return sent_at + timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
+    יחיד שהבדיקות והקוד מסכימים עליו.
+
+    ``window_days=None`` (ברירת המחדל, ולא הערך הפתור-כבר) שומר את הפונקציה
+    טהורה - בלי תלות ב-DB - והקורא הוא זה שפותר את override החברה (או
+    ברירת המחדל) *לפני* הקריאה, לא הפונקציה הזו. חיבור timestamp ולא תאריך
+    קלנדרי - זה בדיוק מה שמונע את פתיחת מחדש של באג האזור-הזמן (ח1/ח2)."""
+    days = window_days if window_days is not None else ACKNOWLEDGMENT_WINDOW_DAYS
+    return sent_at + timedelta(days=days)
 
 
 def assert_is_current_version(is_latest: bool, target: DocumentStatus) -> None:

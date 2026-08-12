@@ -412,6 +412,11 @@
                         <p class="text-[10px] text-slate-500 mt-1">משמש לחישוב אחוזי הדילול בטבלת ההון. השדה ריק בשמירה = לא נוגע בערך הקיים (לא מאפס אותו).</p>
                     </div>
                     <div>
+                        <label class="block text-xs text-slate-400 mb-1">חלון אישור מסמכים (ימים, אופציונלי)</label>
+                        <input id="company-ack-window-field" type="number" min="1" placeholder="לא הוגדר - ברירת מחדל 30 יום" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                        <p class="text-[10px] text-slate-500 mt-1">כמה ימים בקשת אישור קבלה נשארת תקפה מרגע השליחה. השדה ריק בשמירה = לא נוגע בערך הקיים; לא הוגדר בכלל = ברירת המחדל (30 יום). משפיע רק על מסמכים שיישלחו מעתה, לא רטרואקטיבית.</p>
+                    </div>
+                    <div>
                         <label class="block text-xs text-slate-400 mb-1">סטטוס</label>
                         <span id="company-active-badge" class="text-xs px-2 py-1 rounded border">-</span>
                     </div>
@@ -2089,6 +2094,9 @@
                 document.getElementById("company-authorized-shares-field").value =
                     (comp.total_authorized_shares === null || comp.total_authorized_shares === undefined)
                         ? "" : comp.total_authorized_shares;
+                document.getElementById("company-ack-window-field").value =
+                    (comp.acknowledgment_window_days === null || comp.acknowledgment_window_days === undefined)
+                        ? "" : comp.acknowledgment_window_days;
                 const badge = document.getElementById("company-active-badge");
                 if (comp.is_active) {
                     badge.textContent = "פעילה";
@@ -2112,6 +2120,10 @@
                 const authorizedSharesRaw = document.getElementById("company-authorized-shares-field").value;
                 if (authorizedSharesRaw !== "") {
                     payload.total_authorized_shares = parseFloat(authorizedSharesRaw);
+                }
+                const ackWindowRaw = document.getElementById("company-ack-window-field").value;
+                if (ackWindowRaw !== "") {
+                    payload.acknowledgment_window_days = parseInt(ackWindowRaw, 10);
                 }
                 const res = await fetch(`${API}/admin/company`, {
                     method: "PUT", headers: authHeaders(),

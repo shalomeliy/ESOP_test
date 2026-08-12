@@ -95,7 +95,9 @@ def _transition_document(db: Session, document: Document, target: DocumentStatus
     now = utcnow()
     if target == DocumentStatus.SENT:
         document.sent_at = now
-        document.expires_at = deadline_for(now)
+        window_days = db.query(Company.acknowledgment_window_days).filter(
+            Company.company_id == document.company_id).scalar()
+        document.expires_at = deadline_for(now, window_days)
     elif target == DocumentStatus.ACKNOWLEDGED:
         document.acknowledged_at = now
         document.acknowledged_by_user_id = current_user.user_id

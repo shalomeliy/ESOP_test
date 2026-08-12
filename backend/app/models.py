@@ -31,6 +31,18 @@ class Company(Base):
     # (חישוב דילול) חייב להתייחס במפורש ל-None כ"לא זמין" ולעולם לא להציג 0%
     # דלילות בלי הערך הזה. זה בדיוק דפוס הכשל P4 המתועד ב-QA_TESTBOOK.md.
     total_authorized_shares = Column(Float, nullable=True)
+    # nullable=True: אותו דפוס בדיוק כמו total_authorized_shares - None אומר
+    # "אין override, השתמש בקבוע הגלובלי" (ACKNOWLEDGMENT_WINDOW_DAYS), ולא 0.
+    # ה-CHECK דוחה 0/שלילי: "פוקע מיד בשליחה" אינו צורך שהוצהר, וטעות הקלדה
+    # כאן (למשל שכחת ה-30) הייתה הופכת כל מסמך חדש לפג-תוקף באותו רגע.
+    acknowledgment_window_days = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "acknowledgment_window_days IS NULL OR acknowledgment_window_days > 0",
+            name="ck_companies_acknowledgment_window_days_positive",
+        ),
+    )
 
     pools = relationship("OptionPool", back_populates="company")
     employees = relationship("Employee", back_populates="company")

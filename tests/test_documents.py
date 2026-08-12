@@ -4,7 +4,7 @@
 מיפוי ל-docs/qa/v0.9.0.md.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -738,3 +738,109 @@ def test_expiry_does_not_touch_an_already_acknowledged_document(client, world, s
     listed = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
                   if d["document_id"] == sent_document)
     assert listed["status"] == "ACKNOWLEDGED"
+
+
+# ===================================================================
+# v1.0.1 (debt item 4) - חלון האישור פר-חברה. ברירת המחדל (None) ממשיכה
+# להתנהג בדיוק כמו קודם (30 יום, הקבוע הגלובלי); override מפורש (positive
+# integer) גובר עליו לחברה הזו בלבד, ומהרגע שהוגדר ואילך - לא רטרואקטיבית.
+# ===================================================================
+
+def test_default_window_stays_thirty_days_when_the_company_has_no_override(client, world, sent_document):
+    company = world.db.query(Company).filter(Company.company_id == "C-A").first()
+    assert company.acknowledgment_window_days is None, "ברירת המחדל היא 'אין override', לא 0/30"
+
+    doc = _document(world, sent_document)
+    assert doc.expires_at - doc.sent_at == timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
+
+
+def test_company_override_changes_the_window_for_documents_sent_after_it_is_set(client, world, grant_id):
+    override = client.put(f"{API}/admin/company", headers=world.admin_a,
+                          json={"acknowledgment_window_days": 10})
+    assert override.status_code == 200, override.text
+    assert override.json()["acknowledgment_window_days"] == 10
+
+    gen = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                      json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    document_id = gen.json()["document_id"]
+    sent = client.post(f"{API}/admin/documents/{document_id}/send", headers=world.admin_a)
+    assert sent.status_code == 200, sent.text
+
+    doc = _document(world, document_id)
+    assert doc.expires_at - doc.sent_at == timedelta(days=10), (
+        "10 יום מה-override, לא 30 מהקבוע הגלובלי")
+
+
+@pytest.mark.parametrize("bad_value", [0, -5])
+def test_put_company_rejects_a_non_positive_acknowledgment_window_days(client, world, bad_value):
+    """400 נקי לפני שמגיע ל-CHECK constraint (ck_companies_acknowledgment_window_days_positive) -
+    לא 500 גולמי מ-IntegrityError."""
+    response = client.put(f"{API}/admin/company", headers=world.admin_a,
+                          json={"acknowledgment_window_days": bad_value})
+    assert response.status_code == 400
+    assert "acknowledgment_window_days" in response.json()["detail"]
+
+    company = world.db.query(Company).filter(Company.company_id == "C-A").first()
+    assert company.acknowledgment_window_days is None, "בקשה שנדחתה לא אמורה לכתוב שום דבר"
+
+
+def test_a_document_sent_before_the_feature_existed_is_unaffected_by_a_later_company_override(
+        client, world, sent_document):
+    """מסמך היסטורי עם expires_at=NULL (נשלח לפני שהתכונה קיימה) - override
+    שנוסף לחברה אחר-כך אינו רטרואקטיבי: expires_at נשאר NULL, אין דדליין
+    חדש שמוחל בדיעבד על שורה שכבר נכתבה."""
+    doc = _document(world, sent_document)
+    doc.expires_at = None
+    world.db.commit()
+
+    override = client.put(f"{API}/admin/company", headers=world.admin_a,
+                          json={"acknowledgment_window_days": 5})
+    assert override.status_code == 200, override.text
+
+    listed = next(d for d in client.get(f"{API}/admin/documents", headers=world.admin_a).json()
+                  if d["document_id"] == sent_document)
+    assert listed["expires_at"] is None
+    assert listed["status"] == "SENT"
+
+
+def test_changing_the_override_after_sending_does_not_change_the_already_stored_expires_at(
+        client, world, grant_id):
+    """מסמך שנשלח תחת override=10 שומר על expires_at המקורי שלו גם אחרי
+    שהחברה משנה את ה-override ל-20 - רק מסמכים *חדשים* שיישלחו אחר-כך
+    מקבלים את הערך החדש."""
+    client.put(f"{API}/admin/company", headers=world.admin_a, json={"acknowledgment_window_days": 10})
+    gen1 = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                       json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    doc1_id = gen1.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc1_id}/send", headers=world.admin_a)
+    doc1_expires_at_first = _document(world, doc1_id).expires_at
+
+    client.put(f"{API}/admin/company", headers=world.admin_a, json={"acknowledgment_window_days": 20})
+
+    doc1_after_change = _document(world, doc1_id)
+    assert doc1_after_change.expires_at == doc1_expires_at_first, (
+        "שינוי ה-override אחרי השליחה לא אמור לגעת במסמך שכבר נשלח")
+
+    gen2 = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                       json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    doc2_id = gen2.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc2_id}/send", headers=world.admin_a)
+    doc2 = _document(world, doc2_id)
+    assert doc2.expires_at - doc2.sent_at == timedelta(days=20), "מסמך חדש מקבל את ה-override הנוכחי"
+
+
+def test_deadline_for_adds_exact_days_across_a_month_boundary_not_calendar_days():
+    """deadline_for() - חיבור timestamp ולא תאריך קלנדרי. sent_at קרוב לגבול
+    חודש + window_days מותאם: sent_at + N days בדיוק, גם כשזה חוצה חודש/שנה -
+    אותו עיקרון בדיוק כמו ח1/ח2 (HANDOFF.md): אין חשבון ימי-קלנדר, יש
+    אריתמטיקת timestamp."""
+    from backend.app.services.document_status import deadline_for
+
+    sent_at = datetime(2024, 1, 25, 23, 30, tzinfo=timezone.utc)  # קרוב לגבול חודש/שנה
+    result = deadline_for(sent_at, window_days=10)
+
+    assert result == sent_at + timedelta(days=10)
+    assert result == datetime(2024, 2, 4, 23, 30, tzinfo=timezone.utc)
+
+    # window_days=None נופל לברירת המחדל הגלובלית - אותה בדיקה, בלי override.
+    assert deadline_for(sent_at) == sent_at + timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)

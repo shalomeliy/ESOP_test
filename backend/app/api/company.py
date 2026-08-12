@@ -28,16 +28,26 @@ def update_my_company(payload: CompanyUpdateRequest, current_user: User = Depend
     if not comp:
         raise HTTPException(status_code=404, detail="Company not found")
     before = {"name": comp.name, "country_code": comp.country_code,
-              "total_authorized_shares": comp.total_authorized_shares}
+              "total_authorized_shares": comp.total_authorized_shares,
+              "acknowledgment_window_days": comp.acknowledgment_window_days}
     if payload.name is not None:
         comp.name = payload.name
     if payload.country_code is not None:
         comp.country_code = payload.country_code
     if payload.total_authorized_shares is not None:
         comp.total_authorized_shares = payload.total_authorized_shares
+    if payload.acknowledgment_window_days is not None:
+        # is not None אינו שקול ל"ערך תקין" - ראו models.py.Company. כאן, בשונה
+        # מ-total_authorized_shares, יש CHECK ברמת ה-DB (ck_companies_
+        # acknowledgment_window_days_positive) שהיה מפיל IntegrityError גולמי
+        # (500) בלי הבדיקה הזו - 400 נקי לפני הכתיבה עדיף.
+        if payload.acknowledgment_window_days <= 0:
+            raise HTTPException(status_code=400, detail="acknowledgment_window_days must be positive")
+        comp.acknowledgment_window_days = payload.acknowledgment_window_days
     record_audit_event(db, "Company", comp.company_id, "UPDATE", current_user.user_id,
                         before=before, after={"name": comp.name, "country_code": comp.country_code,
-                                              "total_authorized_shares": comp.total_authorized_shares})
+                                              "total_authorized_shares": comp.total_authorized_shares,
+                                              "acknowledgment_window_days": comp.acknowledgment_window_days})
     db.commit()
     db.refresh(comp)
     return comp
