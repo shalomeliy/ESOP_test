@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at DATETIME,
     -- v1.0.0 שלב א: nullable כי אי אפשר להמציא ערך לחברות קיימות שנזרעו לפני
     -- הגרסה הזו. שלב ב (חישוב דילול) חייב להתייחס במפורש ל-NULL כ"לא זמין".
-    total_authorized_shares FLOAT
+    total_authorized_shares FLOAT,
+    -- v1.0.1: nullable - NULL אומר "אין override, השתמש בקבוע הגלובלי
+    -- ACKNOWLEDGMENT_WINDOW_DAYS", לא "0 יום". CHECK דוחה 0/שלילי.
+    acknowledgment_window_days INTEGER,
+    CHECK (acknowledgment_window_days IS NULL OR acknowledgment_window_days > 0)
 );
 
 CREATE TABLE IF NOT EXISTS option_pools (

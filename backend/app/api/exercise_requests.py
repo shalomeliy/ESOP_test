@@ -35,6 +35,18 @@ def _vested_at(grant: Grant, on_date: date) -> float:
     return DeterministicESOPEngine.calculate_vested_options(grant, grant.vesting_schedule, cutoff)
 
 
+def _trustee_holding_status(grant: Grant, today: date) -> "tuple[bool, date | None]":
+    """check_trustee_holding_period מחזיר בכוונה (False, today) כשאין עדיין
+    trustee_deposit_date - זה החוזה הנכון של המנוע (אין תאריך יעד כשההפקדה
+    לא קרתה). אבל שלושה endpoints שונים העבירו את end_date הזה כמו שהוא
+    ל-response, וזה נקרא כ"התקופה מסתיימת היום" - שקרי על מסמך מס. נקודת
+    הכניסה היחידה שאמורה לשמש את ה-endpoints, כדי שאף נתיב לא יחזור לחזור
+    על אותה טעות."""
+    if not grant.trustee_deposit_date:
+        return False, None
+    return DeterministicESOPEngine.check_trustee_holding_period(grant, today)
+
+
 def _vested_or_conflict(grant: Grant, on_date: date) -> float:
     """כמה הבשיל, או 409 כשאין לוח הבשלה בכלל.
 
@@ -160,14 +172,15 @@ def _assert_request_approvable(db: Session, req: ExerciseRequest, grant: Grant) 
         )
 
     if grant.trustee_id:
-        is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, today)
+        is_met, end_date = _trustee_holding_status(grant, today)
         if not is_met:
             # חסימה מוחלטת ולא אזהרה: שחרור מוקדם מנאמנות מפיל את המענק ממסלול
             # רווח הון להכנסת עבודה. זרימת "שחרור מוקדם ביודעין" היא פיצ'ר נפרד
             # שדורש אימות כלל מס לפני שיימומש - ולא ברירת מחדל שקטה.
+            deadline_text = end_date if end_date else "an unknown date (no trustee deposit recorded yet)"
             raise HTTPException(
                 status_code=400,
-                detail=(f"Trustee holding period (Section 102) is not met until {end_date}; "
+                detail=(f"Trustee holding period (Section 102) is not met until {deadline_text}; "
                         "approving before that date forfeits capital-gains treatment"),
             )
 
@@ -268,7 +281,7 @@ def simulate_exercise(payload: ExerciseSimulationRequest, current_user: User = D
     if grant.employee_id != current_user.employee_id:
         raise HTTPException(status_code=403, detail="This grant does not belong to you")
 
-    is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(grant, payload.exercise_date)
+    is_met, end_date = _trustee_holding_status(grant, payload.exercise_date)
     is_within_ptw, ptw_deadline = DeterministicESOPEngine.check_post_termination_exercise_window(
         grant, grant.employee, payload.exercise_date
     )

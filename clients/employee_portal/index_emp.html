@@ -404,7 +404,9 @@
 
                     const trusteeStatusHtml = grant.is_trustee_holding_period_met
                         ? `<span class="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">שוחרר</span>`
-                        : `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">בחסימה עד ${grant.holding_period_end_date} (${daysUntil(grant.holding_period_end_date)} ימים)</span>`;
+                        : grant.holding_period_end_date
+                            ? `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">בחסימה עד ${grant.holding_period_end_date} (${daysUntil(grant.holding_period_end_date)} ימים)</span>`
+                            : `<span class="text-xs text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">בחסימה</span>`;
 
                     const ptwHtml = grant.post_termination_exercise_deadline == null
                         ? `<span class="text-xs text-slate-500">ללא הגבלה (פעיל)</span>`
@@ -491,7 +493,9 @@
                 document.getElementById("sim-tax").textContent = `$${result.estimated_tax_amount.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
                 document.getElementById("sim-trustee").innerHTML = result.is_trustee_holding_period_met
                     ? `<span class="text-emerald-400">שוחרר</span>`
-                    : `<span class="text-amber-400">בחסימה עד ${result.holding_period_end_date}</span>`;
+                    : result.holding_period_end_date
+                        ? `<span class="text-amber-400">בחסימה עד ${result.holding_period_end_date}</span>`
+                        : `<span class="text-amber-400">בחסימה</span>`;
                 document.getElementById("sim-ptw").innerHTML = result.is_within_post_termination_window
                     ? (result.post_termination_exercise_deadline ? `<span class="text-amber-400">פתוח עד ${result.post_termination_exercise_deadline}</span>` : `<span class="text-slate-400">ללא הגבלה</span>`)
                     : `<span class="text-rose-400">סגור (${result.post_termination_exercise_deadline})</span>`;

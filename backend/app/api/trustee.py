@@ -8,11 +8,11 @@ from backend.app.database import get_db
 from backend.app.types import business_today
 from backend.app.models import Grant, User, UserRole
 from backend.app.schemas import TrusteePortfolioItem
-from backend.app.services.engine import DeterministicESOPEngine, MissingVestingScheduleError
+from backend.app.services.engine import MissingVestingScheduleError
 from backend.app.services.audit import record_audit_event
 from backend.app.services.ledger import append_event
 from backend.app.auth import require_roles
-from backend.app.api.exercise_requests import _vested_at
+from backend.app.api.exercise_requests import _vested_at, _trustee_holding_status
 
 router = APIRouter()
 
@@ -33,7 +33,7 @@ def trustee_portfolio(current_user: User = Depends(require_roles(UserRole.TRUSTE
             vesting_data_missing = False
         except MissingVestingScheduleError:
             vested, vesting_data_missing = None, True
-        is_met, end_date = DeterministicESOPEngine.check_trustee_holding_period(g, today)
+        is_met, end_date = _trustee_holding_status(g, today)
         result.append(TrusteePortfolioItem(
             grant_id=g.grant_id,
             employee_id=emp.employee_id if emp else None,

@@ -85,6 +85,8 @@ def test_export_round_trips_company_and_employee_data(client, world):
         # v1.0.0 שלב א: עמודה חדשה, nullable - חברה קיימת שנזרעה לפני שלב א
         # מייצאת None, לא 0/מוסתר. ראו models.py.Company.total_authorized_shares.
         "total_authorized_shares": None,
+        # v1.0.1: אותו דפוס בדיוק - עמודת override נוספת, nullable.
+        "acknowledgment_window_days": None,
     }]
     employees = bundle["tables"]["employees"]
     assert len(employees) == 1
@@ -351,3 +353,74 @@ def test_export_row_count_estimate_matches_the_cheap_scope_without_full_hydratio
 def test_export_under_the_default_limit_is_not_affected(client, world):
     response = client.post(f"{API}/admin/export", headers=world.admin_a)
     assert response.status_code == 200
+
+
+# ===================================================================
+# v1.0.1 (debt item 1, HANDOFF.md risk 4) - טבלת ההון חדשה בהיקף הייצוא:
+# ShareClass/Shareholder/ShareIssuance + OptionPool.share_class_id.
+# ===================================================================
+
+def test_export_includes_cap_table_entities_with_correct_fields(client, world):
+    """סוג מניה אחד, שני בעלי-מניות (אחד מקושר לעובד קיים, אחד חיצוני בלי
+    employee_id), והנפקה אחת - שלושתן חייבות להופיע בייצוא עם השדות הנכונים."""
+    from backend.app.models import ShareClass, ShareIssuance, Shareholder
+    db = world.db
+    db.add(ShareClass(share_class_id="EXP-SC-A", company_id="COMP-EXP-A", name="Common",
+                      class_type="COMMON", seniority_order=10))
+    db.add(Shareholder(shareholder_id="EXP-SH-LINKED", company_id="COMP-EXP-A",
+                       name="Yossi Cohen", shareholder_type="EMPLOYEE", employee_id="EXP-EMP-A1"))
+    db.add(Shareholder(shareholder_id="EXP-SH-EXTERNAL", company_id="COMP-EXP-A",
+                       name="Investor Fund", shareholder_type="INVESTOR", employee_id=None))
+    db.flush()  # share_classes/shareholders לפני share_issuances - אין relationship() ישיר.
+    db.add(ShareIssuance(share_issuance_id="EXP-SI-A", company_id="COMP-EXP-A",
+                         shareholder_id="EXP-SH-LINKED", share_class_id="EXP-SC-A",
+                         shares=1000.0, issue_date=date(2024, 1, 1)))
+    db.commit()
+
+    export_resp = client.post(f"{API}/admin/export", headers=world.admin_a)
+    assert export_resp.status_code == 200, export_resp.text
+    tables = client.get(f"{API}/admin/export/{export_resp.json()['run_id']}/download",
+                        headers=world.admin_a).json()["tables"]
+
+    assert len(tables["share_classes"]) == 1
+    sc = tables["share_classes"][0]
+    assert sc["share_class_id"] == "EXP-SC-A"
+    assert sc["name"] == "Common"
+    assert sc["class_type"] == "COMMON"
+    assert sc["seniority_order"] == 10
+
+    shareholders = {r["shareholder_id"]: r for r in tables["shareholders"]}
+    assert set(shareholders) == {"EXP-SH-LINKED", "EXP-SH-EXTERNAL"}
+    assert shareholders["EXP-SH-LINKED"]["employee_id"] == "EXP-EMP-A1"
+    assert shareholders["EXP-SH-EXTERNAL"]["employee_id"] is None
+
+    assert len(tables["share_issuances"]) == 1
+    si = tables["share_issuances"][0]
+    assert si["share_issuance_id"] == "EXP-SI-A"
+    assert si["shareholder_id"] == "EXP-SH-LINKED"
+    assert si["share_class_id"] == "EXP-SC-A"
+    assert si["shares"] == 1000.0
+    assert si["issue_date"] == "2024-01-01"
+
+
+def test_export_carries_option_pool_share_class_id_both_set_and_none(client, world):
+    """פול עם שיוך לסוג מניה, ופול בלי (None) - אותו דפוס בדיוק כמו
+    total_authorized_shares: None חייב לצאת כ-None, לא מוסתר ולא 0."""
+    from backend.app.models import OptionPool, ShareClass
+    db = world.db
+    db.add(ShareClass(share_class_id="EXP-SC-POOL", company_id="COMP-EXP-A", name="Common",
+                      class_type="COMMON", seniority_order=10))
+    db.flush()
+    db.add(OptionPool(pool_id="EXP-POOL-WITH-SC", company_id="COMP-EXP-A", total_shares=1000.0,
+                      allocated_shares=0.0, unallocated_shares=1000.0, share_class_id="EXP-SC-POOL"))
+    db.add(OptionPool(pool_id="EXP-POOL-NO-SC", company_id="COMP-EXP-A", total_shares=500.0,
+                      allocated_shares=0.0, unallocated_shares=500.0, share_class_id=None))
+    db.commit()
+
+    export_resp = client.post(f"{API}/admin/export", headers=world.admin_a)
+    tables = client.get(f"{API}/admin/export/{export_resp.json()['run_id']}/download",
+                        headers=world.admin_a).json()["tables"]
+
+    pools = {p["pool_id"]: p for p in tables["option_pools"]}
+    assert pools["EXP-POOL-WITH-SC"]["share_class_id"] == "EXP-SC-POOL"
+    assert pools["EXP-POOL-NO-SC"]["share_class_id"] is None

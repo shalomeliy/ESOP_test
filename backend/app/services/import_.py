@@ -74,7 +74,8 @@ from sqlalchemy.orm import Session
 from backend.app.models import (
     AuditLog, Document, Employee, ExerciseRequest, ExerciseTaxRecord, Grant,
     IncomeTaxBracket, LedgerEvent, NotificationDismissal, NotificationPreference,
-    OptionPool, TaxRatesHistory, TaxRulePack, Trustee, VestingSchedule,
+    OptionPool, ShareClass, ShareIssuance, Shareholder, TaxRatesHistory,
+    TaxRulePack, Trustee, VestingSchedule,
 )
 from backend.app.services.export import EXPORT_SCHEMA_VERSION, CompanyScope, build_company_scope
 from backend.app.services.ledger import project, record_ownership
@@ -229,9 +230,22 @@ class _TableSpec:
 
 
 _TABLE_SPECS: Dict[str, _TableSpec] = {
-    "option_pools": _TableSpec("pool_id", "pool_ids"),
+    # v1.0.1: share_classes חייבת לבוא לפני option_pools - option_pools.share_class_id
+    # הוא fk_check שנפתר מול batch_seen["share_class_ids"], וזה מאוכלס רק אחרי
+    # שהטבלה שמקדימה אותה ב-_TABLE_SPECS עברה עיבוד (ראו _validate_normal_tables:
+    # הוא איטרטור יחיד על הדיקט הזה, בסדר שלו בדיוק). אותו עיקרון בדיוק כמו
+    # pool_ids/employee_ids/trustee_ids שכבר זמינים לפני grants.
+    "share_classes": _TableSpec("share_class_id", "share_class_ids"),
+    "option_pools": _TableSpec("pool_id", "pool_ids", (("share_class_id", "share_class_ids"),)),
     "employees": _TableSpec("employee_id", "employee_ids"),
     "trustees": _TableSpec("trustee_id", "trustee_ids"),
+    # shareholders אחרי employees (employee_id) ואחרי share_classes; share_issuances
+    # אחרי שניהם - אותו סדר טופולוגי, פעם אחת.
+    "shareholders": _TableSpec("shareholder_id", "shareholder_ids",
+                               (("employee_id", "employee_ids"),)),
+    "share_issuances": _TableSpec("share_issuance_id", "share_issuance_ids",
+                                  (("shareholder_id", "shareholder_ids"),
+                                   ("share_class_id", "share_class_ids"))),
     "grants": _TableSpec("grant_id", "grant_ids",
                          (("pool_id", "pool_ids"), ("employee_id", "employee_ids"),
                           ("trustee_id", "trustee_ids"))),
@@ -248,9 +262,12 @@ _TABLE_SPECS: Dict[str, _TableSpec] = {
 # מודל ORM + עמודת המפתח הראשי, לצורך בדיקת "קיים בכלל, בכל חברה" (global,
 # לא מסונן) - שאילתה אחת לכל טבלה, לא אחת לכל שורה.
 _PK_COLUMN = {
+    "share_classes": ShareClass.share_class_id,
     "option_pools": OptionPool.pool_id,
     "employees": Employee.employee_id,
     "trustees": Trustee.trustee_id,
+    "shareholders": Shareholder.shareholder_id,
+    "share_issuances": ShareIssuance.share_issuance_id,
     "grants": Grant.grant_id,
     "vesting_schedules": VestingSchedule.schedule_id,
     "documents": Document.document_id,
@@ -258,14 +275,19 @@ _PK_COLUMN = {
     "exercise_tax_records": ExerciseTaxRecord.record_id,
 }
 
-# אותן שמונה טבלאות, המודל עצמו - task #7 (commit) בונה שורת ORM ישירות מ-
-# _TABLE_SPECS, באותו סדר טופולוגי שכבר נבדק (§3): pools/employees/trustees
-# לפני grants, grants לפני vesting_schedules/documents/exercise_requests,
+# אותן טבלאות, המודל עצמו - task #7 (commit) בונה שורת ORM ישירות מ-
+# _TABLE_SPECS, באותו סדר טופולוגי שכבר נבדק (§3, ותוקן ב-v1.0.1): share_classes
+# לפני option_pools (share_class_id) ולפני shareholders/share_issuances,
+# employees/trustees לפני grants, share_classes+shareholders לפני
+# share_issuances, grants לפני vesting_schedules/documents/exercise_requests,
 # exercise_requests לפני exercise_tax_records.
 _MODEL_BY_TABLE = {
+    "share_classes": ShareClass,
     "option_pools": OptionPool,
     "employees": Employee,
     "trustees": Trustee,
+    "shareholders": Shareholder,
+    "share_issuances": ShareIssuance,
     "grants": Grant,
     "vesting_schedules": VestingSchedule,
     "documents": Document,
@@ -380,6 +402,10 @@ _LEDGER_AGGREGATE_CATEGORY = {
     "Grant": "grant_ids",
     "VestingSchedule": "schedule_ids",
     "ExerciseRequest": "request_ids",
+    # v1.0.1: ShareIssuance הוא ledger aggregate מ-v1.0.0 (LEDGER_AGGREGATE_TYPES,
+    # models.py) עם סוג אירוע יחיד (SHARE_ISSUANCE_ESTABLISHED) - בלי השורה הזו,
+    # כל ledger_events row מסוג הזה בחבילה היה נכשל כ-"unknown aggregate_type".
+    "ShareIssuance": "share_issuance_ids",
 }
 
 
@@ -502,7 +528,16 @@ def dry_run(db: Session, bundle: dict, target_company_id: str) -> ImportDryRunRe
 # לא מהקובץ, נאכף כאן ולא ב-dry_run כי dry_run לא כותב כלום. Grant/VestingSchedule/
 # ExerciseRequest/ExerciseTaxRecord אין להן עמודת company_id בכלל (ה-scoping
 # שלהן נגזר דרך שרשור FK, כבר אומת ב-dry_run).
-_FORCE_COMPANY_ID_TABLES = {"option_pools", "employees", "trustees", "documents"}
+# v1.0.1: share_classes/shareholders/share_issuances מצטרפות - כל שלושתן
+# נושאות company_id ישיר (models.py), בדיוק כמו option_pools. אל תסמכו על
+# ה"ledger-native" של ShareIssuance כטעם לדלג עליה כאן - יש לה עמודת company_id
+# ישירה ולא-nullable בדיוק כמו option_pools, בשונה מ-Grant/VestingSchedule.
+# בלעדי השורה הזו, bundle עם company_id זר בשורת share_issuances/shareholders
+# היה נכתב עם הערך מהקובץ, לא נדרס לחברת היעד (ראו סקירת האבטחה בתכנון).
+_FORCE_COMPANY_ID_TABLES = {
+    "option_pools", "employees", "trustees", "documents",
+    "share_classes", "shareholders", "share_issuances",
+}
 
 # עמודות *_user_id שמאופסות תמיד בכתיבה - ראו הפסקה המורחבת בראש הקובץ:
 # users לעולם לא מיובאת (decision 1), אז כל reference אליה מהקובץ לא יכול
@@ -524,6 +559,7 @@ _AGGREGATE_TYPE_BY_TABLE = {
     "grants": "Grant",
     "vesting_schedules": "VestingSchedule",
     "exercise_requests": "ExerciseRequest",
+    "share_issuances": "ShareIssuance",
 }
 
 
@@ -603,6 +639,12 @@ def _record_ownership_for_new_row(db: Session, table_name: str, obj, target_comp
     elif table_name == "exercise_requests":
         record_ownership(db, aggregate_id=obj.request_id, aggregate_type=aggregate_type,
                          company_id=target_company_id, employee_id=obj.employee_id)
+    elif table_name == "share_issuances":
+        # אותו קריאה בדיוק כמו create_share_issuance (cap_table.py) בזרימה
+        # החיה - בלי employee_id/trustee_id, כי ShareIssuance לא נושא אותם
+        # ישירות (shareholder_id בלבד, ו-Shareholder.employee_id הוא nullable).
+        record_ownership(db, aggregate_id=obj.share_issuance_id, aggregate_type=aggregate_type,
+                         company_id=target_company_id)
 
 
 def _write_normal_tables(db: Session, bundle: dict, outcomes_by_table: Dict[str, Dict[int, RowOutcome]],

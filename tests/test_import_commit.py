@@ -23,7 +23,7 @@ from backend.app.models import (
 )
 from backend.app.services.export import EXPORT_SCHEMA_VERSION
 from backend.app.services import import_ as import_service
-from backend.app.services.ledger import append_event, record_ownership
+from backend.app.services.ledger import append_event, project, record_ownership
 
 API = "/api/v1"
 SRC = "https://test.invalid/qa-fixture-not-a-real-tax-source"
@@ -508,3 +508,197 @@ def test_new_notification_preference_is_reported_not_portable_and_never_written(
     assert report.rows_written == 0
     assert db.query(NotificationPreference).filter(
         NotificationPreference.preference_id == "CMT-NP-1").first() is None
+
+
+# ===================================================================
+# v1.0.1 (debt item 1, HANDOFF.md risk 4) - טבלת ההון (v1.0.0) בהיקף
+# הייבוא: ShareClass/Shareholder/ShareIssuance + OptionPool.share_class_id.
+# ===================================================================
+
+def _cap_table_bundle(company_id: str = "CMT-CT-SRC", **overrides) -> dict:
+    """סוג מניה + בעל-מניות + הנפקה אחת, עם אירוע ה-ledger התואם (ShareIssuance
+    הוא ledger-native, אותו דפוס בדיוק כמו Grant/VestingSchedule ב-
+    _full_synthetic_bundle) - בלעדיו project()/LedgerEvent על ההנפקה יחזיר None."""
+    base = dict(
+        share_classes=[{"share_class_id": "CMT-CT-SC", "company_id": company_id,
+                        "name": "Common", "class_type": "COMMON", "seniority_order": 10,
+                        "created_at": None}],
+        shareholders=[{"shareholder_id": "CMT-CT-SH", "company_id": company_id,
+                      "name": "Founder Inc", "shareholder_type": "FOUNDER",
+                      "employee_id": None, "created_at": None}],
+        share_issuances=[{"share_issuance_id": "CMT-CT-SI", "company_id": company_id,
+                          "shareholder_id": "CMT-CT-SH", "share_class_id": "CMT-CT-SC",
+                          "shares": 500.0, "issue_date": "2024-03-01", "created_at": None}],
+        ledger_events=[{"event_id": "CMT-CT-EVT-SI", "event_type": "SHARE_ISSUANCE_ESTABLISHED",
+                       "aggregate_type": "ShareIssuance", "aggregate_id": "CMT-CT-SI",
+                       "payload": json.dumps({"shares": 500.0, "shareholder_id": "CMT-CT-SH",
+                                             "share_class_id": "CMT-CT-SC", "issue_date": "2024-03-01"}),
+                       "effective_date": "2024-03-01", "recorded_at": "2024-03-01T00:00:00+00:00",
+                       "actor_user_id": None, "sequence_no": 1, "corrects_event_id": None,
+                       "schema_version": 1, "source": "LIVE"}],
+    )
+    base.update(overrides)
+    return _bundle_shape(company_id, **base)
+
+
+def test_commit_writes_cap_table_entities_and_the_share_issuance_ledger_event(db_session):
+    from backend.app.models import LedgerOwnership, ShareClass, ShareIssuance, Shareholder
+    db = db_session
+    db.add(Company(company_id="CMT-CT-TARGET", name="Target", country_code="IL"))
+    db.commit()
+
+    report = import_service.commit(db, _cap_table_bundle(), "CMT-CT-TARGET")
+    assert report.valid is True, report.errors
+    assert report.rows_written == 4  # share_class + shareholder + share_issuance + ledger_event
+
+    share_class = db.query(ShareClass).filter(ShareClass.share_class_id == "CMT-CT-SC").one()
+    assert share_class.company_id == "CMT-CT-TARGET"
+    shareholder = db.query(Shareholder).filter(Shareholder.shareholder_id == "CMT-CT-SH").one()
+    assert shareholder.company_id == "CMT-CT-TARGET"
+    issuance = db.query(ShareIssuance).filter(ShareIssuance.share_issuance_id == "CMT-CT-SI").one()
+    assert issuance.company_id == "CMT-CT-TARGET"
+    assert issuance.shares == 500.0
+    assert issuance.issue_date == date(2024, 3, 1)
+
+    projected = project(db, "ShareIssuance", "CMT-CT-SI")
+    assert projected == {"shares": 500.0, "shareholder_id": "CMT-CT-SH",
+                         "share_class_id": "CMT-CT-SC", "issue_date": date(2024, 3, 1)}
+
+    ledger_row = db.query(LedgerEvent).filter(
+        LedgerEvent.aggregate_id == "CMT-CT-SI",
+        LedgerEvent.event_type == "SHARE_ISSUANCE_ESTABLISHED").one()
+    assert ledger_row.aggregate_type == "ShareIssuance"
+
+    ownership = db.get(LedgerOwnership, "CMT-CT-SI")
+    assert ownership is not None
+    assert ownership.company_id == "CMT-CT-TARGET"
+
+
+def test_dry_run_rejects_a_shareholder_whose_employee_id_is_outside_the_target_scope(client, world):
+    """employee_id שקיים באמת אבל בחברה אחרת - ERROR, לא SKIP/NEW בשקט."""
+    bundle = _bundle_shape(
+        "CMT-CT-CROSS-SRC",
+        shareholders=[{"shareholder_id": "CMT-CT-SH-CROSS", "company_id": "CMT-CT-CROSS-SRC",
+                      "name": "Cross", "shareholder_type": "EMPLOYEE",
+                      "employee_id": "CMT-EMP-A1", "created_at": None}],
+    )
+    response = _upload_dry_run(client, world.admin_b, bundle)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "FAILED"
+    errors = {e["table"]: e for e in body["errors"]}
+    assert "shareholders" in errors
+    assert errors["shareholders"]["row_id"] == "CMT-CT-SH-CROSS"
+
+
+def test_dry_run_rejects_a_share_issuance_with_unresolvable_shareholder_or_share_class(client, world):
+    """shareholder_id/share_class_id שלא נמצא באצווה ולא ב-scope של היעד - ERROR."""
+    bundle = _bundle_shape(
+        "CMT-CT-BADFK-SRC",
+        share_issuances=[{"share_issuance_id": "CMT-CT-SI-BADFK", "company_id": "CMT-CT-BADFK-SRC",
+                          "shareholder_id": "DOES-NOT-EXIST-ANYWHERE", "share_class_id": "ALSO-MISSING",
+                          "shares": 10.0, "issue_date": "2024-01-01", "created_at": None}],
+    )
+    response = _upload_dry_run(client, world.admin_b, bundle)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "FAILED"
+    errors = {e["table"]: e for e in body["errors"]}
+    assert "share_issuances" in errors
+    assert errors["share_issuances"]["row_id"] == "CMT-CT-SI-BADFK"
+
+
+def test_commit_force_overwrites_a_crafted_foreign_company_id_on_shareholders_and_share_issuances(db_session):
+    """הבדיקה הקריטית לאבטחה: בחבילה מזויפת/מיושנת שבה company_id של שורת
+    shareholders/share_issuances מצהיר על חברה *אחרת* אמיתית שקיימת ב-DB
+    (לא רק על company_id שרירותי) - ה-commit חייב לדרוס אותו לחברת היעד,
+    לעולם לא לכתוב את הערך מהקובץ. זו הבדיקה ש-_FORCE_COMPANY_ID_TABLES
+    (import_.py) חייבת לכלול את שלוש הטבלאות החדשות - ראו ההערה שם."""
+    from backend.app.models import ShareIssuance, Shareholder
+    db = db_session
+    db.add(Company(company_id="CMT-CT-REAL-OTHER", name="RealOtherCompany", country_code="IL"))
+    db.add(Company(company_id="CMT-CT-REAL-TARGET", name="RealTargetCompany", country_code="IL"))
+    db.commit()
+
+    bundle = _cap_table_bundle(
+        company_id="CMT-CT-SRC-IRRELEVANT",
+        shareholders=[{"shareholder_id": "CMT-CT-SH", "company_id": "CMT-CT-REAL-OTHER",
+                      "name": "Founder Inc", "shareholder_type": "FOUNDER",
+                      "employee_id": None, "created_at": None}],
+        share_issuances=[{"share_issuance_id": "CMT-CT-SI", "company_id": "CMT-CT-REAL-OTHER",
+                          "shareholder_id": "CMT-CT-SH", "share_class_id": "CMT-CT-SC",
+                          "shares": 500.0, "issue_date": "2024-03-01", "created_at": None}],
+    )
+
+    report = import_service.commit(db, bundle, "CMT-CT-REAL-TARGET")
+    assert report.valid is True, report.errors
+
+    shareholder = db.query(Shareholder).filter(Shareholder.shareholder_id == "CMT-CT-SH").one()
+    assert shareholder.company_id == "CMT-CT-REAL-TARGET", (
+        "company_id חייב להיות נדרס לחברת היעד - לעולם לא הערך מהקובץ")
+    assert shareholder.company_id != "CMT-CT-REAL-OTHER"
+
+    issuance = db.query(ShareIssuance).filter(ShareIssuance.share_issuance_id == "CMT-CT-SI").one()
+    assert issuance.company_id == "CMT-CT-REAL-TARGET"
+    assert issuance.company_id != "CMT-CT-REAL-OTHER"
+
+
+def test_commit_round_trips_option_pool_share_class_id_set_and_none(db_session):
+    """סוג המניה כבר מבוסס ביעד (למשל נוצר קודם דרך cap_table.py) - כיסוי
+    משלים ל-test_a_pool_and_its_new_share_class_in_the_same_batch_imports_cleanly
+    למטה, ששם סוג המניה חדש *בתוך אותו batch* דווקא."""
+    from backend.app.models import ShareClass
+    db = db_session
+    db.add(Company(company_id="CMT-CT-POOL-TARGET", name="Target", country_code="IL"))
+    db.add(ShareClass(share_class_id="CMT-CT-POOL-SC", company_id="CMT-CT-POOL-TARGET",
+                      name="Common", class_type="COMMON", seniority_order=10))
+    db.commit()
+
+    bundle = _bundle_shape(
+        "CMT-CT-POOL-SRC",
+        option_pools=[
+            {"pool_id": "CMT-CT-POOL-WITH-SC", "company_id": "CMT-CT-POOL-SRC", "total_shares": 1000.0,
+            "allocated_shares": 0.0, "unallocated_shares": 1000.0, "created_at": None,
+            "share_class_id": "CMT-CT-POOL-SC"},
+            {"pool_id": "CMT-CT-POOL-NO-SC", "company_id": "CMT-CT-POOL-SRC", "total_shares": 500.0,
+            "allocated_shares": 0.0, "unallocated_shares": 500.0, "created_at": None,
+            "share_class_id": None},
+        ],
+    )
+
+    report = import_service.commit(db, bundle, "CMT-CT-POOL-TARGET")
+    assert report.valid is True, report.errors
+
+    pool_with_sc = db.get(OptionPool, "CMT-CT-POOL-WITH-SC")
+    assert pool_with_sc.share_class_id == "CMT-CT-POOL-SC"
+    pool_no_sc = db.get(OptionPool, "CMT-CT-POOL-NO-SC")
+    assert pool_no_sc.share_class_id is None
+
+
+def test_a_pool_and_its_new_share_class_in_the_same_batch_imports_cleanly(db_session):
+    """נתפס בכתיבת בדיקות הרגרסיה של v1.0.1 (לא אחד מארבעת הפריטים המתוכננים):
+    _TABLE_SPECS עיבד option_pools לפני share_classes, אז ה-fk_check של
+    option_pools.share_class_id רץ לפני ש-batch_seen["share_class_ids"] מאוכלס -
+    הגירת חברה מלאה ליעד טרי, שבה סוג המניה חדש *בתוך אותו batch* ולא קיים
+    עדיין ביעד, נכשלה בטעות ב-ERROR על שורת הפול. תוקן בהזזת share_classes
+    לפני option_pools בשני המבנים (_TABLE_SPECS/_MODEL_BY_TABLE) - אותו עיקרון
+    בדיוק כמו pool_ids/employee_ids/trustee_ids שכבר זמינים לפני grants."""
+    from backend.app.models import ShareClass
+    db = db_session
+    db.add(Company(company_id="CMT-CT-POOL-FRESH-TARGET", name="Target", country_code="IL"))
+    db.commit()
+
+    bundle = _bundle_shape(
+        "CMT-CT-POOL-FRESH-SRC",
+        share_classes=[{"share_class_id": "CMT-CT-POOL-FRESH-SC", "company_id": "CMT-CT-POOL-FRESH-SRC",
+                        "name": "Common", "class_type": "COMMON", "seniority_order": 10,
+                        "created_at": None}],
+        option_pools=[{"pool_id": "CMT-CT-POOL-FRESH", "company_id": "CMT-CT-POOL-FRESH-SRC",
+                      "total_shares": 1000.0, "allocated_shares": 0.0, "unallocated_shares": 1000.0,
+                      "created_at": None, "share_class_id": "CMT-CT-POOL-FRESH-SC"}],
+    )
+
+    report = import_service.commit(db, bundle, "CMT-CT-POOL-FRESH-TARGET")
+    assert report.valid is True, report.errors
+    pool = db.get(OptionPool, "CMT-CT-POOL-FRESH")
+    assert pool.share_class_id == "CMT-CT-POOL-FRESH-SC"
