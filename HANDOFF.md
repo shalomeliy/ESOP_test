@@ -8,10 +8,22 @@
 ולא עם קושי המשימה. `CLAUDE.md` שורה 57 כבר אמרה `/clear between unrelated
 exercises` — הקובץ הזה הוא מה שהופך את הכלל לבר-ביצוע: יש לאן להעביר את ההקשר.
 
-עדכון אחרון: **2026-08-12** (v1.0.1 **שוחררה - patch תיקוני-באגים, לא ממוזגת
-עדיין ל-`main`.** ארבעה פריטי חוב פתוחים נבחרו במפורש ע"י המשתתף ("start
-with debt missions" → "do all of them") ותוקנו באותה שיחה. ראו הבלוק הבא.)
+עדכון אחרון: **2026-08-12** (v1.0.1 **שוחררה במלואה** - מוזגה ל-`main` (PR #5),
+תויגה `v1.0.1`, ונדחפה. ה-DB החי (`esop_database.db`) עלה ל-head. ארבעה
+פריטי חוב פתוחים נבחרו במפורש ע"י המשתתף ("start with debt missions" →
+"do all of them") ותוקנו באותה שיחה. ראו הבלוק הבא.)
 
+> **ה-DB החי עלה ל-head ב-12/08/2026, אחרי המיזוג.** גיבוי לפני:
+> `db_backups/esop_database.20260812-162625.db`. `alembic upgrade head`
+> (`bd65db40f654` → `137b929afafc`) - שקט, בלי `PRAGMA foreign_keys=OFF/ON`
+> (בשונה מהמיגרציה הקודמת: `ADD COLUMN`+`CHECK` על `companies` בלי FK חדש
+> נכנס/יוצא, אז אין `create_foreign_key` שמחייב recreate-עם-DROP על טבלה
+> שמצביעים אליה). אומת אחרי: `alembic_version = 137b929afafc`,
+> `integrity_check: ok`, `foreign_key_check: []`, כל הספירות זהות לתיעוד
+> הקודם (251 grants, 19 pools, 260 employees, 1035 ledger_events, 25
+> companies) - ואפס דריפט. `companies.acknowledgment_window_days` קיימת
+> ו-`NULL` בכל 25 השורות (אין backfill, כמתוכנן).
+>
 > **v1.0.1 (12/08/2026) - patch תיקוני-באגים, ארבעה פריטים שנבחרו מרשימת
 > החוב הפתוחה של v1.0.0/v0.9.1.** תהליך התכנון המלא לפי `CLAUDE.md` שלב 4:
 > שלושה `Explore` agents מיפו את הקוד הקיים, אחריהם חמישה מומחי-סקירה
@@ -88,10 +100,16 @@ with debt missions" → "do all of them") ותוקנו באותה שיחה. רא
 > `share_issuances`'s שני ה-FK (רק "לא קיים בכלל") - מנגנון ה-fk_check
 > כבר מוכח על טבלאות אחרות, לא נדרש תיקון.
 >
-> **`VERSION` → `1.0.1`.** `git status` בסוף השיחה: כל השינויים עדיין
-> ב-working tree, **לא committed, לא נדחפו, לא ממוזגים ל-`main`** - ממתין
-> להחלטת המשתתף על commit/push/merge (הפרדה מכוונת בין תיקון-קוד לפעולות
-> git בלתי-הפיכות, ראו "Executing actions with care").
+> **`VERSION` → `1.0.1`.** שבעה commits נפרדים על ענף `feat/1.0.1/qa` (שנוצר
+> ע"י אחד מהסוכנים - אותה מוסכמת-ענף-לכל-סוכן כמו `feat/1.0.0/database`),
+> אחד לכל דאגה (`fix(export-import)`, `fix(exercise)`, `feat(employees)`,
+> `feat(documents)`, `docs(qa)`, `chore(release)` ל-`VERSION`, `handoff`).
+> **כל פעולה בוצעה רק אחרי בקשה מפורשת נפרדת של המשתתף בתורה נפרדת** - commit,
+> push, פתיחת PR (`gh pr create` → PR #5), מיזוג (`gh pr merge 5 --merge` -
+> merge commit, לא squash/rebase, אותו דפוס כמו PR #3/#4), ותיוג
+> (`v1.0.1` annotated, על ה-merge commit `520b16a`, נדחף). `main` מקומי
+> סונכרן (`git checkout main && git pull --ff-only`) מיד אחרי המיזוג.
+> `feat/1.0.1/qa` נשאר קיים ב-remote (לא נמחק, אותו תקדים).
 
 > **שלב ב בפועל (המשך ישיר לאותה שיחה שסגרה את שלב א ומיזגה אותו ל-`main`):**
 > `git checkout main && git pull` בוצע ראשון (12 commits, fast-forward טהור) -
@@ -238,22 +256,20 @@ with debt missions" → "do all of them") ותוקנו באותה שיחה. רא
 
 | | |
 |---|---|
-| גרסה | **v1.0.1 — patch תיקוני-באגים, קוד מוכן, `git status` עדיין לא-committed** |
+| גרסה | **v1.0.1 — שוחררה במלואה.** מוזגת ל-`main` (PR #5), מתויגת `v1.0.1` |
 | תוכנית טכנית | `glistening-skipping-melody.md` |
-| `VERSION` | `1.0.1` |
+| `VERSION` | `1.0.1` — תג `v1.0.1` **קיים**, annotated, נדחף ל-`origin` |
 | בדיקות | `411 passed, 0 failed` (הייתה `381` בתחילת השיחה) |
-| git | **לא committed.** `main` עדיין על `9ef5d65` (ראו v1.0.0 למטה) - כל שינויי v1.0.1 ב-working tree |
-| מיגרציה | `137b929afafc` (חדשה - `Company.acknowledgment_window_days`), על גבי `bd65db40f654`. אומתה upgrade→downgrade→upgrade על sandbox נפרד |
-| DB חי | ללא שינוי בשיחה הזו - `esop_database.db` לא נגעו בו (המיגרציה החדשה עוד לא הוחלה על ה-DB החי) |
+| git | `main` על `520b16a` (merge commit של PR #5). `feat/1.0.1/qa` נשאר קיים ב-remote (לא נמחק) |
+| מיגרציה | `137b929afafc` (`Company.acknowledgment_window_days`), על גבי `bd65db40f654`. **הוחלה על ה-DB החי** ב-12/08/2026 (ראו הבלוק בראש הקובץ) |
+| DB חי | **עלה ל-head.** `esop_database.db` על `137b929afafc`, `integrity_check: ok`, אפס דריפט |
 
 ## הצעד הבא
 
-**v1.0.1 מוכנה קוד+בדיקות+תיעוד+סקירה עצמאית (`PASS`), אבל לא נסגרה git-ית.**
-המשתתף צריך להכריע: commit (ואיזו הודעה), push, ומיזוג ל-`main` - כל אחת
-בנפרד, לפי המדיניות הקיימת (ראו "Executing actions with care") ולפי
-התקדים של v1.0.0 (merge/תיוג/push כל אחד רק אחרי בקשה מפורשת נפרדת). אחרי
-המיזוג, מיגרציה `137b929afafc` תצטרך להיבחן מול ה-DB החי (`esop_database.db`)
-כמו כל מיגרציה קודמת - עוד לא נעשה בשיחה הזו.
+**v1.0.1 סגורה, מוזגת, מתויגת, וה-DB החי עלה ל-head - אין משימה פתוחה
+שממתינה להמשך מיידי.** השיחה הבאה פותחת גרסה חדשה (הבאה בתור לפי
+`FEATURE_SPEC.md`: v1.1.0 - הערכות שווי) או עובדת על אחת מנקודות החוב
+הפתוחות למטה, לפי בחירת המשתתף - לא ממשיכה את v1.0.1.
 
 **נקודת החוב שהיתה רשומה כאן - ייצוא/ייבוא לא כולל את טבלאות ההון -
 נסגרה בשיחה הזו (פריט 1 למעלה).** מקום ה"נקודת חוב אחת שנשארת פתוחה" הישן
