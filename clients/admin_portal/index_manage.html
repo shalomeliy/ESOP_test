@@ -59,6 +59,8 @@
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>בקשות מימוש</span><i class="fa-solid fa-hand-holding-dollar"></i></button>
                     <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מסמכים</span><i class="fa-solid fa-file-pdf"></i></button>
                     <button onclick="switchTab('export-import')" id="nav-export-import" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ייצוא וייבוא</span><i class="fa-solid fa-arrow-right-arrow-left"></i></button>
+                    <button onclick="switchTab('pools')" id="nav-pools" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ניהול פולים ומניות</span><i class="fa-solid fa-layer-group"></i></button>
+                    <button onclick="switchTab('cap-table')" id="nav-cap-table" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>טבלת הון</span><i class="fa-solid fa-chart-pie"></i></button>
                     <button onclick="switchTab('company')" id="nav-company" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>פרופיל חברה</span><i class="fa-solid fa-gear"></i></button>
                 </nav>
             </div>
@@ -268,6 +270,126 @@
                 </div>
             </section>
 
+            <!-- POOLS & SHARE CLASSES (v1.0.0 שלב ב) -->
+            <section id="tab-pools" class="tab-content space-y-6">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-bold text-white">פולי אופציות</h3>
+                    <button onclick="openPoolModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> פול חדש</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">pool_id</th>
+                                <th class="p-3 font-semibold">סה"כ מניות</th>
+                                <th class="p-3 font-semibold">הוקצו</th>
+                                <th class="p-3 font-semibold">פנויות</th>
+                                <th class="p-3 font-semibold">סוג מניה</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pools-table-body"><tr><td colspan="5" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+
+                <div class="flex justify-between items-center pt-4">
+                    <h3 class="text-lg font-bold text-white">סוגי מניות</h3>
+                    <button onclick="openShareClassModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> סוג מניה חדש</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">share_class_id</th>
+                                <th class="p-3 font-semibold">שם</th>
+                                <th class="p-3 font-semibold">סוג</th>
+                                <th class="p-3 font-semibold">סדר עדיפות (seniority)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="share-classes-table-body"><tr><td colspan="4" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- CAP TABLE / דילול (v1.0.0 שלב ב) -->
+            <section id="tab-cap-table" class="tab-content space-y-6">
+                <div class="flex justify-between items-center flex-wrap gap-3">
+                    <h3 class="text-lg font-bold text-white">טבלת הון</h3>
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs text-slate-400" for="captable-as-of">נכון לתאריך</label>
+                        <input type="date" id="captable-as-of" class="bg-slate-900 border border-slate-800 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+                        <button onclick="loadCapTableSnapshot()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium px-4 py-2 rounded-xl transition border border-slate-700"><i class="fa-solid fa-rotate"></i> רענן</button>
+                    </div>
+                </div>
+
+                <div id="captable-partial-warning" class="hidden p-4 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl text-sm"></div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <p class="text-xs text-slate-400 font-medium">מניות מונפקות (Outstanding)</p>
+                        <h3 id="captable-outstanding" class="text-3xl font-black text-white mt-2">-</h3>
+                        <p id="captable-outstanding-pct" class="text-xs text-slate-500 mt-2">-</p>
+                    </div>
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <p class="text-xs text-slate-400 font-medium">דילול-מלא (Fully-Diluted)</p>
+                        <h3 id="captable-diluted" class="text-3xl font-black text-indigo-400 mt-2">-</h3>
+                        <p id="captable-diluted-pct" class="text-xs text-slate-500 mt-2">-</p>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-lg font-bold text-white mb-3">פירוט לפי בעל מניות וסוג מניה</h3>
+                    <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                        <table class="w-full text-right border-collapse text-sm">
+                            <thead>
+                                <tr class="border-b border-slate-800 text-slate-400">
+                                    <th class="p-3 font-semibold">בעל מניות</th>
+                                    <th class="p-3 font-semibold">סוג מניה</th>
+                                    <th class="p-3 font-semibold">מניות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="captable-breakdown-body"><tr><td colspan="3" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-center pt-4">
+                    <h3 class="text-lg font-bold text-white">בעלי מניות</h3>
+                    <button onclick="openShareholderModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> בעל מניות חדש</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">shareholder_id</th>
+                                <th class="p-3 font-semibold">שם</th>
+                                <th class="p-3 font-semibold">סוג</th>
+                                <th class="p-3 font-semibold">employee_id</th>
+                            </tr>
+                        </thead>
+                        <tbody id="shareholders-table-body"><tr><td colspan="4" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+
+                <div class="flex justify-between items-center pt-4">
+                    <h3 class="text-lg font-bold text-white">הנפקות מניות</h3>
+                    <button onclick="openIssuanceModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-xl transition"><i class="fa-solid fa-plus"></i> הנפקה חדשה</button>
+                </div>
+                <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                    <table class="w-full text-right border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-800 text-slate-400">
+                                <th class="p-3 font-semibold">share_issuance_id</th>
+                                <th class="p-3 font-semibold">בעל מניות</th>
+                                <th class="p-3 font-semibold">סוג מניה</th>
+                                <th class="p-3 font-semibold">מניות</th>
+                                <th class="p-3 font-semibold">תאריך הנפקה</th>
+                            </tr>
+                        </thead>
+                        <tbody id="issuances-table-body"><tr><td colspan="5" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
             <!-- COMPANY PROFILE -->
             <section id="tab-company" class="tab-content space-y-6">
                 <h3 class="text-lg font-bold text-white">פרופיל החברה שלי</h3>
@@ -283,6 +405,11 @@
                     <div>
                         <label class="block text-xs text-slate-400 mb-1">קוד מדינה</label>
                         <input id="company-country-field" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">סה"כ מניות מאושרות (אופציונלי)</label>
+                        <input id="company-authorized-shares-field" type="number" min="0" placeholder="לא הוגדר" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                        <p class="text-[10px] text-slate-500 mt-1">משמש לחישוב אחוזי הדילול בטבלת ההון. השדה ריק בשמירה = לא נוגע בערך הקיים (לא מאפס אותו).</p>
                     </div>
                     <div>
                         <label class="block text-xs text-slate-400 mb-1">סטטוס</label>
@@ -486,6 +613,100 @@
         </div>
     </div>
 
+    <!-- Modal: New Option Pool (v1.0.0 שלב ב) -->
+    <div id="pool-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-4">פול אופציות חדש</h3>
+            <div class="space-y-3">
+                <input id="pool-total-shares" type="number" min="0" placeholder="סה&quot;כ מניות בפול" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">סוג מניה (אופציונלי)</label>
+                    <select id="pool-share-class-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
+                        <option value="">לא משויך</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">תאריך הקמת הפול</label>
+                    <input type="date" id="pool-established-date" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+            </div>
+            <div id="pool-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="pool-submit-btn" onclick="submitPoolModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
+                <button onclick="closePoolModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Share Class (v1.0.0 שלב ב) -->
+    <div id="share-class-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-4">סוג מניה חדש</h3>
+            <div class="space-y-3">
+                <input id="sc-name" placeholder="שם (למשל Common / Preferred A)" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="sc-class-type" placeholder="סוג (למשל COMMON / PREFERRED)" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">סדר עדיפות בפירוק (מספר קטן יותר = משולם קודם)</label>
+                    <input id="sc-seniority" type="number" value="0" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+            </div>
+            <div id="share-class-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="share-class-submit-btn" onclick="submitShareClassModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
+                <button onclick="closeShareClassModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Shareholder (v1.0.0 שלב ב) -->
+    <div id="shareholder-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-4">בעל מניות חדש</h3>
+            <div class="space-y-3">
+                <input id="sh-name" placeholder="שם" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <input id="sh-type" placeholder="סוג (למשל FOUNDER / INVESTOR / EMPLOYEE)" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">עובד קיים (אופציונלי)</label>
+                    <select id="sh-employee-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
+                        <option value="">לא משויך לעובד</option>
+                    </select>
+                </div>
+            </div>
+            <div id="shareholder-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="shareholder-submit-btn" onclick="submitShareholderModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
+                <button onclick="closeShareholderModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Share Issuance (v1.0.0 שלב ב) -->
+    <div id="issuance-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-bold text-white mb-4">הנפקת מניות חדשה</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">בעל מניות</label>
+                    <select id="issuance-shareholder-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">סוג מניה</label>
+                    <select id="issuance-share-class-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm"></select>
+                </div>
+                <input id="issuance-shares" type="number" min="0" placeholder="כמות מניות" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">תאריך הנפקה</label>
+                    <input type="date" id="issuance-date" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                </div>
+            </div>
+            <div id="issuance-modal-error" class="hidden mt-3 p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+            <div class="flex gap-3 mt-5">
+                <button id="issuance-submit-btn" onclick="submitIssuanceModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
+                <button onclick="closeIssuanceModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal: Export/Import action panel (v0.9.1 שלב ב, PLAN.md §5 מסך 2).
          idle → uploading → dry-run-running → dry-run-shown → committing → done|failed. -->
     <div id="ei-action-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[70] items-center justify-center p-4">
@@ -634,6 +855,8 @@
             if (tabId === "requests") loadRequests();
             if (tabId === "documents") loadDocuments();
             if (tabId === "export-import") loadExportImportHistory();
+            if (tabId === "pools") loadPoolsTab();
+            if (tabId === "cap-table") loadCapTableTab();
             if (tabId === "company") loadCompany();
         }
 
@@ -1513,12 +1736,359 @@
             } catch (err) { toast(err.message, true); }
         }
 
+        // --- פולים וסוגי מניות (v1.0.0 שלב ב) -----------------------------
+        // אין endpoint חדש כאן - /admin/pools ו-/admin/share-classes כבר קיימים
+        // משלב א ולא היה להם UI. poolsShareClassesCache משמש גם לתרגום
+        // pool.share_class_id לשם בטבלת הפולים וגם לאכלוס ה-<select> במודל.
+        let poolsShareClassesCache = [];
+
+        async function loadPoolsTab() {
+            const tbodyPools = document.getElementById("pools-table-body");
+            const tbodySc = document.getElementById("share-classes-table-body");
+            try {
+                const [pools, shareClasses] = await Promise.all([
+                    apiGet("/admin/pools"), apiGet("/admin/share-classes")
+                ]);
+                poolsShareClassesCache = shareClasses;
+                const scName = {};
+                shareClasses.forEach(sc => scName[sc.share_class_id] = sc.name);
+
+                tbodyPools.innerHTML = pools.map(p => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 font-mono text-xs text-slate-400">${p.pool_id}</td>
+                        <td class="p-3 text-white">${p.total_shares.toLocaleString()}</td>
+                        <td class="p-3 text-slate-300">${p.allocated_shares.toLocaleString()}</td>
+                        <td class="p-3 text-emerald-400">${p.unallocated_shares.toLocaleString()}</td>
+                        <td class="p-3 text-xs">${p.share_class_id ? ESOPDocuments.escapeHtml(scName[p.share_class_id] || p.share_class_id) : "לא משויך"}</td>
+                    </tr>
+                `).join("") || `<tr><td colspan="5" class="p-4 text-center text-slate-500">אין פולים</td></tr>`;
+
+                tbodySc.innerHTML = shareClasses.map(sc => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 font-mono text-xs text-slate-400">${sc.share_class_id}</td>
+                        <td class="p-3 text-white">${ESOPDocuments.escapeHtml(sc.name)}</td>
+                        <td class="p-3 text-slate-300 text-xs">${ESOPDocuments.escapeHtml(sc.class_type)}</td>
+                        <td class="p-3 text-slate-300">${sc.seniority_order}</td>
+                    </tr>
+                `).join("") || `<tr><td colspan="4" class="p-4 text-center text-slate-500">אין סוגי מניות</td></tr>`;
+            } catch (err) {
+                tbodyPools.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+                tbodySc.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+            }
+        }
+
+        function openPoolModal() {
+            document.getElementById("pool-modal-error").classList.add("hidden");
+            document.getElementById("pool-total-shares").value = "";
+            document.getElementById("pool-established-date").value = new Date().toISOString().slice(0, 10);
+            const select = document.getElementById("pool-share-class-select");
+            select.innerHTML = `<option value="">לא משויך</option>` +
+                poolsShareClassesCache.map(sc => `<option value="${sc.share_class_id}">${ESOPDocuments.escapeHtml(sc.name)} (${ESOPDocuments.escapeHtml(sc.class_type)})</option>`).join("");
+            document.getElementById("pool-modal").classList.add("open");
+        }
+        function closePoolModal() { document.getElementById("pool-modal").classList.remove("open"); }
+
+        async function submitPoolModal() {
+            const errBox = document.getElementById("pool-modal-error");
+            const btn = document.getElementById("pool-submit-btn");
+            errBox.classList.add("hidden");
+            const totalShares = parseFloat(document.getElementById("pool-total-shares").value);
+            const establishedDate = document.getElementById("pool-established-date").value;
+            if (!totalShares || totalShares <= 0 || !establishedDate) {
+                errBox.textContent = "יש למלא כמות מניות חיובית ותאריך הקמה";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            // share_class_id לא נשלח כלל כשלא נבחר - לא מחרוזת ריקה, ראו CreatePoolRequest.
+            const shareClassId = document.getElementById("pool-share-class-select").value;
+            const payload = { total_shares: totalShares, established_date: establishedDate };
+            if (shareClassId) payload.share_class_id = shareClassId;
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/pools`, {
+                    method: "POST", headers: authHeaders(), body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("הפול נוצר בהצלחה");
+                closePoolModal();
+                loadPoolsTab();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function openShareClassModal() {
+            document.getElementById("share-class-modal-error").classList.add("hidden");
+            document.getElementById("sc-name").value = "";
+            document.getElementById("sc-class-type").value = "";
+            document.getElementById("sc-seniority").value = "0";
+            document.getElementById("share-class-modal").classList.add("open");
+        }
+        function closeShareClassModal() { document.getElementById("share-class-modal").classList.remove("open"); }
+
+        async function submitShareClassModal() {
+            const errBox = document.getElementById("share-class-modal-error");
+            const btn = document.getElementById("share-class-submit-btn");
+            errBox.classList.add("hidden");
+            const name = document.getElementById("sc-name").value.trim();
+            const classType = document.getElementById("sc-class-type").value.trim();
+            const seniority = parseInt(document.getElementById("sc-seniority").value, 10);
+            if (!name || !classType || Number.isNaN(seniority)) {
+                errBox.textContent = "יש למלא שם, סוג וסדר עדיפות";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/share-classes`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ name, class_type: classType, seniority_order: seniority })
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("סוג המניה נוצר בהצלחה");
+                closeShareClassModal();
+                loadPoolsTab();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // --- טבלת הון / דילול (v1.0.0 שלב ב) ------------------------------
+        // capTableShareholders/capTableShareClasses/capTableIssuances הם cache
+        // מקומי לתרגום shareholder_id/share_class_id לשם תצוגה בפירוט ובטבלאות
+        // (בלי לבצע חיבור/חישוב כספי בקליינט - הכל כבר מגיע מוכן מה-snapshot).
+        let capTableShareholders = [];
+        let capTableShareClasses = [];
+        let capTableIssuances = [];
+
+        function shareholderName(id) {
+            const sh = capTableShareholders.find(s => s.shareholder_id === id);
+            return sh ? ESOPDocuments.escapeHtml(sh.name) : ESOPDocuments.escapeHtml(id);
+        }
+        function shareClassName(id) {
+            const sc = capTableShareClasses.find(s => s.share_class_id === id);
+            return sc ? ESOPDocuments.escapeHtml(sc.name) : ESOPDocuments.escapeHtml(id);
+        }
+
+        async function refreshCapTableData() {
+            const [shareholders, shareClasses, issuances] = await Promise.all([
+                apiGet("/admin/shareholders"), apiGet("/admin/share-classes"), apiGet("/admin/share-issuances")
+            ]);
+            capTableShareholders = shareholders;
+            capTableShareClasses = shareClasses;
+            capTableIssuances = issuances;
+        }
+
+        function renderShareholdersTable() {
+            const tbody = document.getElementById("shareholders-table-body");
+            tbody.innerHTML = capTableShareholders.map(s => `
+                <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                    <td class="p-3 font-mono text-xs text-slate-400">${s.shareholder_id}</td>
+                    <td class="p-3 text-white">${ESOPDocuments.escapeHtml(s.name)}</td>
+                    <td class="p-3 text-slate-300 text-xs">${ESOPDocuments.escapeHtml(s.shareholder_type)}</td>
+                    <td class="p-3 font-mono text-xs text-slate-400">${ESOPDocuments.orDash(s.employee_id)}</td>
+                </tr>
+            `).join("") || `<tr><td colspan="4" class="p-4 text-center text-slate-500">אין בעלי מניות</td></tr>`;
+        }
+
+        function renderIssuancesTable() {
+            const tbody = document.getElementById("issuances-table-body");
+            tbody.innerHTML = capTableIssuances.map(i => `
+                <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                    <td class="p-3 font-mono text-xs text-slate-400">${i.share_issuance_id}</td>
+                    <td class="p-3 text-white">${shareholderName(i.shareholder_id)}</td>
+                    <td class="p-3 text-slate-300 text-xs">${shareClassName(i.share_class_id)}</td>
+                    <td class="p-3 text-white">${i.shares.toLocaleString()}</td>
+                    <td class="p-3 text-slate-400 font-mono text-xs">${i.issue_date}</td>
+                </tr>
+            `).join("") || `<tr><td colspan="5" class="p-4 text-center text-slate-500">אין הנפקות</td></tr>`;
+        }
+
+        async function loadCapTableTab() {
+            const asOfInput = document.getElementById("captable-as-of");
+            if (!asOfInput.value) asOfInput.value = new Date().toISOString().slice(0, 10);
+            const shTbody = document.getElementById("shareholders-table-body");
+            const isTbody = document.getElementById("issuances-table-body");
+            try {
+                await refreshCapTableData();
+                renderShareholdersTable();
+                renderIssuancesTable();
+            } catch (err) {
+                shTbody.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+                isTbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+            }
+            await loadCapTableSnapshot();
+        }
+
+        // ה-banner "לא זמין" מוצג במקום כל אחוז בנפרד (לא רק גלובלית) - כי אין
+        // סיבה שגם outstanding_pct וגם fully_diluted_pct לא יהיו None בבת אחת
+        // (שניהם תלויים באותו total_authorized_shares), אבל הרינדור לא מניח את זה.
+        function renderCapTablePercentLine(pct) {
+            if (pct === null || pct === undefined) {
+                return `<span class="text-amber-400"><i class="fa-solid fa-circle-exclamation"></i> אחוז דילול לא זמין - לא הוגדר total_authorized_shares</span>`;
+            }
+            return null;
+        }
+
+        async function loadCapTableSnapshot() {
+            const asOf = document.getElementById("captable-as-of").value;
+            const warningBox = document.getElementById("captable-partial-warning");
+            const breakdownTbody = document.getElementById("captable-breakdown-body");
+            warningBox.classList.add("hidden");
+            warningBox.innerHTML = "";
+            breakdownTbody.innerHTML = `<tr><td colspan="3" class="p-4 text-center text-slate-500">טוען...</td></tr>`;
+            try {
+                const qs = asOf ? `?as_of=${asOf}` : "";
+                const snap = await apiGet(`/admin/cap-table/snapshot${qs}`);
+
+                document.getElementById("captable-outstanding").textContent = snap.outstanding_shares.toLocaleString();
+                document.getElementById("captable-diluted").textContent = snap.fully_diluted_shares.toLocaleString();
+
+                const outLine = renderCapTablePercentLine(snap.outstanding_pct_of_authorized);
+                document.getElementById("captable-outstanding-pct").innerHTML =
+                    outLine !== null ? outLine : `${(snap.outstanding_pct_of_authorized * 100).toFixed(1)}% מתוך מניות מונפקות`;
+
+                const dilLine = renderCapTablePercentLine(snap.fully_diluted_pct_of_authorized);
+                document.getElementById("captable-diluted-pct").innerHTML =
+                    dilLine !== null ? dilLine : `${(snap.fully_diluted_pct_of_authorized * 100).toFixed(1)}% דילול-מלא, כולל מלוא יתרת הפול`;
+
+                if (snap.partial) {
+                    // "no number without provenance" - לעולם לא מציגים סה"כ חלקי
+                    // בלי לגלות במפורש שהוא חלקי, ראו services/cap_table.py.
+                    warningBox.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i>
+                        <b>הנתונים חלקיים</b> - חלק מהפולים לא נכללו בחישוב (אין להם היסטוריית ledger לתאריך המבוקש):
+                        <ul class="list-disc pr-5 mt-1">${snap.warnings.map(w => `<li>${ESOPDocuments.escapeHtml(w)}</li>`).join("")}</ul>`;
+                    warningBox.classList.remove("hidden");
+                }
+
+                breakdownTbody.innerHTML = snap.by_shareholder_and_class.map(row => `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
+                        <td class="p-3 text-white">${shareholderName(row.shareholder_id)}</td>
+                        <td class="p-3 text-slate-300 text-xs">${shareClassName(row.share_class_id)}</td>
+                        <td class="p-3 text-white">${row.shares.toLocaleString()}</td>
+                    </tr>
+                `).join("") || `<tr><td colspan="3" class="p-4 text-center text-slate-500">אין הנפקות עד לתאריך שנבחר</td></tr>`;
+            } catch (err) {
+                breakdownTbody.innerHTML = `<tr><td colspan="3" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+                toast(err.message, true);
+            }
+        }
+
+        async function openShareholderModal() {
+            document.getElementById("shareholder-modal-error").classList.add("hidden");
+            document.getElementById("sh-name").value = "";
+            document.getElementById("sh-type").value = "";
+            const select = document.getElementById("sh-employee-select");
+            select.innerHTML = `<option value="">לא משויך לעובד</option>`;
+            document.getElementById("shareholder-modal").classList.add("open");
+            try {
+                // אכלוס העובדים לא חוסם את פתיחת המודל - בעל מניות חיצוני
+                // (משקיע) לגיטימי בלי שום עובד, ואין סיבה שכשלון ברשימת העובדים
+                // ימנע יצירת בעל מניות כזה.
+                const emps = await apiGet("/admin/employees");
+                select.innerHTML += emps.map(e => `<option value="${e.employee_id}">${ESOPDocuments.escapeHtml(e.first_name + " " + e.last_name)} (${e.employee_id})</option>`).join("");
+            } catch (err) { /* לא קריטי - ראו ההערה למעלה */ }
+        }
+        function closeShareholderModal() { document.getElementById("shareholder-modal").classList.remove("open"); }
+
+        async function submitShareholderModal() {
+            const errBox = document.getElementById("shareholder-modal-error");
+            const btn = document.getElementById("shareholder-submit-btn");
+            errBox.classList.add("hidden");
+            const name = document.getElementById("sh-name").value.trim();
+            const type = document.getElementById("sh-type").value.trim();
+            if (!name || !type) {
+                errBox.textContent = "יש למלא שם וסוג בעל מניות";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            const employeeId = document.getElementById("sh-employee-select").value;
+            const payload = { name, shareholder_type: type };
+            if (employeeId) payload.employee_id = employeeId;
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/shareholders`, {
+                    method: "POST", headers: authHeaders(), body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("בעל המניות נוצר בהצלחה");
+                closeShareholderModal();
+                await refreshCapTableData();
+                renderShareholdersTable();
+                renderIssuancesTable();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function openIssuanceModal() {
+            document.getElementById("issuance-modal-error").classList.add("hidden");
+            document.getElementById("issuance-shares").value = "";
+            document.getElementById("issuance-date").value = new Date().toISOString().slice(0, 10);
+            const shSelect = document.getElementById("issuance-shareholder-select");
+            const scSelect = document.getElementById("issuance-share-class-select");
+            shSelect.innerHTML = capTableShareholders.map(s => `<option value="${s.shareholder_id}">${ESOPDocuments.escapeHtml(s.name)}</option>`).join("")
+                || `<option value="">אין בעלי מניות - הוסיפו אחד קודם</option>`;
+            scSelect.innerHTML = capTableShareClasses.map(sc => `<option value="${sc.share_class_id}">${ESOPDocuments.escapeHtml(sc.name)}</option>`).join("")
+                || `<option value="">אין סוגי מניות - הוסיפו אחד בטאב "ניהול פולים ומניות"</option>`;
+            document.getElementById("issuance-modal").classList.add("open");
+        }
+        function closeIssuanceModal() { document.getElementById("issuance-modal").classList.remove("open"); }
+
+        async function submitIssuanceModal() {
+            const errBox = document.getElementById("issuance-modal-error");
+            const btn = document.getElementById("issuance-submit-btn");
+            errBox.classList.add("hidden");
+            const shareholderId = document.getElementById("issuance-shareholder-select").value;
+            const shareClassId = document.getElementById("issuance-share-class-select").value;
+            const shares = parseFloat(document.getElementById("issuance-shares").value);
+            const issueDate = document.getElementById("issuance-date").value;
+            if (!shareholderId || !shareClassId || !shares || shares <= 0 || !issueDate) {
+                errBox.textContent = "יש לבחור בעל מניות, סוג מניה, כמות מניות חיובית ותאריך הנפקה";
+                errBox.classList.remove("hidden");
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const res = await fetch(`${API}/admin/share-issuances`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ shareholder_id: shareholderId, share_class_id: shareClassId, shares, issue_date: issueDate })
+                });
+                // ה-detail מהשרת מוצג כמו שהוא (למשל חריגה מ-total_authorized_shares) -
+                // ראו ESOPDocuments.errorDetail ותקרת המניות המאושרות ב-cap_table.py.
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("ההנפקה נוצרה בהצלחה");
+                closeIssuanceModal();
+                await refreshCapTableData();
+                renderShareholdersTable();
+                renderIssuancesTable();
+                await loadCapTableSnapshot();
+            } catch (err) {
+                errBox.textContent = err.message;
+                errBox.classList.remove("hidden");
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
         async function loadCompany() {
             try {
                 const comp = await apiGet("/admin/company");
                 document.getElementById("company-id-field").value = comp.company_id;
                 document.getElementById("company-name-field").value = comp.name;
                 document.getElementById("company-country-field").value = comp.country_code;
+                document.getElementById("company-authorized-shares-field").value =
+                    (comp.total_authorized_shares === null || comp.total_authorized_shares === undefined)
+                        ? "" : comp.total_authorized_shares;
                 const badge = document.getElementById("company-active-badge");
                 if (comp.is_active) {
                     badge.textContent = "פעילה";
@@ -1532,14 +2102,22 @@
 
         async function saveCompany() {
             try {
+                const payload = {
+                    name: document.getElementById("company-name-field").value,
+                    country_code: document.getElementById("company-country-field").value,
+                };
+                // שדה ריק = לא נוגעים בערך הקיים (None/absent ב-PUT, לא "אפס מניות
+                // מאושרות") - ראו CompanyUpdateRequest.total_authorized_shares.
+                // נשלח רק כשהמשתמש הזין בפועל ערך.
+                const authorizedSharesRaw = document.getElementById("company-authorized-shares-field").value;
+                if (authorizedSharesRaw !== "") {
+                    payload.total_authorized_shares = parseFloat(authorizedSharesRaw);
+                }
                 const res = await fetch(`${API}/admin/company`, {
                     method: "PUT", headers: authHeaders(),
-                    body: JSON.stringify({
-                        name: document.getElementById("company-name-field").value,
-                        country_code: document.getElementById("company-country-field").value,
-                    })
+                    body: JSON.stringify(payload)
                 });
-                if (!res.ok) throw new Error(await res.text());
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
                 toast("פרטי החברה נשמרו");
                 loadCompany();
             } catch (err) { toast(err.message, true); }

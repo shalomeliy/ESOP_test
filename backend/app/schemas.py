@@ -490,3 +490,41 @@ class ShareIssuanceOut(BaseModel):
     issue_date: date
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ===================================================================
+# Cap Table snapshot (חישוב דילול) - v1.0.0 שלב ב. שלוש הסכמות האלה מיוצרות
+# מ-dict רגיל שמוחזר מ-services/cap_table.py::compute_cap_table_snapshot,
+# לא משורת ORM - from_attributes לא נדרש להן (בשונה מ-Out-ים למעלה שנבנים
+# מ-SQLAlchemy rows), אבל נשארות ConfigDict-consistent עם השאר בכל זאת כדי
+# שלא תהיה שונות מוסכמה בלי הצדקה.
+# ===================================================================
+
+class ShareholderClassBreakdownRow(BaseModel):
+    shareholder_id: str
+    share_class_id: str
+    shares: float
+
+
+class PoolSnapshotRow(BaseModel):
+    pool_id: str
+    # None = הפול לא משויך לסוג מניה ("unassigned") - ראו models.py.OptionPool.share_class_id.
+    share_class_id: Optional[str] = None
+    # None = הפול הוחרג מהחישוב (אין לו היסטוריית ledger לתאריך היסטורי
+    # שהתבקש) - לעולם לא 0 שקרי, ראו compute_cap_table_snapshot.
+    total_shares: Optional[float] = None
+
+
+class CapTableSnapshotOut(BaseModel):
+    as_of: date
+    outstanding_shares: float
+    fully_diluted_shares: float
+    # None = Company.total_authorized_shares לא הוגדר - שני האחוזים למטה
+    # נשארים None גם הם, לעולם לא 0% (דפוס הכשל P4, ראו models.py.Company).
+    total_authorized_shares: Optional[float] = None
+    outstanding_pct_of_authorized: Optional[float] = None
+    fully_diluted_pct_of_authorized: Optional[float] = None
+    partial: bool
+    warnings: List[str]
+    by_shareholder_and_class: List[ShareholderClassBreakdownRow]
+    pools: List[PoolSnapshotRow]

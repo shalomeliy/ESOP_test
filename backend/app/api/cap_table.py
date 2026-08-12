@@ -1,4 +1,5 @@
-from typing import List
+from datetime import date
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
@@ -10,8 +11,10 @@ from backend.app.schemas import (
     CreateShareClassRequest, ShareClassOut,
     CreateShareholderRequest, ShareholderOut,
     CreateShareIssuanceRequest, ShareIssuanceOut,
+    CapTableSnapshotOut,
 )
 from backend.app.services.audit import record_audit_event
+from backend.app.services.cap_table import compute_cap_table_snapshot
 from backend.app.services.ledger import append_event, record_ownership
 from backend.app.auth import require_roles
 
@@ -163,3 +166,14 @@ def create_share_issuance(payload: CreateShareIssuanceRequest,
 @router.get("/admin/share-issuances", response_model=List[ShareIssuanceOut])
 def list_share_issuances(current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     return db.query(ShareIssuance).filter(ShareIssuance.company_id == current_user.company_id).all()
+
+
+@router.get("/admin/cap-table/snapshot", response_model=CapTableSnapshotOut)
+def get_cap_table_snapshot(as_of: Optional[date] = None,
+                           current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                           db: Session = Depends(get_db)):
+    """דילול (outstanding + fully-diluted) נכון לתאריך as_of (ברירת מחדל:
+    היום העסקי) - אגרגציה בזמן קריאה בלבד, ראו services/cap_table.py.
+    as_of לא חוקי (למשל מחרוזת שאינה תאריך) נדחה כבר ע"י FastAPI/Pydantic
+    (422) - אין פענוח תאריך ידני כאן."""
+    return compute_cap_table_snapshot(db, current_user.company_id, as_of)
