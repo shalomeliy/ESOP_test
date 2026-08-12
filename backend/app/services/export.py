@@ -41,8 +41,8 @@ from sqlalchemy.orm import Session
 from backend.app.models import (
     AuditLog, Company, Document, Employee, ExerciseRequest, ExerciseTaxRecord,
     Grant, IncomeTaxBracket, LedgerEvent, LedgerOwnership, NotificationDismissal,
-    NotificationPreference, OptionPool, TaxRatesHistory, TaxRulePack, Trustee,
-    User, VestingSchedule,
+    NotificationPreference, OptionPool, ShareClass, ShareIssuance, Shareholder,
+    TaxRatesHistory, TaxRulePack, Trustee, User, VestingSchedule,
 )
 
 EXPORT_STORE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "export_store"
@@ -110,6 +110,12 @@ class CompanyScope:
     # שני האחרונים לא נדרשו לפני task #6 (services/import_.py) - שם build_company_scope
     # משמש גם כדי לבדוק "האם השורה הזו כבר שייכת לחברת היעד" בזמן ייבוא, לא רק לייצוא.
     exercise_tax_record_ids: Set[str] = field(default_factory=set)
+    # v1.0.1 (debt item 1, HANDOFF.md risk 4): טבלת ההון (v1.0.0) נעדרה מהיקף
+    # הייצוא/ייבוא הזה - שלושתן נושאות company_id ישיר, אותו דפוס בדיוק כמו
+    # pool_ids/trustee_ids, ולא נגזרות דרך grant/pool כמו schedule_ids.
+    share_class_ids: Set[str] = field(default_factory=set)
+    shareholder_ids: Set[str] = field(default_factory=set)
+    share_issuance_ids: Set[str] = field(default_factory=set)
 
 
 def _ids(db: Session, column, *filters) -> Set[str]:
@@ -130,6 +136,9 @@ def build_company_scope(db: Session, company_id: str) -> CompanyScope:
         _ids(db, ExerciseTaxRecord.record_id, ExerciseTaxRecord.request_id.in_(request_ids))
         if request_ids else set()
     )
+    share_class_ids = _ids(db, ShareClass.share_class_id, ShareClass.company_id == company_id)
+    shareholder_ids = _ids(db, Shareholder.shareholder_id, Shareholder.company_id == company_id)
+    share_issuance_ids = _ids(db, ShareIssuance.share_issuance_id, ShareIssuance.company_id == company_id)
 
     user_clauses = [User.company_id == company_id]
     if employee_ids:
@@ -141,7 +150,9 @@ def build_company_scope(db: Session, company_id: str) -> CompanyScope:
     return CompanyScope(company_id=company_id, pool_ids=pool_ids, employee_ids=employee_ids,
                         trustee_ids=trustee_ids, grant_ids=grant_ids, request_ids=request_ids,
                         document_ids=document_ids, schedule_ids=schedule_ids, user_ids=user_ids,
-                        exercise_tax_record_ids=exercise_tax_record_ids)
+                        exercise_tax_record_ids=exercise_tax_record_ids,
+                        share_class_ids=share_class_ids, shareholder_ids=shareholder_ids,
+                        share_issuance_ids=share_issuance_ids)
 
 
 # ===================================================================
@@ -176,6 +187,7 @@ def estimate_export_row_count(db: Session, company_id: str) -> int:
         + len(scope.employee_ids) + len(scope.pool_ids) + len(scope.trustee_ids)
         + len(scope.grant_ids) + len(scope.schedule_ids) + len(scope.document_ids)
         + len(scope.request_ids)
+        + len(scope.share_class_ids) + len(scope.shareholder_ids) + len(scope.share_issuance_ids)
     )
 
     if scope.request_ids:
@@ -234,6 +246,18 @@ def _option_pools_in_scope(db: Session, scope: CompanyScope) -> list:
 
 def _trustees_in_scope(db: Session, scope: CompanyScope) -> list:
     return db.query(Trustee).filter(Trustee.company_id == scope.company_id).all()
+
+
+def _share_classes_in_scope(db: Session, scope: CompanyScope) -> list:
+    return db.query(ShareClass).filter(ShareClass.company_id == scope.company_id).all()
+
+
+def _shareholders_in_scope(db: Session, scope: CompanyScope) -> list:
+    return db.query(Shareholder).filter(Shareholder.company_id == scope.company_id).all()
+
+
+def _share_issuances_in_scope(db: Session, scope: CompanyScope) -> list:
+    return db.query(ShareIssuance).filter(ShareIssuance.company_id == scope.company_id).all()
 
 
 def _grants_in_scope(db: Session, scope: CompanyScope) -> list:
@@ -297,6 +321,12 @@ def _audit_log_in_scope(db: Session, scope: CompanyScope) -> list:
         "Document": scope.document_ids,
         "VestingSchedule": scope.schedule_ids,
         "User": scope.user_ids,
+        # v1.0.1: cap_table.py כותב audit rows לשלושת אלה מ-v1.0.0 - בלעדי
+        # השורות האלה כאן, ייצוא היה משמיט את יומן הביקורת של החברה על
+        # הפעולות שלה בטבלת ההון בשקט (חסר, לא דליפה).
+        "ShareClass": scope.share_class_ids,
+        "Shareholder": scope.shareholder_ids,
+        "ShareIssuance": scope.share_issuance_ids,
     }
     rows = []
     for entity_type, entity_ids in entity_ids_by_type.items():
@@ -337,6 +367,11 @@ TABLE_REGISTRY: Dict[str, _TableSpec] = {
     "employees": _TableSpec(Employee, _employees_in_scope),
     "option_pools": _TableSpec(OptionPool, _option_pools_in_scope),
     "trustees": _TableSpec(Trustee, _trustees_in_scope),
+    # v1.0.1: share_classes/shareholders לפני share_issuances - שניהם ה-FK שלו,
+    # אותו סדר טופולוגי שצד הייבוא (import_.py) חייב לשמור.
+    "share_classes": _TableSpec(ShareClass, _share_classes_in_scope),
+    "shareholders": _TableSpec(Shareholder, _shareholders_in_scope),
+    "share_issuances": _TableSpec(ShareIssuance, _share_issuances_in_scope),
     "grants": _TableSpec(Grant, _grants_in_scope),
     "vesting_schedules": _TableSpec(VestingSchedule, _vesting_schedules_in_scope),
     "documents": _TableSpec(Document, _documents_in_scope),
