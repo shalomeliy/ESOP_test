@@ -120,3 +120,57 @@ def test_hard_delete_still_needs_no_date(client, db_session, admin_world):
     assert response.status_code == 200
     assert response.json()["deleted"] == "hard"
     assert db_session.get(Employee, "E-BARE") is None
+
+
+# ===================================================================
+# v1.0.1 (debt item 3) - ולידציית termination_date מול hire_date/העתיד.
+# החוב שנרשם ב-HANDOFF.md: "הוספת כלל לנתיב אחד בלבד הייתה יוצרת בדיוק את
+# P3" - ולכן הבדיקות כאן פרמטריות זהות על *שני* הנתיבים (DELETE .../employees
+# ו-PATCH .../status) בבת אחת, כדי ששני הנתיבים לא יוכלו לסחוף שוב.
+# ===================================================================
+
+def _delete_response(client, headers, employee_id, termination_date):
+    return client.delete(f"{API}/admin/employees/{employee_id}", headers=headers,
+                         params={"termination_date": str(termination_date)})
+
+
+def _status_response(client, headers, employee_id, termination_date):
+    return client.patch(f"{API}/admin/employees/{employee_id}/status", headers=headers,
+                        json={"status": "TERMINATED", "effective_date": str(termination_date),
+                              "return_unvested_to_pool": False})
+
+
+_TERMINATION_DATE_BOUNDARY_CASES = [
+    # (label, anchor "hire"/"today", offset-in-days-from-anchor, expected_status)
+    ("before_hire_date", "hire", -1, 400),
+    ("on_hire_date_boundary_allowed", "hire", 0, 200),
+    ("on_today_boundary_allowed", "today", 0, 200),
+    ("one_day_in_the_future", "today", 1, 400),
+    ("years_in_the_future", "today", 3650, 400),
+]
+
+
+@pytest.mark.parametrize("endpoint", ["delete", "status"])
+@pytest.mark.parametrize(
+    "label,anchor,offset_days,expected_status", _TERMINATION_DATE_BOUNDARY_CASES,
+    ids=[c[0] for c in _TERMINATION_DATE_BOUNDARY_CASES],
+)
+def test_termination_date_boundary_is_enforced_identically_on_both_endpoints(
+        client, db_session, admin_world, endpoint, label, anchor, offset_days, expected_status):
+    """QA-101 (v1.0.1). E-GRANTED (hire_date=2021-01-01, ראו admin_world) על שני
+    הנתיבים, עם אותם חמשת המקרים בדיוק - כדי שנקודת ה-id של הבדיקה תוכיח שהיא
+    בדיוק אותו תרחיש בשני הנתיבים, לא שני תרחישים דומים במקרה."""
+    from backend.app.types import business_today
+
+    employee = db_session.get(Employee, "E-GRANTED")
+    anchor_date = employee.hire_date if anchor == "hire" else business_today()
+    termination_date = anchor_date + timedelta(days=offset_days)
+
+    if endpoint == "delete":
+        response = _delete_response(client, admin_world, "E-GRANTED", termination_date)
+    else:
+        response = _status_response(client, admin_world, "E-GRANTED", termination_date)
+
+    assert response.status_code == expected_status, response.text
+    if expected_status == 400:
+        assert "termination_date" in response.json()["detail"]

@@ -13,8 +13,20 @@ from backend.app.services.engine import DeterministicESOPEngine, MissingVestingS
 from backend.app.services.audit import record_audit_event
 from backend.app.services.ledger import append_event, record_ownership
 from backend.app.auth import require_roles, generate_temporary_password, hash_password
+from backend.app.types import business_today
 
 router = APIRouter()
+
+
+def _validate_termination_date(termination_date: date, hire_date: date, today: date) -> str | None:
+    # תאריך סיום העסקה מזין את דדליין חלון המימוש - טעות הקלדה כאן מזיזה זכות
+    # כספית אמיתית. שני הכיוונים נבדקים: לפני הגיוס אינו הגיוני, ועתידי חוסם
+    # אירוע שעדיין לא קרה מלהיכנס ל-ledger append-only לפני שהתרחש בפועל.
+    if termination_date < hire_date:
+        return "termination_date cannot be before the employee's hire_date"
+    if termination_date > today:
+        return "termination_date cannot be in the future"
+    return None
 
 
 # ===================================================================
@@ -137,6 +149,9 @@ def delete_employee(employee_id: str,
                         "Pass the actual last day of employment as ?termination_date=YYYY-MM-DD "
                         "- it sets the post-termination exercise deadline and stops vesting."),
             )
+        validation_error = _validate_termination_date(termination_date, emp.hire_date, business_today())
+        if validation_error is not None:
+            raise HTTPException(status_code=400, detail=validation_error)
 
         before_status = emp.status
         emp.status = EmployeeStatus.TERMINATED
@@ -169,6 +184,10 @@ def update_employee_status(employee_id: str, payload: EmployeeStatusUpdate,
         # (או מעבר TERMINATED -> TERMINATED עם תאריך אחר) הזרימה את האופציות שלא
         # הבשילו לפול שוב ושוב, וכל הרצה כזו הזיזה את יתרות הפול עוד צעד מהמענקים.
         already_terminated = before_status in (EmployeeStatus.TERMINATED, EmployeeStatus.DECEASED)
+
+        validation_error = _validate_termination_date(payload.effective_date, employee.hire_date, business_today())
+        if validation_error is not None:
+            raise HTTPException(status_code=400, detail=validation_error)
 
         if payload.return_unvested_to_pool and not already_terminated:
             for grant in employee.grants:
