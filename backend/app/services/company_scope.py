@@ -274,4 +274,14 @@ SPECIAL_CASED_TABLES = {
         "(כמו companies) אבל לא מיובאת; שורה חדשה נוצרת רק דרך "
         "PUT /admin/company/acknowledgment-windows/{type}, שכבר אוכפת "
         "company_id=current_user.company_id בעצמה."),
+    "saved_reports": ("v1.1.0 - קונפיגורציית דוח שמורה (סוג+פילטרים) של admin "
+        "בודד, לא דאטה עסקי ליבתי כמו grants/cap table. קרובה מבחינה מושגית "
+        "ל'נוחות עבודה אישית' - saved filter - כמו "
+        "notification_preferences/notification_dismissals (שאין להן בכלל "
+        "עמודת company_id ישירה, ולכן אינן ברשימה הזו כלל). לא אמורה לנדוד "
+        "עם ייצוא/ייבוא מלא של חברה בין סביבות: owner_user_id מצביע על "
+        "משתמש ספציפי ב-users, וה-users עצמה כבר SPECIAL_CASED (לעולם לא "
+        "מיוצאת/מיובאת) - ייבוא saved_reports היה אומר או לאפס owner_user_id "
+        "(ואז 'פרטי' הופך חסר-משמעות, ראו is_private) או להשאיר הפניה "
+        "ל-user_id שלא קיים ביעד. ראו PLAN v1.1.0, סעיף 'מודל דאטה'."),
 }

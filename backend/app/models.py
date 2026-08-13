@@ -695,3 +695,60 @@ class ShareIssuance(Base):
     # לנכונים, בדיוק אותו לקח שכבר נלמד בקודבייס הזה (ח1/ח2).
     issue_date = Column(Date, nullable=False)
     created_at = Column(UtcDateTime, default=utcnow)
+
+
+# ===================================================================
+# דוחות שמורים (Saved Reports) - v1.1.0, "דוחות, ייצוא ו-BI"
+# ===================================================================
+# הטבלה החדשה היחידה בגרסה הזו - כל שאר v1.1.0 קורא מדאטה קיים (ledger,
+# audit log, cap table, כללי ההתראה) בזמן קריאה בלבד, בדיוק כמו
+# compute_cap_table_snapshot/NotificationFeed. הטבלה כאן שומרת רק את
+# *קונפיגורציית* הדוח (סוג + פילטרים) - לא את תוצאת הדוח עצמה.
+
+# סוגי הדוחות הנתמכים - String חופשי ולא SQLEnum, אותה מוסכמה בדיוק כמו
+# ShareClass.class_type/TAX_CALCULATION_METHODS/LEDGER_EVENT_TYPES: אוצר
+# מילים סגור שנבדק באפליקציה (routes/reports.py), לא באילוץ DB - כי דוח
+# חדש (למשל v1.4.0 שיוסיף ערך שקלי לחשיפה-לפי-נאמן) לא ידרוש מיגרציה כאן.
+SAVED_REPORT_TYPES = {
+    "POOL_STATUS",
+    "TRUSTEE_EXPOSURE",
+    "DEADLINE_RISK",
+    "EXERCISE_ACTIVITY",
+    "COMPENSATION_EXPENSE",
+    "MOVEMENT",
+    "ASC718_READINESS",
+}
+
+
+class SavedReport(Base):
+    """קונפיגורציית דוח שמורה (סוג + פילטרים), לא הדוח עצמו - שממשיך להיות
+    מחושב מחדש מהדאטה הקיים בכל קריאה, בדיוק כמו compute_cap_table_snapshot.
+
+    company_scope (backend/app/services/company_scope.py): הטבלה הזו קרובה
+    מבחינה מושגית ל"נוחות עבודה אישית" (saved filter) ולא לדאטה עסקי ליבתי
+    כמו grants/cap table - ולכן רשומה ב-SPECIAL_CASED_TABLES ולא ב-
+    TABLE_REGISTRY: היא לא אמורה לנדוד עם ייצוא/ייבוא מלא של חברה בין
+    סביבות, בדיוק כמו NotificationPreference/NotificationDismissal (אף
+    שלאלה, בשונה מכאן, אין בכלל עמודת company_id ישירה ולכן הן לא נדרשות
+    ברישום הזה כלל - ראו tests/test_project_invariants.py::
+    test_every_company_scoped_table_is_registered_or_explicitly_special_cased).
+
+    owner_user_id: היוצר. היום כל חברה חולקת חשבון admin משותף אחד
+    (admin@{company_id}.demo), כך ש"פרטי"="משותף" בפועל - אבל הסכמה כבר
+    בנויה לזהות-מנהל אמיתית שתגיע עם v1.5.0 (RBAC), ראו PLAN v1.1.0 החלטה 4.
+    """
+    __tablename__ = "saved_reports"
+    report_id = Column(String, primary_key=True, default=generate_uuid)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    owner_user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+    # default=True: פרטי-כברירת-מחדל (החלטה מוצרית מפורשת, PLAN v1.1.0) - אבל
+    # עמודת Boolean רגילה, לא קבוע-אמת-בלבד: False ("משותף לכל מנהלי החברה")
+    # הוא ערך נתמך לגמרי ברמת הסכמה, לא רק תיאורטי.
+    is_private = Column(Boolean, default=True, nullable=False)
+    name = Column(String, nullable=False)
+    # אוצר-מילים סגור - ראו SAVED_REPORT_TYPES למעלה.
+    report_type = Column(String, nullable=False)
+    # JSON טקסטואלי - אותה מוסכמה כמו AuditLog.before_value/LedgerEvent.payload.
+    # nullable=False: דוח שמור בלי שום פילטר הוא עדיין "{}" תקין, לא None.
+    filter_params = Column(String, nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow)

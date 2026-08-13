@@ -1,4 +1,10 @@
--- SQL Schema Reference - 24 טבלאות, משקף את backend/app/models.py בגרסה 1.0.0 (שלב א).
+-- SQL Schema Reference - 26 טבלאות, משקף את backend/app/models.py נכון ל-v1.1.0
+-- (הוספת saved_reports - ראו הבלוק בהמשך הקובץ). מספר הטבלאות/הגרסה בשורה הזו
+-- לא עודכנו בין v1.0.0 ל-v1.1.0 למרות שלוש טבלאות שנוספו בדרך
+-- (exercise_tax_records/data_transfer_runs ב-v0.9.1 שלב ב,
+-- document_acknowledgment_window_overrides ב-v1.0.2) - דוגמה נוספת לדיוק
+-- הפער שסעיף (2)-(3) למטה כבר מתעד: תיקון תוכן הטבלאות לא ערב עדכון השורה
+-- הזו עצמה. מעכשיו: כל שינוי סכמה מעדכן גם את המספר כאן, לא רק את הטבלאות.
 --
 -- זהו קובץ תיעוד/reference בלבד. ה-DB בפועל נבנה על ידי Alembic
 -- (python -m alembic upgrade head) מאז גרסה 0.4.0 - לא על ידי הקובץ הזה
@@ -495,6 +501,34 @@ CREATE TABLE IF NOT EXISTS document_acknowledgment_window_overrides (
 	CHECK (window_days > 0)
 );
 CREATE INDEX IF NOT EXISTS ix_document_acknowledgment_window_overrides_company_id ON document_acknowledgment_window_overrides (company_id);
+
+
+-- ===================================================================
+-- דוחות שמורים (Saved Reports) - v1.1.0, "דוחות, ייצוא ו-BI"
+-- ===================================================================
+-- שומרת קונפיגורציית דוח (סוג+פילטרים) שאדמין ביקש לשמור - לא את תוצאת
+-- הדוח עצמה, שממשיכה להיחשב בזמן קריאה מהדאטה הקיים. לא רשומה ב-
+-- company_scope.TABLE_REGISTRY (SPECIAL_CASED_TABLES) - "נוחות עבודה
+-- אישית" תלוית owner_user_id, לא דאטה עסקי ליבתי שאמור לנדוד בין סביבות.
+
+CREATE TABLE IF NOT EXISTS saved_reports (
+	report_id VARCHAR NOT NULL,
+	company_id VARCHAR NOT NULL,
+	owner_user_id VARCHAR NOT NULL,
+	-- ברירת מחדל: פרטי (True). False = משותף לכל מנהלי החברה.
+	is_private BOOLEAN NOT NULL,
+	name VARCHAR NOT NULL,
+	-- אוצר-מילים סגור (SAVED_REPORT_TYPES, models.py) - אין CHECK ב-DB, אותה
+	-- מוסכמה כמו ledger_events.event_type/share_classes.class_type.
+	report_type VARCHAR NOT NULL,
+	-- JSON טקסטואלי - אותה מוסכמה כמו audit_log.before_value/ledger_events.payload.
+	filter_params VARCHAR NOT NULL,
+	created_at DATETIME,
+	PRIMARY KEY (report_id),
+	FOREIGN KEY(company_id) REFERENCES companies (company_id),
+	FOREIGN KEY(owner_user_id) REFERENCES users (user_id)
+);
+CREATE INDEX IF NOT EXISTS ix_saved_reports_company_id ON saved_reports (company_id);
 
 
 -- ===================================================================
