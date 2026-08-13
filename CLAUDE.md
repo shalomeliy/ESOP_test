@@ -6,10 +6,11 @@ A backend engine and testbed for managing, practicing, and simulating stock opti
 
 ## Stack
 
-- Backend: FastAPI + SQLAlchemy, SQLite (`esop_database.db`, WAL mode).
+- Backend: FastAPI + SQLAlchemy, SQLite (`esop_database.db`, WAL mode), Alembic migrations.
 - Clients: plain HTML/JS under `clients/{admin,employee,trustee}_portal/`, mounted by FastAPI at `/clients`.
-- API surface: `backend/app/api/routes.py`, prefixed `/api/v1`. Swagger UI at `/docs`.
+- API surface: one router per domain under `backend/app/api/` (15 modules — auth, employees, grants, exercise_requests, documents, export, reports, …), all mounted in `main.py` under `/api/v1`. Swagger UI at `/docs`.
 - Sample request payloads for manual/API testing live in `json_samples/`.
+- **Architecture map**: `ARCHITECTURE.md` — the ledger/event-sourcing core, the `company_scope` multi-tenant registry, the tax-rule-pack engine, and the document/PDF engine each require reading several files to understand; that file is the shortcut. Read it before touching any of those four areas, and update it when their *shape* changes (not on every feature — that's what `HANDOFF.md`/`docs/qa/` are for).
 
 ## Before implementation
 
@@ -55,13 +56,18 @@ A feature is complete only when:
 - `QA_TESTBOOK.md` is an index only; the test cases live in `docs/qa/<version>.md`. Never read the archived version files or re-merge them into one file.
 - Prefer a subagent for read-only exploration ("where is X used", "does Y exist") so its reading stays out of this conversation's context.
 - Don't dump whole files or full command output into the transcript when a targeted range or a count answers the question.
+- **Doc map** — each top-level doc answers one question and stays out of the others' way (see also the table at the top of `GOAL.md`): why the project exists → `GOAL.md`; what's broken in the market → `MARKET_ANALYSIS.md`; what's built next and why the version order changed → `FEATURE_SPEC.md`; how the code is actually shaped → `ARCHITECTURE.md`; who builds what and how a version ships → `AGENT_WORKFLOW.md`; what's in flight right now → `HANDOFF.md`; what to test and the risk map → `QA_TESTBOOK.md` + `docs/qa/<version>.md`; what's allowed while working → this file.
 
 ## Useful commands
 
 ```bash
-python -m uvicorn backend.app.main:app --reload   # dev server, http://127.0.0.1:8000, docs at /docs
-pip install -r requirements.txt                    # deps are pinned
-python -m pytest                                   # full suite (plain `pytest` is not on PATH here)
+python -m uvicorn backend.app.main:app --reload            # dev server, http://127.0.0.1:8000, docs at /docs
+pip install -r requirements.txt                             # deps are pinned
+python -m pytest                                            # full suite (plain `pytest` is not on PATH here)
+python -m pytest tests/test_tax_engine.py                   # one file
+python -m pytest tests/test_tax_engine.py::test_never_modeled_combination_raises_with_that_reason   # one test
 ```
+
+There is no configured linter/formatter (no ruff/flake8/black/mypy in `requirements.txt`) — don't invent a lint step or assume one runs in CI.
 
 Use `/clear` between unrelated exercises, `/context` to inspect context use, `/usage` to monitor the Claude plan, and `/rewind` when an implementation direction is wrong.

@@ -10,6 +10,9 @@
 | מה נבנה בגרסה הבאה | `FEATURE_SPEC.md` |
 | מי בונה ואיך גרסה יוצאת | `AGENT_WORKFLOW.md` |
 | מה מותר ואסור בזמן עבודה | `CLAUDE.md` |
+| איך הקוד בפועל בנוי (ledger, company_scope, מנוע מס, מסמכים) | `ARCHITECTURE.md` |
+| מה קורה עכשיו, מה הצעד הבא | `HANDOFF.md` |
+| מה לבדוק ומפת הסיכונים | `QA_TESTBOOK.md` |
 | איך מריצים את זה | `README.md` |
 
 ---
