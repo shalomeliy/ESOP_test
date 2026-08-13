@@ -460,3 +460,60 @@ def _iter_included_routers():
     for r in app.routes:
         if hasattr(r, "original_router"):
             yield r
+
+
+# ---------------------------------------------------------------------------
+# ייצוא/ייבוא (v1.0.2, HANDOFF.md debt item 1). ShareClass/Shareholder/
+# ShareIssuance נשכחו פעם אחת מ-_FORCE_COMPANY_ID_TABLES (v1.0.1) - export.py
+# ו-import_.py תיארו אותן טבלאות בשני מבנים עצמאיים שיכלו לחרוג. אוחדו
+# ל-company_scope.TABLE_REGISTRY, אבל איחוד לבדו לא מבטיח שטבלה חדשה עם
+# עמודת company_id תמיד תוצהר נכון - רק בדיקה שרצה בכל build עושה זאת.
+# ---------------------------------------------------------------------------
+
+def _models_with_company_id_column():
+    """כל טבלה (models.py, דרך Base.metadata) שיש לה עמודה בשם company_id
+    ממש - לא fk כלשהו לחברה בשם אחר (למשל source_company_id/target_company_id
+    ב-DataTransferRun, שהם קשר בין-חברות במפורש, לא "השורה הזו שייכת לחברה
+    X"). זה בדיוק העמודה ש-TableSpec.force_company_id/import_.py::_build_row
+    דורסים - האינווריאנט הזה בודק אותה עמודה ולא אחרת."""
+    from backend.app.database import Base
+    import backend.app.models  # noqa: F401 -- רושם את הטבלאות על Base.metadata
+
+    return {
+        table_name: table
+        for table_name, table in Base.metadata.tables.items()
+        if "company_id" in table.columns
+    }
+
+
+def test_every_company_scoped_table_is_registered_or_explicitly_special_cased():
+    """כל טבלה עם עמודת company_id בפועל חייבת להופיע או ב-
+    company_scope.TABLE_REGISTRY (ומצהירה force_company_id) או ב-
+    company_scope.SPECIAL_CASED_TABLES (עם סיבה מתועדת) - אין דרך שלישית
+    להישאר בשקט מחוץ לשניהם. זו בדיוק צורת הבאג שכבר קרה: טבלה חדשה
+    שמישהו הוסיף לצד אחד (export.py) ושכח מהצד השני (_FORCE_COMPANY_ID_TABLES,
+    import_.py)."""
+    from backend.app.services.company_scope import TABLE_REGISTRY, SPECIAL_CASED_TABLES
+
+    company_scoped = set(_models_with_company_id_column())
+    registered = set(TABLE_REGISTRY)
+    special_cased = set(SPECIAL_CASED_TABLES)
+
+    unaccounted = company_scoped - registered - special_cased
+    assert not unaccounted, (
+        "טבלאות עם עמודת company_id שלא רשומות ב-TABLE_REGISTRY וגם לא "
+        f"ב-SPECIAL_CASED_TABLES (company_scope.py): {sorted(unaccounted)}"
+    )
+
+    # 7 מתוך 11 טבלאות ה-TABLE_REGISTRY נושאות company_id ישיר (השאר scoped
+    # דרך שרשור FK - grants/vesting_schedules/exercise_requests/
+    # exercise_tax_records) - וכל אחת מה-7 האלה חייבת להצהיר
+    # force_company_id=True, אחרת commit() לא ידרוס company_id זר מהקובץ.
+    unforced = [
+        table_name for table_name in (company_scoped & registered)
+        if not TABLE_REGISTRY[table_name].force_company_id
+    ]
+    assert not unforced, (
+        f"הטבלאות האלה נושאות עמודת company_id בפועל אבל ה-TableSpec שלהן "
+        f"ב-TABLE_REGISTRY לא מצהיר force_company_id=True: {sorted(unforced)}"
+    )

@@ -29,20 +29,23 @@ import io
 import json
 import os
 import zipfile
-from dataclasses import dataclass, field
 from datetime import date as _date, datetime as _datetime
 from enum import Enum as _Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
-    AuditLog, Company, Document, Employee, ExerciseRequest, ExerciseTaxRecord,
-    Grant, IncomeTaxBracket, LedgerEvent, LedgerOwnership, NotificationDismissal,
-    NotificationPreference, OptionPool, ShareClass, ShareIssuance, Shareholder,
-    TaxRatesHistory, TaxRulePack, Trustee, User, VestingSchedule,
+    AuditLog, Company, DocumentAcknowledgmentWindowOverride, Employee,
+    ExerciseRequest, ExerciseTaxRecord, Grant, IncomeTaxBracket, LedgerEvent,
+    LedgerOwnership, NotificationDismissal, NotificationPreference,
+    TaxRatesHistory, TaxRulePack,
+)
+from backend.app.services.company_scope import (
+    CompanyScope, TableSpec, build_company_scope,
+    TABLE_REGISTRY as _CORE_TABLE_REGISTRY,
 )
 
 EXPORT_STORE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "export_store"
@@ -93,66 +96,13 @@ def _serialize_tax_row(row) -> dict:
     return {k: v for k, v in _serialize_row(row).items() if k not in _TAX_TABLE_EXCLUDED_COLUMNS}
 
 
-@dataclass
-class CompanyScope:
-    """מזהים בהיקף החברה, מחושבים פעם אחת ב-build_company_scope ומשמשים את כל
-    ה-loaders - כדי שלוגיקת ה-scoping לא תוכפל (ותסתטה) בכל טבלה בנפרד,
-    בדיוק דפוס P3 (QA_TESTBOOK.md) שכבר תיקן את documents.py/exercise_requests.py."""
-    company_id: str
-    pool_ids: Set[str] = field(default_factory=set)
-    employee_ids: Set[str] = field(default_factory=set)
-    trustee_ids: Set[str] = field(default_factory=set)
-    grant_ids: Set[str] = field(default_factory=set)
-    request_ids: Set[str] = field(default_factory=set)
-    document_ids: Set[str] = field(default_factory=set)
-    schedule_ids: Set[str] = field(default_factory=set)
-    user_ids: Set[str] = field(default_factory=set)
-    # שני האחרונים לא נדרשו לפני task #6 (services/import_.py) - שם build_company_scope
-    # משמש גם כדי לבדוק "האם השורה הזו כבר שייכת לחברת היעד" בזמן ייבוא, לא רק לייצוא.
-    exercise_tax_record_ids: Set[str] = field(default_factory=set)
-    # v1.0.1 (debt item 1, HANDOFF.md risk 4): טבלת ההון (v1.0.0) נעדרה מהיקף
-    # הייצוא/ייבוא הזה - שלושתן נושאות company_id ישיר, אותו דפוס בדיוק כמו
-    # pool_ids/trustee_ids, ולא נגזרות דרך grant/pool כמו schedule_ids.
-    share_class_ids: Set[str] = field(default_factory=set)
-    shareholder_ids: Set[str] = field(default_factory=set)
-    share_issuance_ids: Set[str] = field(default_factory=set)
-
+# CompanyScope/build_company_scope עברו ל-company_scope.py (v1.0.2, HANDOFF.md
+# debt item 1) - משותפים עכשיו עם import_.py סימטרית, לא רק מיובאים ממנו.
 
 def _ids(db: Session, column, *filters) -> Set[str]:
+    """שכפול מכוון של company_scope.py::_ids - שימוש פרטי יחיד כאן
+    (estimate_export_row_count), לא שווה חשיפה חוצת-מודולים בשביל שורה אחת."""
     return {row[0] for row in db.query(column).filter(*filters).all()}
-
-
-def build_company_scope(db: Session, company_id: str) -> CompanyScope:
-    pool_ids = _ids(db, OptionPool.pool_id, OptionPool.company_id == company_id)
-    employee_ids = _ids(db, Employee.employee_id, Employee.company_id == company_id)
-    trustee_ids = _ids(db, Trustee.trustee_id, Trustee.company_id == company_id)
-    grant_ids = _ids(db, Grant.grant_id, Grant.pool_id.in_(pool_ids)) if pool_ids else set()
-    request_ids = (_ids(db, ExerciseRequest.request_id, ExerciseRequest.grant_id.in_(grant_ids))
-                   if grant_ids else set())
-    document_ids = _ids(db, Document.document_id, Document.company_id == company_id)
-    schedule_ids = (_ids(db, VestingSchedule.schedule_id, VestingSchedule.grant_id.in_(grant_ids))
-                    if grant_ids else set())
-    exercise_tax_record_ids = (
-        _ids(db, ExerciseTaxRecord.record_id, ExerciseTaxRecord.request_id.in_(request_ids))
-        if request_ids else set()
-    )
-    share_class_ids = _ids(db, ShareClass.share_class_id, ShareClass.company_id == company_id)
-    shareholder_ids = _ids(db, Shareholder.shareholder_id, Shareholder.company_id == company_id)
-    share_issuance_ids = _ids(db, ShareIssuance.share_issuance_id, ShareIssuance.company_id == company_id)
-
-    user_clauses = [User.company_id == company_id]
-    if employee_ids:
-        user_clauses.append(User.employee_id.in_(employee_ids))
-    if trustee_ids:
-        user_clauses.append(User.trustee_id.in_(trustee_ids))
-    user_ids = _ids(db, User.user_id, or_(*user_clauses))
-
-    return CompanyScope(company_id=company_id, pool_ids=pool_ids, employee_ids=employee_ids,
-                        trustee_ids=trustee_ids, grant_ids=grant_ids, request_ids=request_ids,
-                        document_ids=document_ids, schedule_ids=schedule_ids, user_ids=user_ids,
-                        exercise_tax_record_ids=exercise_tax_record_ids,
-                        share_class_ids=share_class_ids, shareholder_ids=shareholder_ids,
-                        share_issuance_ids=share_issuance_ids)
 
 
 # ===================================================================
@@ -188,6 +138,7 @@ def estimate_export_row_count(db: Session, company_id: str) -> int:
         + len(scope.grant_ids) + len(scope.schedule_ids) + len(scope.document_ids)
         + len(scope.request_ids)
         + len(scope.share_class_ids) + len(scope.shareholder_ids) + len(scope.share_issuance_ids)
+        + len(scope.document_acknowledgment_window_override_ids)
     )
 
     if scope.request_ids:
@@ -236,59 +187,24 @@ def _companies_in_scope(db: Session, scope: CompanyScope) -> list:
     return [company] if company else []
 
 
-def _employees_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(Employee).filter(Employee.company_id == scope.company_id).all()
+# employees/option_pools/trustees/share_classes/shareholders/share_issuances/
+# grants/vesting_schedules/documents/exercise_requests/exercise_tax_records
+# loaders עברו ל-company_scope.py (v1.0.2, HANDOFF.md debt item 1) - הן חלק
+# מ-TABLE_REGISTRY המאוחד עכשיו, לא הגדרות מקומיות כאן.
 
-
-def _option_pools_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(OptionPool).filter(OptionPool.company_id == scope.company_id).all()
-
-
-def _trustees_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(Trustee).filter(Trustee.company_id == scope.company_id).all()
-
-
-def _share_classes_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(ShareClass).filter(ShareClass.company_id == scope.company_id).all()
-
-
-def _shareholders_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(Shareholder).filter(Shareholder.company_id == scope.company_id).all()
-
-
-def _share_issuances_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(ShareIssuance).filter(ShareIssuance.company_id == scope.company_id).all()
-
-
-def _grants_in_scope(db: Session, scope: CompanyScope) -> list:
-    if not scope.grant_ids:
-        return []
-    return db.query(Grant).filter(Grant.grant_id.in_(scope.grant_ids)).all()
-
-
-def _vesting_schedules_in_scope(db: Session, scope: CompanyScope) -> list:
-    if not scope.schedule_ids:
-        return []
-    return db.query(VestingSchedule).filter(VestingSchedule.schedule_id.in_(scope.schedule_ids)).all()
-
-
-def _documents_in_scope(db: Session, scope: CompanyScope) -> list:
-    return db.query(Document).filter(Document.company_id == scope.company_id).all()
-
-
-def _exercise_requests_in_scope(db: Session, scope: CompanyScope) -> list:
-    if not scope.request_ids:
-        return []
-    return db.query(ExerciseRequest).filter(ExerciseRequest.request_id.in_(scope.request_ids)).all()
-
-
-def _exercise_tax_records_in_scope(db: Session, scope: CompanyScope) -> list:
-    """v0.9.1 שלב ב: זו הרשומה שהופכת את דוח ההתאמה (task #9) לאמיתי על
-    מימוש שקרה בפועל, לא רק על סימולציה - ראו models.py::ExerciseTaxRecord."""
-    if not scope.request_ids:
-        return []
-    return db.query(ExerciseTaxRecord).filter(ExerciseTaxRecord.request_id.in_(scope.request_ids)).all()
-
+def _document_acknowledgment_window_overrides_in_scope(db: Session, scope: CompanyScope) -> list:
+    """v1.0.2 (debt item 2): מיוצאת לצפייה/גיבוי, אותה קטגוריה בדיוק כמו
+    companies עצמה - לא ב-company_scope.TABLE_REGISTRY (לא מיובאת). שורה
+    חדשה נוצרת תמיד דרך PUT /admin/company/acknowledgment-windows/{type},
+    שכבר אוכף company_id=current_user.company_id בעצמו - אין צורך במנגנון
+    הייבוא הגנרי (עם ה-fk_checks/force_company_id שלו) לטבלת הגדרות בגודל
+    כזה, ובלי import מנעים גם את שאלת ה-UNIQUE(company_id, template_type)
+    שהיה חייב להיחסם בזמן ייבוא batch (הטבלה היחידה עם UNIQUE נוסף על ה-PK)."""
+    return (
+        db.query(DocumentAcknowledgmentWindowOverride)
+        .filter(DocumentAcknowledgmentWindowOverride.company_id == scope.company_id)
+        .all()
+    )
 
 def _ledger_events_in_scope(db: Session, scope: CompanyScope) -> list:
     """LedgerEvent אין לו עמודת company_id - ההיקף נקבע דרך LedgerOwnership,
@@ -327,6 +243,9 @@ def _audit_log_in_scope(db: Session, scope: CompanyScope) -> list:
         "ShareClass": scope.share_class_ids,
         "Shareholder": scope.shareholder_ids,
         "ShareIssuance": scope.share_issuance_ids,
+        # v1.0.2: אותה סיבה בדיוק - company.py כותב audit rows על override של
+        # חלון אישור פר-סוג-מסמך.
+        "DocumentAcknowledgmentWindowOverride": scope.document_acknowledgment_window_override_ids,
     }
     rows = []
     for entity_type, entity_ids in entity_ids_by_type.items():
@@ -352,35 +271,27 @@ def _notification_dismissals_in_scope(db: Session, scope: CompanyScope) -> list:
     return db.query(NotificationDismissal).filter(NotificationDismissal.user_id.in_(scope.user_ids)).all()
 
 
-@dataclass
-class _TableSpec:
-    model: type
-    loader: Callable[[Session, CompanyScope], list]
-
-
-# רישום הטבלאות ה"אחידות" - כל אחת נקבעת ע"י CompanyScope בלבד, בלי לוגיקה
-# נוספת. LedgerOwnership/User/UserSession/StockPricesHistory לא ברשימה - שלוש
-# ההחלטות המפורשות בתכנון (recompute-on-import, לא נתוני לקוח, לא נדרש
-# כש-gain כבר נשמר על ExerciseTaxRecord).
-TABLE_REGISTRY: Dict[str, _TableSpec] = {
-    "companies": _TableSpec(Company, _companies_in_scope),
-    "employees": _TableSpec(Employee, _employees_in_scope),
-    "option_pools": _TableSpec(OptionPool, _option_pools_in_scope),
-    "trustees": _TableSpec(Trustee, _trustees_in_scope),
-    # v1.0.1: share_classes/shareholders לפני share_issuances - שניהם ה-FK שלו,
-    # אותו סדר טופולוגי שצד הייבוא (import_.py) חייב לשמור.
-    "share_classes": _TableSpec(ShareClass, _share_classes_in_scope),
-    "shareholders": _TableSpec(Shareholder, _shareholders_in_scope),
-    "share_issuances": _TableSpec(ShareIssuance, _share_issuances_in_scope),
-    "grants": _TableSpec(Grant, _grants_in_scope),
-    "vesting_schedules": _TableSpec(VestingSchedule, _vesting_schedules_in_scope),
-    "documents": _TableSpec(Document, _documents_in_scope),
-    "exercise_requests": _TableSpec(ExerciseRequest, _exercise_requests_in_scope),
-    "exercise_tax_records": _TableSpec(ExerciseTaxRecord, _exercise_tax_records_in_scope),
-    "ledger_events": _TableSpec(LedgerEvent, _ledger_events_in_scope),
-    "audit_log": _TableSpec(AuditLog, _audit_log_in_scope),
-    "notification_preferences": _TableSpec(NotificationPreference, _notification_preferences_in_scope),
-    "notification_dismissals": _TableSpec(NotificationDismissal, _notification_dismissals_in_scope),
+# רישום הטבלאות המלא לצורך ייצוא: 11 טבלאות הליבה מ-company_scope.py (משותפות
+# עם import_.py, v1.0.2 - HANDOFF.md debt item 1) + 6 טבלאות שנשארות מיוחדות
+# לצד הייצוא בלבד: companies (שורש ה-scope, לא טבלת ליבה); ledger_events/
+# audit_log/notification_preferences/notification_dismissals (אין להן עמודת
+# company_id בכלל - dispatch עצמאי לא-גנרי, ראו ה-loaders למעלה); ו-
+# document_acknowledgment_window_overrides (v1.0.2 debt item 2 - יש לה עמודת
+# company_id, אבל מיוצאת-בלבד/לא-מיובאת בכוונה, ראו הלוודר שלה למעלה).
+# LedgerOwnership/User/UserSession/StockPricesHistory לא ברשימה בכלל (לא
+# מיוצאות ולא מיובאות) - שלוש ההחלטות המפורשות בתכנון (recompute-on-import,
+# לא נתוני לקוח, לא נדרש כש-gain כבר נשמר על ExerciseTaxRecord) - ראו גם
+# company_scope.SPECIAL_CASED_TABLES.
+TABLE_REGISTRY: Dict[str, TableSpec] = {
+    "companies": TableSpec(Company, _companies_in_scope),
+    **_CORE_TABLE_REGISTRY,
+    "ledger_events": TableSpec(LedgerEvent, _ledger_events_in_scope),
+    "audit_log": TableSpec(AuditLog, _audit_log_in_scope),
+    "notification_preferences": TableSpec(NotificationPreference, _notification_preferences_in_scope),
+    "notification_dismissals": TableSpec(NotificationDismissal, _notification_dismissals_in_scope),
+    "document_acknowledgment_window_overrides": TableSpec(
+        DocumentAcknowledgmentWindowOverride, _document_acknowledgment_window_overrides_in_scope,
+    ),
 }
 
 _MODEL_BY_TABLE: Dict[str, type] = {name: spec.model for name, spec in TABLE_REGISTRY.items()}

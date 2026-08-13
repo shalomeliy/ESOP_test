@@ -72,12 +72,11 @@ from sqlalchemy import Date as _SADate, Enum as _SQLEnum
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
-    AuditLog, Document, Employee, ExerciseRequest, ExerciseTaxRecord, Grant,
-    IncomeTaxBracket, LedgerEvent, NotificationDismissal, NotificationPreference,
-    OptionPool, ShareClass, ShareIssuance, Shareholder, TaxRatesHistory,
-    TaxRulePack, Trustee, VestingSchedule,
+    AuditLog, Grant, IncomeTaxBracket, LedgerEvent, NotificationDismissal,
+    NotificationPreference, OptionPool, TaxRatesHistory, TaxRulePack,
 )
-from backend.app.services.export import EXPORT_SCHEMA_VERSION, CompanyScope, build_company_scope
+from backend.app.services.company_scope import CompanyScope, TABLE_REGISTRY, build_company_scope
+from backend.app.services.export import EXPORT_SCHEMA_VERSION
 from backend.app.services.ledger import project, record_ownership
 from backend.app.types import UtcDateTime
 
@@ -222,89 +221,25 @@ def _parse_date(value) -> _date:
 # טבלאות "רגילות" - מפתח ראשי יחיד + FK-ים שנפתרים מול scope (יעד + באצ').
 # ===================================================================
 
-@dataclass
-class _TableSpec:
-    pk_field: str
-    scope_category: str  # שם attribute תואם על CompanyScope ועל batch_seen
-    fk_checks: Tuple[Tuple[str, str], ...] = ()  # (fk_field, referenced_scope_category)
-
-
-_TABLE_SPECS: Dict[str, _TableSpec] = {
-    # v1.0.1: share_classes חייבת לבוא לפני option_pools - option_pools.share_class_id
-    # הוא fk_check שנפתר מול batch_seen["share_class_ids"], וזה מאוכלס רק אחרי
-    # שהטבלה שמקדימה אותה ב-_TABLE_SPECS עברה עיבוד (ראו _validate_normal_tables:
-    # הוא איטרטור יחיד על הדיקט הזה, בסדר שלו בדיוק). אותו עיקרון בדיוק כמו
-    # pool_ids/employee_ids/trustee_ids שכבר זמינים לפני grants.
-    "share_classes": _TableSpec("share_class_id", "share_class_ids"),
-    "option_pools": _TableSpec("pool_id", "pool_ids", (("share_class_id", "share_class_ids"),)),
-    "employees": _TableSpec("employee_id", "employee_ids"),
-    "trustees": _TableSpec("trustee_id", "trustee_ids"),
-    # shareholders אחרי employees (employee_id) ואחרי share_classes; share_issuances
-    # אחרי שניהם - אותו סדר טופולוגי, פעם אחת.
-    "shareholders": _TableSpec("shareholder_id", "shareholder_ids",
-                               (("employee_id", "employee_ids"),)),
-    "share_issuances": _TableSpec("share_issuance_id", "share_issuance_ids",
-                                  (("shareholder_id", "shareholder_ids"),
-                                   ("share_class_id", "share_class_ids"))),
-    "grants": _TableSpec("grant_id", "grant_ids",
-                         (("pool_id", "pool_ids"), ("employee_id", "employee_ids"),
-                          ("trustee_id", "trustee_ids"))),
-    "vesting_schedules": _TableSpec("schedule_id", "schedule_ids", (("grant_id", "grant_ids"),)),
-    "documents": _TableSpec("document_id", "document_ids",
-                            (("grant_id", "grant_ids"), ("employee_id", "employee_ids"),
-                             ("trustee_id", "trustee_ids"))),
-    "exercise_requests": _TableSpec("request_id", "request_ids",
-                                    (("grant_id", "grant_ids"), ("employee_id", "employee_ids"))),
-    "exercise_tax_records": _TableSpec("record_id", "exercise_tax_record_ids",
-                                       (("request_id", "request_ids"),)),
-}
-
-# מודל ORM + עמודת המפתח הראשי, לצורך בדיקת "קיים בכלל, בכל חברה" (global,
-# לא מסונן) - שאילתה אחת לכל טבלה, לא אחת לכל שורה.
-_PK_COLUMN = {
-    "share_classes": ShareClass.share_class_id,
-    "option_pools": OptionPool.pool_id,
-    "employees": Employee.employee_id,
-    "trustees": Trustee.trustee_id,
-    "shareholders": Shareholder.shareholder_id,
-    "share_issuances": ShareIssuance.share_issuance_id,
-    "grants": Grant.grant_id,
-    "vesting_schedules": VestingSchedule.schedule_id,
-    "documents": Document.document_id,
-    "exercise_requests": ExerciseRequest.request_id,
-    "exercise_tax_records": ExerciseTaxRecord.record_id,
-}
-
-# אותן טבלאות, המודל עצמו - task #7 (commit) בונה שורת ORM ישירות מ-
-# _TABLE_SPECS, באותו סדר טופולוגי שכבר נבדק (§3, ותוקן ב-v1.0.1): share_classes
-# לפני option_pools (share_class_id) ולפני shareholders/share_issuances,
-# employees/trustees לפני grants, share_classes+shareholders לפני
-# share_issuances, grants לפני vesting_schedules/documents/exercise_requests,
-# exercise_requests לפני exercise_tax_records.
-_MODEL_BY_TABLE = {
-    "share_classes": ShareClass,
-    "option_pools": OptionPool,
-    "employees": Employee,
-    "trustees": Trustee,
-    "shareholders": Shareholder,
-    "share_issuances": ShareIssuance,
-    "grants": Grant,
-    "vesting_schedules": VestingSchedule,
-    "documents": Document,
-    "exercise_requests": ExerciseRequest,
-    "exercise_tax_records": ExerciseTaxRecord,
-}
+# _TABLE_SPECS/_PK_COLUMN/_MODEL_BY_TABLE אוחדו ל-company_scope.TABLE_REGISTRY
+# (v1.0.2, HANDOFF.md debt item 1) - משותף עם export.py עכשיו, לא מוגדר כאן
+# בנפרד. הסדר עדיין טעון (load-bearing) - ראו הערת המודול של company_scope.py.
 
 
 def _existing_pks_by_table(db: Session) -> Dict[str, Set[str]]:
-    return {table: {row[0] for row in db.query(column).all()} for table, column in _PK_COLUMN.items()}
+    """מודל ORM + עמודת המפתח הראשי לכל טבלה, לצורך בדיקת "קיים בכלל, בכל
+    חברה" (global, לא מסונן) - שאילתה אחת לכל טבלה, לא אחת לכל שורה."""
+    return {
+        table: {row[0] for row in db.query(getattr(spec.model, spec.pk_field)).all()}
+        for table, spec in TABLE_REGISTRY.items()
+    }
 
 
 def _validate_normal_tables(bundle: dict, target_scope: CompanyScope,
                             batch_seen: Dict[str, Set[str]],
                             existing_pks: Dict[str, Set[str]]) -> List[RowOutcome]:
     outcomes: List[RowOutcome] = []
-    for table_name, spec in _TABLE_SPECS.items():
+    for table_name, spec in TABLE_REGISTRY.items():
         rows = bundle["tables"].get(table_name, [])
         seen = batch_seen.setdefault(spec.scope_category, set())
         for index, row in enumerate(rows):
@@ -396,16 +331,13 @@ def _validate_tax_tables(db: Session, bundle: dict) -> List[RowOutcome]:
 # sequence_no) ולא על event_id (decision 5).
 # ===================================================================
 
+# נגזר מ-TABLE_REGISTRY (v1.0.2, HANDOFF.md debt item 1) במקום דיקט נפרד
+# שחייב היה להישאר מסונכרן ידנית מולו - אותה צורת-באג בדיוק שגרמה ל-
+# _FORCE_COMPANY_ID_TABLES לשכוח את ShareIssuance פעם אחת (v1.0.1).
 _LEDGER_AGGREGATE_CATEGORY = {
-    "OptionPool": "pool_ids",
-    "Employee": "employee_ids",
-    "Grant": "grant_ids",
-    "VestingSchedule": "schedule_ids",
-    "ExerciseRequest": "request_ids",
-    # v1.0.1: ShareIssuance הוא ledger aggregate מ-v1.0.0 (LEDGER_AGGREGATE_TYPES,
-    # models.py) עם סוג אירוע יחיד (SHARE_ISSUANCE_ESTABLISHED) - בלי השורה הזו,
-    # כל ledger_events row מסוג הזה בחבילה היה נכשל כ-"unknown aggregate_type".
-    "ShareIssuance": "share_issuance_ids",
+    spec.aggregate_type: spec.scope_category
+    for spec in TABLE_REGISTRY.values()
+    if spec.aggregate_type is not None
 }
 
 
@@ -524,43 +456,13 @@ def dry_run(db: Session, bundle: dict, target_company_id: str) -> ImportDryRunRe
 # סוגר את הטרנזקציה.
 # ===================================================================
 
-# הטבלאות היחידות עם עמודת company_id בפועל (models.py) - decision 9: לעולם
-# לא מהקובץ, נאכף כאן ולא ב-dry_run כי dry_run לא כותב כלום. Grant/VestingSchedule/
-# ExerciseRequest/ExerciseTaxRecord אין להן עמודת company_id בכלל (ה-scoping
-# שלהן נגזר דרך שרשור FK, כבר אומת ב-dry_run).
-# v1.0.1: share_classes/shareholders/share_issuances מצטרפות - כל שלושתן
-# נושאות company_id ישיר (models.py), בדיוק כמו option_pools. אל תסמכו על
-# ה"ledger-native" של ShareIssuance כטעם לדלג עליה כאן - יש לה עמודת company_id
-# ישירה ולא-nullable בדיוק כמו option_pools, בשונה מ-Grant/VestingSchedule.
-# בלעדי השורה הזו, bundle עם company_id זר בשורת share_issuances/shareholders
-# היה נכתב עם הערך מהקובץ, לא נדרס לחברת היעד (ראו סקירת האבטחה בתכנון).
-_FORCE_COMPANY_ID_TABLES = {
-    "option_pools", "employees", "trustees", "documents",
-    "share_classes", "shareholders", "share_issuances",
-}
-
-# עמודות *_user_id שמאופסות תמיד בכתיבה - ראו הפסקה המורחבת בראש הקובץ:
-# users לעולם לא מיובאת (decision 1), אז כל reference אליה מהקובץ לא יכול
-# לפתור ביעד. ledger_events/audit_log לא ב-_MODEL_BY_TABLE (מטופלים בנפרד
-# למטה) אבל חולקים את אותו העיקרון בדיוק.
-_NULLED_USER_COLUMNS: Dict[str, Tuple[str, ...]] = {
-    "documents": ("acknowledged_by_user_id", "created_by_user_id"),
-    "exercise_requests": ("reviewed_by_user_id",),
-    "audit_log": ("actor_user_id",),
-    "ledger_events": ("actor_user_id",),
-}
-
-# aggregate_type (ledger.py) לכל טבלה שהיא גם "בעלת" LedgerOwnership. Trustee/
-# Document/ExerciseTaxRecord לא ברשימה בכוונה - הן לא סוגי aggregate בעצמן
-# (LEDGER_AGGREGATE_TYPES ב-models.py), רק תכונות על ישויות אחרות.
-_AGGREGATE_TYPE_BY_TABLE = {
-    "option_pools": "OptionPool",
-    "employees": "Employee",
-    "grants": "Grant",
-    "vesting_schedules": "VestingSchedule",
-    "exercise_requests": "ExerciseRequest",
-    "share_issuances": "ShareIssuance",
-}
+# _FORCE_COMPANY_ID_TABLES/_NULLED_USER_COLUMNS/_AGGREGATE_TYPE_BY_TABLE אוחדו
+# ל-TableSpec.force_company_id/.nulled_user_columns/.aggregate_type
+# (company_scope.py, v1.0.2 - HANDOFF.md debt item 1). decision 9 (company_id
+# לעולם לא מהקובץ) ו-decision 1 (users לעולם לא מיובאת) עדיין נאכפים באותה
+# נקודה בדיוק (_build_row למטה) - רק המקור של הדגלים עבר. audit_log/
+# ledger_events ממשיכים לאפס actor_user_id בעצמם (_write_audit_log/
+# _write_ledger_events למטה) - הם לא עוברים דרך _build_row בכלל.
 
 
 def _deserialize_value(column, value):
@@ -597,10 +499,11 @@ class ImportCommitReport:
 
 
 def _build_row(table_name: str, model, row: dict, *, target_company_id: str) -> object:
+    spec = TABLE_REGISTRY[table_name]
     values = _deserialize_row(model, row)
-    if table_name in _FORCE_COMPANY_ID_TABLES:
+    if spec.force_company_id:
         values["company_id"] = target_company_id
-    for column_name in _NULLED_USER_COLUMNS.get(table_name, ()):
+    for column_name in spec.nulled_user_columns:
         if column_name in values:
             values[column_name] = None
     return model(**values)
@@ -619,7 +522,7 @@ def _record_ownership_for_new_row(db: Session, table_name: str, obj, target_comp
     לישות חדשה נבנית כאן מחדש, בדיוק כמו backfill_ledger.py בזמנו. company_id
     הוא תמיד target_company_id ולא נגזר דרך pool כמו בזרימה החיה (grants.py) -
     היעד תמיד חברה אחת, זו של המייבא (ההבהרה המפורשת מ-task #6)."""
-    aggregate_type = _AGGREGATE_TYPE_BY_TABLE.get(table_name)
+    aggregate_type = TABLE_REGISTRY[table_name].aggregate_type
     if aggregate_type is None:
         return
     if table_name == "option_pools":
@@ -649,16 +552,16 @@ def _record_ownership_for_new_row(db: Session, table_name: str, obj, target_comp
 
 def _write_normal_tables(db: Session, bundle: dict, outcomes_by_table: Dict[str, Dict[int, RowOutcome]],
                          target_company_id: str) -> int:
-    """כותב את שמונה טבלאות _TABLE_SPECS בסדר הטופולוגי הקבוע שלו (אותו סדר
-    שכבר אומת ב-dry_run, §3), flush בין טבלה לטבלה - הלקח מ-task #2
+    """כותב את 11 טבלאות company_scope.TABLE_REGISTRY בסדר הטופולוגי הקבוע שלו
+    (אותו סדר שכבר אומת ב-dry_run, §3), flush בין טבלה לטבלה - הלקח מ-task #2
     (HANDOFF.md): SQLAlchemy לא מבטיח סדר INSERT בין טבלאות שחולקות FK גולמי
     בלי relationship()."""
     written = 0
-    for table_name, model in _MODEL_BY_TABLE.items():
+    for table_name, spec in TABLE_REGISTRY.items():
         rows = bundle["tables"].get(table_name, [])
         table_outcomes = outcomes_by_table.get(table_name, {})
         new_objects = [
-            _build_row(table_name, model, row, target_company_id=target_company_id)
+            _build_row(table_name, spec.model, row, target_company_id=target_company_id)
             for index, row in enumerate(rows)
             if table_outcomes.get(index) is not None and table_outcomes[index].status == NEW
         ]
