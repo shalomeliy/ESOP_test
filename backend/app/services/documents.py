@@ -10,13 +10,14 @@ esop_database.db, ראו .gitignore). לעולם לא מוגשים כקובץ ס
 """
 
 import hashlib
+import io
 import os
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from bidi import get_display
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
@@ -141,6 +142,66 @@ def _render_pdf(title: str, rows: list, document_id: str, version: int) -> tuple
 
     SimpleDocTemplate(str(full_path), pagesize=A4).build(story)
     return relative_path, _sha256_of_file(full_path)
+
+
+# ===================================================================
+# רינדור PDF אפמרי, טבלאי n-עמודות (v1.1.0, דוחות/BI - services/reports.py)
+# ===================================================================
+# שונה מ-_render_pdf למעלה בשני דברים, שני חסמים אמיתיים לא סגנוניים:
+# (1) _render_pdf כותב תמיד ל-DOCUMENT_STORE_DIR לפי document_id/version -
+#     שני פרמטרים שמזהים שורת Document שמורה ב-DB. לדוח BI אין ולעולם לא
+#     תהיה שורת Document כזו, ואין רצון להנציח קובץ על הדיסק בכל צפייה/
+#     הורדת דוח (בניגוד למסמך שנוצר פעם אחת ונשלח). הפונקציה כאן מחזירה
+#     bytes בזיכרון בלבד - שום דבר לא נכתב לדיסק.
+# (2) _render_pdf בונה תמיד טבלת label/value דו-עמודתית קבועה (colWidths
+#     [6cm, 9cm]) - מתאימה ל"כרטיס פרטים" של מענק בודד, לא לדוח טבלאי
+#     שנועד מטבעו להיות הרבה שורות/כמה עמודות (pool_id, total, allocated...).
+# משתפת עם _render_pdf: רישום הגופן (_ensure_unicode_font, אותו global
+# _unicode_font_registered - לא נרשם פעמיים), עוזר ה-RTL (_rtl), והצהרת
+# אי-המחויבות (_NOT_BINDING_NOTICE) - אותה סיבה בדיוק (שם עובד עברי אמיתי
+# עלול להופיע גם בתוכן דוח, למשל "עובדים בסיכון דדליין").
+def render_tabular_pdf(title: str, headers: List[str], rows: List[list],
+                       disclosures: Optional[List[str]] = None) -> bytes:
+    font_name = _ensure_unicode_font()
+    styles = getSampleStyleSheet()
+    for style_name in ("Title", "Italic", "Normal"):
+        styles[style_name].fontName = font_name
+
+    story = [
+        Paragraph(_rtl(title), styles["Title"]),
+        Spacer(1, 0.5 * cm),
+        Paragraph(_NOT_BINDING_NOTICE, styles["Italic"]),
+    ]
+    for note in (disclosures or []):
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Paragraph(_rtl(note), styles["Italic"]))
+    story.append(Spacer(1, 0.5 * cm))
+
+    col_count = max(1, len(headers))
+    if rows:
+        table_data = [[_rtl(h) for h in headers]] + [[_rtl(cell) for cell in row] for row in rows]
+    else:
+        table_data = [[_rtl(h) for h in headers], ["— no rows —"] + [""] * (col_count - 1)]
+
+    # A4 לרוחב (landscape) ולא לאורך - דוחות טבלאיים נוטים לכמה עמודות (עד
+    # כ-12 בדוח הוצאת השכר המשוער), ורוחב נוסף חוסך גדישת טקסט לפני שכל
+    # תא נחתך. usable_width משוער לפי גודל landscape A4 פחות שולי ברירת
+    # המחדל של SimpleDocTemplate (2.5 ס"מ לכל צד).
+    usable_width = landscape(A4)[0] - 5 * cm
+    col_width = usable_width / col_count
+    table = Table(table_data, colWidths=[col_width] * col_count, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(table)
+
+    buffer = io.BytesIO()
+    SimpleDocTemplate(buffer, pagesize=landscape(A4)).build(story)
+    return buffer.getvalue()
 
 
 def _grant_type_value(grant: Grant) -> str:

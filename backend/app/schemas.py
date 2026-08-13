@@ -546,3 +546,45 @@ class CapTableSnapshotOut(BaseModel):
     warnings: List[str]
     by_shareholder_and_class: List[ShareholderClassBreakdownRow]
     pools: List[PoolSnapshotRow]
+
+
+# ===================================================================
+# דוחות שמורים (Saved Reports) - v1.1.0, "דוחות, ייצוא ו-BI"
+# ===================================================================
+# filter_params: מהצד השני של ה-API הוא Dict רגיל, לא מחרוזת JSON - הקורא לא
+# אמור לדעת ש-models.py.SavedReport.filter_params מאוחסן כטקסט; ה-service
+# (json.dumps/json.loads) עושה את ההמרה, אותה מוסכמה בדיוק כמו LedgerEventOut.payload
+# (api/ledger.py: json.loads(e.payload) לפני בניית ה-schema).
+
+class SavedReportCreateRequest(BaseModel):
+    name: str
+    report_type: str
+    filter_params: Dict[str, Any] = {}
+    is_private: bool = True
+
+
+class SavedReportOut(BaseModel):
+    report_id: str
+    company_id: str
+    owner_user_id: str
+    is_private: bool
+    name: str
+    report_type: str
+    filter_params: Dict[str, Any]
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ===================================================================
+# דוחות (Reports/BI) - v1.1.0. rows/summary/disclosures הם ה-envelope
+# הגנרי המשותף לכל שבעת הדוחות (ראו services/reports.py::ReportResult) -
+# summary/disclosures הם dict/list חופשיים בכוונה (צורתם שונה מדוח לדוח,
+# למשל by_pool/by_tax_track בדוח הוצאת השכר מול by_employee בדוח הדדליין),
+# לא משועבטים ל-schema נוקשה אחד לכל שבעת הדוחות.
+class ReportEnvelopeOut(BaseModel):
+    report_type: str
+    generated_at: datetime
+    rows: List[Dict[str, Any]]
+    summary: Dict[str, Any]
+    disclosures: List[str] = []
