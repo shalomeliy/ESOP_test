@@ -550,6 +550,31 @@ class Document(Base):
     created_by_user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
 
 
+class DocumentAcknowledgmentWindowOverride(Base):
+    """חלון אישור קבלה פר-סוג-מסמך (v1.0.2, HANDOFF.md debt item 2) - שכבה
+    שנייה, עדינה יותר, מעל Company.acknowledgment_window_days (שכבר קיים,
+    v1.0.1). שורה חסרה ל-(company_id, template_type) = אין override לסוג
+    הזה - נופל ל-acknowledgment_window_days של החברה, ואם גם הוא None -
+    לקבוע הגלובלי (ACKNOWLEDGMENT_WINDOW_DAYS, document_status.py). אותה
+    מוסכמה בדיוק כמו total_authorized_shares/acknowledgment_window_days:
+    None/היעדר שורה הוא "לא הוגדר", לא "0 יום".
+    template_type הוא String חופשי ולא FK - הוא לא נבדק מול טבלה, רק מול
+    DOCUMENT_TEMPLATE_TYPES ברמת האפליקציה (אותה מוסכמה כמו Document.template_type
+    עצמו), כדי שסוג מסמך חדש לא ידרוש מיגרציה כאן."""
+    __tablename__ = "document_acknowledgment_window_overrides"
+    override_id = Column(String, primary_key=True, default=generate_uuid)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=False, index=True)
+    template_type = Column(String, nullable=False)
+    window_days = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "template_type",
+                         name="uq_doc_ack_window_override_company_type"),
+        CheckConstraint("window_days > 0",
+                        name="ck_doc_ack_window_override_positive"),
+    )
+
+
 # ===================================================================
 # ייצוא / ייבוא וניידות נתונים (v0.9.1 שלב ב)
 # ===================================================================

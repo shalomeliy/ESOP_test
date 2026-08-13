@@ -10,8 +10,9 @@
 from datetime import timedelta
 
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
 
-from backend.app.models import Document, DocumentStatus
+from backend.app.models import Company, Document, DocumentAcknowledgmentWindowOverride, DocumentStatus
 from backend.app.types import utcnow
 
 # תוקף בקשת אישור קבלה. 30 יום הוא הנוהג המקובל בבקשות אישור, והוא מדיניות
@@ -55,6 +56,25 @@ def expire_due(db, documents) -> None:
 def expire_if_due(db, document: Document) -> Document:
     expire_due(db, [document])
     return document
+
+
+def resolve_acknowledgment_window_days(db: Session, company_id: str, template_type: str) -> "int | None":
+    """שלושה מקורות, בסדר עדיפות: override פר-(חברה,סוג-מסמך) (v1.0.2, debt
+    item 2) -> override פר-חברה (v1.0.1, Company.acknowledgment_window_days)
+    -> None (ואז deadline_for נופל לקבוע הגלובלי ACKNOWLEDGMENT_WINDOW_DAYS).
+    אותה מוסכמה בכל שלב: None/היעדר שורה הוא "לא הוגדר", לא "0 יום". פונקציה
+    נפרדת מ-deadline_for בכוונה - deadline_for נשארת טהורה בלי db, הקורא
+    (documents.py) פותר את ה-override ומעביר, בדיוק כמו שעשה קודם עם
+    Company.acknowledgment_window_days לבדו."""
+    override = db.query(DocumentAcknowledgmentWindowOverride.window_days).filter(
+        DocumentAcknowledgmentWindowOverride.company_id == company_id,
+        DocumentAcknowledgmentWindowOverride.template_type == template_type,
+    ).scalar()
+    if override is not None:
+        return override
+    return db.query(Company.acknowledgment_window_days).filter(
+        Company.company_id == company_id
+    ).scalar()
 
 
 def deadline_for(sent_at, window_days: "int | None" = None):

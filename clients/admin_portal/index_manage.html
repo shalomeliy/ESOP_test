@@ -417,6 +417,21 @@
                         <p class="text-[10px] text-slate-500 mt-1">כמה ימים בקשת אישור קבלה נשארת תקפה מרגע השליחה. השדה ריק בשמירה = לא נוגע בערך הקיים; לא הוגדר בכלל = ברירת המחדל (30 יום). משפיע רק על מסמכים שיישלחו מעתה, לא רטרואקטיבית.</p>
                     </div>
                     <div>
+                        <label class="block text-xs text-slate-400 mb-1">חריגה פר-סוג מסמך (אופציונלי)</label>
+                        <p class="text-[10px] text-slate-500 mb-2">סוג מסמך ספציפי יכול לקבל חלון שונה מהחלון של החברה שלמעלה. שורה ריקה = משתמש בברירת המחדל של החברה. גם זה לא רטרואקטיבי - משפיע רק על מסמכים שיישלחו מעתה.</p>
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-slate-500 text-xs border-b border-slate-800">
+                                    <th class="text-right py-1 font-normal">סוג מסמך</th>
+                                    <th class="text-right py-1 font-normal">חריגה (ימים)</th>
+                                    <th class="text-right py-1 font-normal">בפועל</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="doc-ack-window-overrides-body"></tbody>
+                        </table>
+                    </div>
+                    <div>
                         <label class="block text-xs text-slate-400 mb-1">סטטוס</label>
                         <span id="company-active-badge" class="text-xs px-2 py-1 rounded border">-</span>
                     </div>
@@ -862,7 +877,7 @@
             if (tabId === "export-import") loadExportImportHistory();
             if (tabId === "pools") loadPoolsTab();
             if (tabId === "cap-table") loadCapTableTab();
-            if (tabId === "company") loadCompany();
+            if (tabId === "company") { loadCompany(); loadAcknowledgmentWindowOverrides(); }
         }
 
         async function apiGet(path) {
@@ -2132,6 +2147,65 @@
                 if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
                 toast("פרטי החברה נשמרו");
                 loadCompany();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        // v1.0.2 (debt item 2): רשימת סוגי המסמכים כאן כפולה בכוונה מול ה-select
+        // של יצירת מסמך (שורה ~556) - DOCUMENT_TEMPLATE_TYPES הוא String חופשי
+        // באפליקציה (לא DB enum), אין endpoint שמחזיר את הרשימה, ואותה מוסכמה
+        // כבר קיימת פעמיים בקובץ הזה.
+        const DOC_TEMPLATE_TYPES = [
+            { value: "GRANT_LETTER", label: "כתב הענקה" },
+            { value: "SECTION_102_APPENDIX", label: "נספח 102" },
+            { value: "TRUSTEE_DEPOSIT_CONFIRMATION", label: "אישור הפקדה בנאמנות" },
+        ];
+
+        async function loadAcknowledgmentWindowOverrides() {
+            const tbody = document.getElementById("doc-ack-window-overrides-body");
+            tbody.innerHTML = `<tr><td colspan="4" class="text-slate-500 text-xs py-2">טוען...</td></tr>`;
+            try {
+                const [comp, overrides] = await Promise.all([
+                    apiGet("/admin/company"), apiGet("/admin/company/acknowledgment-windows"),
+                ]);
+                const overrideByType = {};
+                overrides.forEach(o => { overrideByType[o.template_type] = o.window_days; });
+                // "לא זמין"/"לא הוגדר" תמיד מנוסח במפורש, לא 0/ריק שקט - אותה
+                // מוסכמה כמו יתר המסך הזה (banner "לא זמין" בטבלת ההון).
+                const companyDefaultText = (comp.acknowledgment_window_days === null || comp.acknowledgment_window_days === undefined)
+                    ? "ברירת המחדל הגלובלית (30 ימים)"
+                    : `ברירת המחדל של החברה (${comp.acknowledgment_window_days} ימים)`;
+
+                tbody.innerHTML = DOC_TEMPLATE_TYPES.map(t => {
+                    const override = overrideByType[t.value];
+                    const hasOverride = override !== undefined;
+                    const effectiveText = hasOverride ? `${override} ימים (חריגה)` : `משתמש ב${companyDefaultText}`;
+                    return `<tr class="border-b border-slate-800/50">
+                        <td class="py-2">${t.label}</td>
+                        <td class="py-2"><input type="number" min="1" id="doc-ack-window-override-${t.value}"
+                            value="${hasOverride ? override : ""}" placeholder="לא הוגדר"
+                            class="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-white text-sm"></td>
+                        <td class="py-2 text-xs text-slate-500">${effectiveText}</td>
+                        <td class="py-2"><button onclick="saveAcknowledgmentWindowOverride('${t.value}')"
+                            class="text-xs px-3 py-1 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 transition">שמור</button></td>
+                    </tr>`;
+                }).join("");
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="4" class="text-red-400 text-xs py-2">${err.message}</td></tr>`;
+            }
+        }
+
+        async function saveAcknowledgmentWindowOverride(templateType) {
+            try {
+                const raw = document.getElementById(`doc-ack-window-override-${templateType}`).value;
+                // שדה ריק = מחיקת ה-override (window_days: null), חזרה לירושה
+                // מהחברה - אותה מוסכמה בדיוק כמו company-ack-window-field עצמו.
+                const payload = { window_days: raw === "" ? null : parseInt(raw, 10) };
+                const res = await fetch(`${API}/admin/company/acknowledgment-windows/${templateType}`, {
+                    method: "PUT", headers: authHeaders(), body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                toast("חלון אישור המסמך נשמר");
+                loadAcknowledgmentWindowOverrides();
             } catch (err) { toast(err.message, true); }
         }
 

@@ -143,6 +143,20 @@ class CompanyOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class DocumentAcknowledgmentWindowOverrideOut(BaseModel):
+    template_type: str
+    # Optional - ה-PUT endpoint (upsert_acknowledgment_window_override) מחזיר
+    # את אותו schema גם על מחיקה (window_days=None), כדי לא לדלוף override_id/
+    # company_id (שדות פנימיים) דרך תגובת ORM גולמית בענפי create/update.
+    window_days: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class DocumentAcknowledgmentWindowOverrideUpsertRequest(BaseModel):
+    # None = מחיקת ה-override (חזרה לירושה מ-Company.acknowledgment_window_days) -
+    # אותה מוסכמה בדיוק כמו שאר שדות ה-override בפרויקט הזה. ערך חיובי = קבע/עדכן.
+    window_days: Optional[int] = None
+
 class GrantOut(BaseModel):
     grant_id: str
     employee_id: str

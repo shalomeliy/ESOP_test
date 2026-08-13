@@ -481,6 +481,21 @@ CREATE INDEX IF NOT EXISTS ix_share_issuances_company_id ON share_issuances(comp
 CREATE INDEX IF NOT EXISTS ix_share_issuances_shareholder_id ON share_issuances(shareholder_id);
 CREATE INDEX IF NOT EXISTS ix_share_issuances_share_class_id ON share_issuances(share_class_id);
 
+-- v1.0.2: שכבה שנייה, פר-סוג-מסמך, מעל companies.acknowledgment_window_days
+-- (פר-חברה בלבד). שורה חסרה = אין override לסוג הזה - נופל לחלון של החברה,
+-- ואם גם הוא NULL - לקבוע הגלובלי (ACKNOWLEDGMENT_WINDOW_DAYS).
+CREATE TABLE IF NOT EXISTS document_acknowledgment_window_overrides (
+	override_id VARCHAR NOT NULL,
+	company_id VARCHAR NOT NULL,
+	template_type VARCHAR NOT NULL,
+	window_days INTEGER NOT NULL,
+	PRIMARY KEY (override_id),
+	FOREIGN KEY(company_id) REFERENCES companies (company_id),
+	UNIQUE (company_id, template_type),
+	CHECK (window_days > 0)
+);
+CREATE INDEX IF NOT EXISTS ix_document_acknowledgment_window_overrides_company_id ON document_acknowledgment_window_overrides (company_id);
+
 
 -- ===================================================================
 -- טריגרים - כאן נאכפים האינווריאנטים שאין להם ביטוי בעמודה

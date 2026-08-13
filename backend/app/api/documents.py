@@ -18,6 +18,7 @@ from backend.app.services.documents import (
 from backend.app.services.document_access import assert_document_access
 from backend.app.services.document_status import (
     assert_is_current_version, assert_transition_allowed, deadline_for, expire_due, expire_if_due,
+    resolve_acknowledgment_window_days,
 )
 from backend.app.auth import require_roles
 from backend.app.api.exercise_requests import _company_id_of_grant
@@ -95,8 +96,7 @@ def _transition_document(db: Session, document: Document, target: DocumentStatus
     now = utcnow()
     if target == DocumentStatus.SENT:
         document.sent_at = now
-        window_days = db.query(Company.acknowledgment_window_days).filter(
-            Company.company_id == document.company_id).scalar()
+        window_days = resolve_acknowledgment_window_days(db, document.company_id, document.template_type)
         document.expires_at = deadline_for(now, window_days)
     elif target == DocumentStatus.ACKNOWLEDGED:
         document.acknowledged_at = now

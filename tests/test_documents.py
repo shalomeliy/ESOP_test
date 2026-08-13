@@ -844,3 +844,148 @@ def test_deadline_for_adds_exact_days_across_a_month_boundary_not_calendar_days(
 
     # window_days=None נופל לברירת המחדל הגלובלית - אותה בדיקה, בלי override.
     assert deadline_for(sent_at) == sent_at + timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
+
+
+# ===================================================================
+# v1.0.2 (debt item 2) - שכבה שנייה, פר-סוג-מסמך, מעל ה-override הכללי-לחברה
+# (v1.0.1, לעיל). שלושה מקורות בסדר עדיפות: override פר-סוג -> override
+# פר-חברה -> הקבוע הגלובלי. שורה חסרה = "לא הוגדר", לא "0 יום".
+# ===================================================================
+
+def _put_window_override(client, world, template_type, window_days):
+    return client.put(f"{API}/admin/company/acknowledgment-windows/{template_type}",
+                      headers=world.admin_a, json={"window_days": window_days})
+
+
+def test_different_template_types_get_different_deadlines_from_their_own_overrides(
+        client, world, grant_id):
+    """הבדיקה שהוזכרה בסקירת ה-QA כ'must-have': אם ה-override נשמר אבל
+    _transition_document לא מחובר בפועל לפותר החדש, שני הסוגים היו מקבלים
+    בשקט את אותו חלון (של החברה/הגלובלי) - זו הבדיקה שהייתה נכשלת במקרה הזה."""
+    grant_letter_override = _put_window_override(client, world, "GRANT_LETTER", 5)
+    assert grant_letter_override.status_code == 200, grant_letter_override.text
+    section_102_override = _put_window_override(client, world, "SECTION_102_APPENDIX", 45)
+    assert section_102_override.status_code == 200, section_102_override.text
+
+    gen1 = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                       json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    doc1_id = gen1.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc1_id}/send", headers=world.admin_a)
+
+    gen2 = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                       json={"grant_id": grant_id, "template_type": "SECTION_102_APPENDIX"})
+    doc2_id = gen2.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc2_id}/send", headers=world.admin_a)
+
+    doc1 = _document(world, doc1_id)
+    doc2 = _document(world, doc2_id)
+    assert doc1.expires_at - doc1.sent_at == timedelta(days=5)
+    assert doc2.expires_at - doc2.sent_at == timedelta(days=45)
+
+
+def test_window_resolution_falls_back_through_type_then_company_then_global(
+        client, world, grant_id):
+    """שלוש רמות, נבדקות יחד כדי שסדר העדיפות עצמו ייבדק, לא רק כל רמה
+    בבידוד: type-override (הכי ספציפי) -> company override -> הקבוע הגלובלי."""
+    def _send_grant_letter():
+        gen = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                          json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+        doc_id = gen.json()["document_id"]
+        client.post(f"{API}/admin/documents/{doc_id}/send", headers=world.admin_a)
+        return _document(world, doc_id)
+
+    # אין override מכל סוג - הקבוע הגלובלי.
+    doc_none = _send_grant_letter()
+    assert doc_none.expires_at - doc_none.sent_at == timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS)
+
+    # override פר-חברה בלבד.
+    client.put(f"{API}/admin/company", headers=world.admin_a, json={"acknowledgment_window_days": 15})
+    doc_company_only = _send_grant_letter()
+    assert doc_company_only.expires_at - doc_company_only.sent_at == timedelta(days=15)
+
+    # override פר-סוג גובר על זה של החברה.
+    _put_window_override(client, world, "GRANT_LETTER", 7)
+    doc_type_wins = _send_grant_letter()
+    assert doc_type_wins.expires_at - doc_type_wins.sent_at == timedelta(days=7)
+
+
+def test_deleting_a_type_override_falls_back_to_the_company_default(client, world, grant_id):
+    """window_days=None ב-PUT מוחק את ה-override - חזרה לירושה, לא ל-0 יום."""
+    client.put(f"{API}/admin/company", headers=world.admin_a, json={"acknowledgment_window_days": 12})
+    _put_window_override(client, world, "GRANT_LETTER", 7)
+
+    delete_response = _put_window_override(client, world, "GRANT_LETTER", None)
+    assert delete_response.status_code == 200, delete_response.text
+    assert delete_response.json()["window_days"] is None
+
+    listed = client.get(f"{API}/admin/company/acknowledgment-windows", headers=world.admin_a).json()
+    assert listed == [], "אחרי מחיקה, אין override בכלל - לא שורה עם window_days ריק"
+
+    gen = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                      json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    doc_id = gen.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc_id}/send", headers=world.admin_a)
+    doc = _document(world, doc_id)
+    assert doc.expires_at - doc.sent_at == timedelta(days=12), "נופל ל-override של החברה, לא ל-0/גלובלי"
+
+
+@pytest.mark.parametrize("bad_value", [0, -3])
+def test_put_type_override_rejects_a_non_positive_window_days(client, world, bad_value):
+    """400 נקי לפני ה-CHECK (ck_doc_ack_window_override_positive) - אותו לקח
+    בדיוק כמו ה-override הכללי-לחברה."""
+    response = _put_window_override(client, world, "GRANT_LETTER", bad_value)
+    assert response.status_code == 400
+    assert "window_days" in response.json()["detail"]
+
+    listed = client.get(f"{API}/admin/company/acknowledgment-windows", headers=world.admin_a).json()
+    assert listed == [], "בקשה שנדחתה לא אמורה לכתוב שום דבר"
+
+
+def test_put_type_override_rejects_an_unsupported_template_type(client, world):
+    response = _put_window_override(client, world, "NOT_A_REAL_TYPE", 10)
+    assert response.status_code == 400
+
+
+def test_a_type_override_for_one_company_does_not_affect_another_companys_documents(
+        client, world, grant_id):
+    """company A מגדיר override קיצוני (100 יום) לסוג הזה - company B ממשיכה
+    להשתמש בקבוע הגלובלי לאותו סוג בדיוק, אין דליפה חוצה-חברות."""
+    _put_window_override(client, world, "GRANT_LETTER", 100)
+
+    other_pool = OptionPool(pool_id="P-B", company_id="C-B", total_shares=1000.0,
+                            allocated_shares=0.0, unallocated_shares=1000.0)
+    other_employee = Employee(employee_id="E-2", company_id="C-B", first_name="Dana", last_name="Levi",
+                              email="e2@beta.example", country_code="IL", status=EmployeeStatus.ACTIVE,
+                              hire_date=date(2020, 1, 1), birth_date=date(1990, 1, 1),
+                              national_id="987654321")
+    world.db.add_all([other_pool, other_employee])
+    world.db.flush()
+    other_grant = client.post(f"{API}/admin/grants", headers=world.admin_b, json={
+        "employee_id": "E-2", "pool_id": "P-B", "grant_type": "IL_102_CAPITAL_GAINS",
+        "total_options": 100.0, "exercise_price": 1.0, "grant_date": str(_months_ago(20)),
+        "cliff_months": 12, "total_months": 48,
+    })
+    other_grant_id = other_grant.json()["grant_id"]
+
+    gen = client.post(f"{API}/admin/documents", headers=world.admin_b,
+                      json={"grant_id": other_grant_id, "template_type": "GRANT_LETTER"})
+    doc_id = gen.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc_id}/send", headers=world.admin_b)
+    doc = _document(world, doc_id)
+    assert doc.expires_at - doc.sent_at == timedelta(days=ACKNOWLEDGMENT_WINDOW_DAYS), (
+        "company B לא אמורה לראות את ה-override של company A")
+
+
+def test_changing_a_type_override_does_not_touch_an_already_sent_documents_deadline(
+        client, world, grant_id):
+    """אותה החלטה בדיוק כמו ה-override הכללי-לחברה: לא רטרואקטיבי."""
+    _put_window_override(client, world, "GRANT_LETTER", 7)
+    gen = client.post(f"{API}/admin/documents", headers=world.admin_a,
+                      json={"grant_id": grant_id, "template_type": "GRANT_LETTER"})
+    doc_id = gen.json()["document_id"]
+    client.post(f"{API}/admin/documents/{doc_id}/send", headers=world.admin_a)
+    expires_at_first = _document(world, doc_id).expires_at
+
+    _put_window_override(client, world, "GRANT_LETTER", 30)
+
+    assert _document(world, doc_id).expires_at == expires_at_first
