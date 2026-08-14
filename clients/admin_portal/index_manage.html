@@ -13,6 +13,11 @@
         .tab-content.active { display: block; }
         .modal-backdrop { display: none; }
         .modal-backdrop.open { display: flex; }
+        /* תת-ניווט בטאב הדוחות (טבלאות / לוח אנליטי) - אותו מבטא אינדיגו של
+           .nav-btn הראשי, כדי ששני מפלסי הניווט לא ייראו כשתי מערכות שונות. */
+        .reports-subnav-btn { background-color: #020617; border-color: #1e293b; color: #94a3b8; }
+        .reports-subnav-btn:hover { color: #ffffff; border-color: #475569; }
+        .reports-subnav-btn.active { background-color: #4f46e5; border-color: #4f46e5; color: #ffffff; }
     </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
@@ -59,6 +64,7 @@
                     <button onclick="switchTab('requests')" id="nav-requests" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>בקשות מימוש</span><i class="fa-solid fa-hand-holding-dollar"></i></button>
                     <button onclick="switchTab('documents')" id="nav-documents" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>מסמכים</span><i class="fa-solid fa-file-pdf"></i></button>
                     <button onclick="switchTab('export-import')" id="nav-export-import" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ייצוא וייבוא</span><i class="fa-solid fa-arrow-right-arrow-left"></i></button>
+                    <button onclick="switchTab('reports')" id="nav-reports" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>דוחות ואנליטיקה</span><i class="fa-solid fa-chart-column"></i></button>
                     <button onclick="switchTab('pools')" id="nav-pools" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>ניהול פולים ומניות</span><i class="fa-solid fa-layer-group"></i></button>
                     <button onclick="switchTab('cap-table')" id="nav-cap-table" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>טבלת הון</span><i class="fa-solid fa-chart-pie"></i></button>
                     <button onclick="switchTab('company')" id="nav-company" class="nav-btn w-full flex items-center justify-between px-4 py-3 text-sm font-medium rounded-xl transition-all"><span>פרופיל חברה</span><i class="fa-solid fa-gear"></i></button>
@@ -267,6 +273,104 @@
                         </thead>
                         <tbody id="export-import-table-body"><tr><td colspan="5" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
                     </table>
+                </div>
+            </section>
+
+            <!-- REPORTS, EXPORT & BI (v1.1.0) - admin-only בשרת (require_roles
+                 COMPANY_ADMIN), אין תוצאת דוח שנשמרת - כל תוצאה מחושבת מחדש
+                 בכל קריאה (backend/app/services/reports.py). -->
+            <section id="tab-reports" class="tab-content space-y-6">
+                <div class="flex justify-between items-center flex-wrap gap-3">
+                    <div>
+                        <h3 class="text-lg font-bold text-white">דוחות ואנליטיקה</h3>
+                        <p class="text-xs text-slate-500 mt-1">כל דוח מחושב בזמן קריאה מהנתונים הקיימים (ledger, cap table, כללי ההתראה) - אין תוצאה שמורה, רק קונפיגורציית סינון (דוחות שמורים).</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="switchReportsSubTab('tables')" id="reports-subnav-tables" class="reports-subnav-btn min-h-[44px] px-4 rounded-xl text-sm font-medium border transition"><i class="fa-solid fa-table"></i> טבלאות דוחות</button>
+                        <button onclick="switchReportsSubTab('dashboard')" id="reports-subnav-dashboard" class="reports-subnav-btn min-h-[44px] px-4 rounded-xl text-sm font-medium border transition"><i class="fa-solid fa-chart-pie"></i> לוח אנליטי</button>
+                    </div>
+                </div>
+
+                <!-- תת-מסך: טבלאות דוחות -->
+                <div id="reports-tables-view" class="space-y-6">
+                    <div class="bg-slate-950 rounded-2xl border border-slate-800 p-4 space-y-4">
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-1">סוג דוח</label>
+                                <select id="report-type-select" onchange="onReportTypeChange()" class="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm rounded-lg px-3 py-2 min-h-[44px]"></select>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-1">דוחות שמורים</label>
+                                <select id="saved-report-select" onchange="onSavedReportSelect()" class="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm rounded-lg px-3 py-2 min-h-[44px]"></select>
+                            </div>
+                            <div id="report-date-range-wrap" class="hidden md:col-span-2">
+                                <label class="block text-xs text-slate-400 mb-1">
+                                    טווח תאריכים
+                                    <span id="report-date-range-required-marker" class="hidden text-rose-400">(חובה לדוח זה)</span>
+                                    <span id="report-date-range-optional-marker" class="hidden text-slate-500">(אופציונלי - ריק = כל הטווח)</span>
+                                </label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <input type="date" id="report-date-from" aria-label="מתאריך" class="bg-slate-900 border border-slate-800 text-slate-200 text-sm rounded-lg px-3 py-2 min-h-[44px]">
+                                    <input type="date" id="report-date-to" aria-label="עד תאריך" class="bg-slate-900 border border-slate-800 text-slate-200 text-sm rounded-lg px-3 py-2 min-h-[44px]">
+                                </div>
+                            </div>
+                        </div>
+                        <div id="report-filter-error" class="hidden p-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg text-xs"></div>
+                        <div class="flex flex-wrap items-center gap-2 justify-between">
+                            <div class="flex items-center gap-2">
+                                <button onclick="applyReportFilter()" id="report-apply-btn" class="min-h-[44px] bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 rounded-xl transition"><i class="fa-solid fa-magnifying-glass"></i> החל סינון</button>
+                                <button onclick="saveCurrentReportView()" id="report-save-btn" class="min-h-[44px] bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm font-medium px-4 rounded-xl transition border border-slate-700"><i class="fa-solid fa-bookmark"></i> שמור תצוגה</button>
+                                <label for="report-save-shared" class="flex items-center gap-2 min-h-[44px] px-2 text-xs text-slate-400 cursor-pointer select-none" title="היום יש חשבון מנהל אחד לכל חברה, ולכן ההבחנה תיראה בפועל רק אחרי שיהיו זהויות מנהל נפרדות">
+                                    <input type="checkbox" id="report-save-shared" class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-indigo-600">
+                                    שתף עם מנהלי החברה
+                                </label>
+                                <button onclick="deleteCurrentSavedReport()" id="report-delete-saved-btn" title="מחיקת דוח שמור - לא ניתן לשחזור" class="hidden min-h-[44px] min-w-[44px] bg-rose-600/20 hover:bg-rose-600/30 disabled:opacity-50 text-rose-400 text-sm font-medium px-4 rounded-xl transition border border-rose-600/30"><i class="fa-solid fa-trash"></i></button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="downloadCurrentReport('csv')" id="report-download-csv-btn" class="min-h-[44px] bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm font-medium px-4 rounded-xl transition border border-slate-700"><i class="fa-solid fa-file-csv"></i> CSV</button>
+                                <button onclick="downloadCurrentReport('pdf')" id="report-download-pdf-btn" class="min-h-[44px] bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm font-medium px-4 rounded-xl transition border border-slate-700"><i class="fa-solid fa-file-pdf"></i> PDF</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="report-summary-panel" class="space-y-3"></div>
+
+                    <div class="bg-slate-950 rounded-2xl border border-slate-800 overflow-x-auto">
+                        <table class="w-full text-right border-collapse text-sm">
+                            <thead><tr id="report-table-head" class="border-b border-slate-800 text-slate-400"></tr></thead>
+                            <tbody id="report-table-body"><tr><td class="p-6 text-center text-slate-500">בחרו סוג דוח</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- תת-מסך: לוח אנליטי (Dashboard) - JSON בלבד, אין CSV/PDF (החלטת
+                     תכנון מפורשת, PLAN v1.1.0) - GET /admin/reports/dashboard. -->
+                <div id="reports-dashboard-view" class="hidden space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                            <p class="text-xs text-slate-400 font-medium">מענקים בהיקף החברה</p>
+                            <h3 id="dash-total-grants" class="text-3xl font-black text-white mt-2">-</h3>
+                        </div>
+                        <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                            <p class="text-xs text-slate-400 font-medium">נכון לתאריך</p>
+                            <h3 id="dash-as-of" class="text-3xl font-black text-indigo-400 mt-2">-</h3>
+                        </div>
+                        <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                            <p class="text-xs text-slate-400 font-medium">אופק תחזית הבשלה</p>
+                            <h3 id="dash-horizon" class="text-3xl font-black text-slate-300 mt-2">-</h3>
+                        </div>
+                    </div>
+                    <div id="dash-degraded-warning"></div>
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <h4 class="text-sm font-bold text-white mb-1">פילוח מסלול מס</h4>
+                        <p class="text-xs text-slate-500 mb-4">התפלגות המענקים בהיקף החברה לפי מסלול מס (102 רווח הון / 102 הכנסת עבודה / ISO / NSO אמריקאי).</p>
+                        <div id="dash-tax-track-bar"><p class="text-sm text-slate-500 text-center py-6">טוען...</p></div>
+                    </div>
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <h4 class="text-sm font-bold text-white mb-1">עקומת הבשלה קדימה</h4>
+                        <p class="text-xs text-slate-500 mb-4">סך אופציות שהבשילו/יבשילו לפי לוחות ההבשלה הקיימים בלבד - לא כולל מענקים עתידיים שעדיין לא נוצרו.</p>
+                        <div id="dash-vesting-curve"><p class="text-sm text-slate-500 text-center py-6">טוען...</p></div>
+                    </div>
                 </div>
             </section>
 
@@ -794,6 +898,7 @@
     <script src="../shared/notifications.js"></script>
     <script src="../shared/documents.js"></script>
     <script src="../shared/export_import.js"></script>
+    <script src="../shared/reports.js"></script>
     <script>
         // כתובת ה-API נגזרת מהמקור שממנו הדף הוגש, כדי שהרצת סנדבוקס על פורט
         // אחר (ESOP_DATABASE_URL + --port 8001, ראו QA_TESTBOOK.md) תפנה באמת
@@ -875,6 +980,7 @@
             if (tabId === "requests") loadRequests();
             if (tabId === "documents") loadDocuments();
             if (tabId === "export-import") loadExportImportHistory();
+            if (tabId === "reports") loadReportsTab();
             if (tabId === "pools") loadPoolsTab();
             if (tabId === "cap-table") loadCapTableTab();
             if (tabId === "company") { loadCompany(); loadAcknowledgmentWindowOverrides(); }
@@ -1754,6 +1860,324 @@
                 toast(approve ? "הבקשה אושרה" : "הבקשה נדחתה");
                 loadRequests();
             } catch (err) { toast(err.message, true); }
+        }
+
+        // --- דוחות ואנליטיקה (v1.1.0) -------------------------------------
+        // כל הרינדור יושב ב-clients/shared/reports.js (ESOPReports); כאן רק
+        // state, ולידציה וקריאות ה-API דרך apiGet/authHeaders הקיימים - אותה
+        // חלוקה בדיוק כמו export_import.js מול loadExportImportHistory().
+        //
+        // הכותרות נלקחות מ-result.columns שהשרת שולח במפורש, ולא נגזרות מ-
+        // Object.keys(rows[0]): הגזירה מהשורה עבדה רק כל עוד סדר המפתחות בדיקט
+        // וסדר columns נשארו מסונכרנים ידנית, ושחיקה של הצימוד הזה מיישרת עמודת
+        // כסף מתחת לכותרת של עמודה אחרת - שגיאה שנראית נכונה על המסך.
+        let reportsState = { savedReports: [], selectedSavedId: "", typeSelectReady: false };
+
+        const REPORT_ACTION_BUTTON_IDS = [
+            "report-apply-btn", "report-save-btn", "report-download-csv-btn",
+            "report-download-pdf-btn", "report-delete-saved-btn",
+        ];
+
+        function setReportsBusy(busy) {
+            REPORT_ACTION_BUTTON_IDS.forEach(id => { document.getElementById(id).disabled = busy; });
+        }
+
+        function reportsFilterError(message) {
+            const box = document.getElementById("report-filter-error");
+            if (!message) {
+                box.classList.add("hidden");
+                box.textContent = "";
+                return;
+            }
+            box.textContent = message;
+            box.classList.remove("hidden");
+        }
+
+        function currentReportType() {
+            return document.getElementById("report-type-select").value;
+        }
+
+        // ההבדל בין טווח "חובה" ל"אופציונלי" מוצג לפני הלחיצה ולא נלמד מ-422
+        // שחוזר מהשרת: ל-MOVEMENT אין ברירת מחדל לתאריכים בשרת בכלל
+        // (api/reports.py::report_movement), בשונה מ-EXERCISE_ACTIVITY.
+        function syncReportFilterVisibility() {
+            const meta = ESOPReports.reportTypeMeta(currentReportType());
+            const wrap = document.getElementById("report-date-range-wrap");
+            const requiredMarker = document.getElementById("report-date-range-required-marker");
+            const optionalMarker = document.getElementById("report-date-range-optional-marker");
+            wrap.classList.toggle("hidden", meta.dateRange === "none");
+            requiredMarker.classList.toggle("hidden", meta.dateRange !== "required");
+            optionalMarker.classList.toggle("hidden", meta.dateRange !== "optional");
+            document.getElementById("report-delete-saved-btn").classList.toggle("hidden", !reportsState.selectedSavedId);
+        }
+
+        // מחזיר { ok, message, params } - params הוא URLSearchParams בלי format
+        // (הפורמט מתווסף בנקודת השימוש: json למסך, csv/pdf להורדה).
+        function collectReportParams() {
+            const meta = ESOPReports.reportTypeMeta(currentReportType());
+            const params = new URLSearchParams();
+            if (meta.dateRange === "none") return { ok: true, params };
+
+            const from = document.getElementById("report-date-from").value;
+            const to = document.getElementById("report-date-to").value;
+            if (meta.dateRange === "required" && (!from || !to)) {
+                return { ok: false, message: "דוח התנועה מחייב לבחור גם תאריך התחלה וגם תאריך סיום - לשרת אין טווח ברירת מחדל לדוח הזה.", params };
+            }
+            if (from && to && from > to) {
+                return { ok: false, message: "תאריך ההתחלה מאוחר מתאריך הסיום.", params };
+            }
+            // שדה ריק לא נשלח בכלל (ולא כמחרוזת ריקה) - "כל הטווח" מיוצג
+            // בשרת ע"י פרמטר נעדר, ו-date_from= ריק היה נכשל בפרסור.
+            if (from) params.set("date_from", from);
+            if (to) params.set("date_to", to);
+            return { ok: true, params };
+        }
+
+        async function loadReportsTab() {
+            if (!reportsState.typeSelectReady) {
+                document.getElementById("report-type-select").innerHTML =
+                    ESOPReports.reportTypeOptionsHtml(ESOPReports.REPORT_TYPES[0].key);
+                reportsState.typeSelectReady = true;
+            }
+            switchReportsSubTab("tables");
+            await loadSavedReportsList();
+            syncReportFilterVisibility();
+            await applyReportFilter();
+        }
+
+        function switchReportsSubTab(view) {
+            const isDashboard = view === "dashboard";
+            document.getElementById("reports-tables-view").classList.toggle("hidden", isDashboard);
+            document.getElementById("reports-dashboard-view").classList.toggle("hidden", !isDashboard);
+            document.getElementById("reports-subnav-tables").classList.toggle("active", !isDashboard);
+            document.getElementById("reports-subnav-dashboard").classList.toggle("active", isDashboard);
+            if (isDashboard) loadReportsDashboard();
+        }
+
+        async function loadSavedReportsList() {
+            const select = document.getElementById("saved-report-select");
+            try {
+                reportsState.savedReports = await apiGet("/admin/reports/saved");
+            } catch (err) {
+                // כשל ברשימת הדוחות השמורים לא חוסם הרצת דוח - הם נוחות סינון,
+                // לא תנאי להצגת הדוח עצמו.
+                reportsState.savedReports = [];
+                toast("טעינת הדוחות השמורים נכשלה: " + err.message, true);
+            }
+            select.innerHTML = ESOPReports.savedReportOptionsHtml(reportsState.savedReports, reportsState.selectedSavedId);
+            // דוח שנמחק/הפסיק להיות נראה - הבחירה מתאפסת כדי שכפתור המחיקה לא
+            // יישאר גלוי על מזהה שאינו קיים יותר.
+            if (reportsState.selectedSavedId && select.value !== reportsState.selectedSavedId) {
+                reportsState.selectedSavedId = "";
+            }
+            syncReportFilterVisibility();
+        }
+
+        function onReportTypeChange() {
+            // בחירת סוג דוח ידנית פורמת את השיוך לדוח השמור - אחרת "שמור תצוגה"
+            // היה נראה כאילו הוא מעדכן את הדוח השמור שנבחר, והוא לא (POST חדש).
+            reportsState.selectedSavedId = "";
+            document.getElementById("saved-report-select").value = "";
+            syncReportFilterVisibility();
+            reportsFilterError(null);
+            const check = collectReportParams();
+            if (!check.ok) {
+                // טווח חובה שחסר - לא שולחים בקשה שתיכשל, מסבירים מה נדרש.
+                reportsFilterError(check.message);
+                document.getElementById("report-table-head").innerHTML = "";
+                document.getElementById("report-table-body").innerHTML =
+                    ESOPReports.emptyRow("בחרו טווח תאריכים ולחצו \"החל סינון\"");
+                document.getElementById("report-summary-panel").innerHTML = "";
+                return;
+            }
+            applyReportFilter();
+        }
+
+        function onSavedReportSelect() {
+            const reportId = document.getElementById("saved-report-select").value;
+            reportsState.selectedSavedId = reportId;
+            if (!reportId) {
+                syncReportFilterVisibility();
+                return;
+            }
+            const saved = reportsState.savedReports.find(r => r.report_id === reportId);
+            if (!saved) {
+                syncReportFilterVisibility();
+                return;
+            }
+            document.getElementById("report-type-select").value = saved.report_type;
+            const filters = saved.filter_params || {};
+            document.getElementById("report-date-from").value = filters.date_from || "";
+            document.getElementById("report-date-to").value = filters.date_to || "";
+            syncReportFilterVisibility();
+            reportsFilterError(null);
+            applyReportFilter();
+        }
+
+        async function applyReportFilter() {
+            const reportType = currentReportType();
+            const head = document.getElementById("report-table-head");
+            const body = document.getElementById("report-table-body");
+            const summaryPanel = document.getElementById("report-summary-panel");
+
+            const check = collectReportParams();
+            if (!check.ok) {
+                reportsFilterError(check.message);
+                return;
+            }
+            reportsFilterError(null);
+
+            setReportsBusy(true);
+            body.innerHTML = ESOPReports.loadingRow();
+            try {
+                const query = check.params;
+                query.set("format", "json");
+                const result = await apiGet(`${ESOPReports.endpointPath(reportType)}?${query}`);
+                const rows = result.rows || [];
+                const columns = result.columns || (rows.length ? Object.keys(rows[0]) : []);
+
+                head.innerHTML = ESOPReports.renderTableHead(columns);
+                body.innerHTML = rows.length
+                    ? ESOPReports.renderTableBody(reportType, columns, rows)
+                    : ESOPReports.emptyRow(query.has("date_from") || query.has("date_to")
+                        ? "אין שורות בטווח התאריכים שנבחר"
+                        : "אין שורות להצגה");
+
+                summaryPanel.innerHTML =
+                    `<p class="text-xs text-slate-500">נוצר ב-${ESOPDocuments.formatTimestamp(result.generated_at)} · ${rows.length} שורות</p>`
+                    + ESOPReports.renderSummary(reportType, result.summary, result.disclosures);
+            } catch (err) {
+                head.innerHTML = "";
+                summaryPanel.innerHTML = "";
+                body.innerHTML = ESOPReports.errorRow(err.message);
+            } finally {
+                setReportsBusy(false);
+                syncReportFilterVisibility();
+            }
+        }
+
+        // הורדה דרך ESOPDocuments.downloadDocument הקיים - תגית <a href> לא
+        // נושאת את כותרת ה-Authorization, וגם: השרת רושם שורת audit על כל
+        // הורדה (action="downloaded"), ולכן זו הדרך היחידה להגיע לקובץ.
+        async function downloadCurrentReport(format) {
+            const reportType = currentReportType();
+            const check = collectReportParams();
+            if (!check.ok) {
+                reportsFilterError(check.message);
+                return;
+            }
+            reportsFilterError(null);
+            setReportsBusy(true);
+            try {
+                const query = check.params;
+                query.set("format", format);
+                const stem = `${reportType.toLowerCase()}_${new Date().toISOString().slice(0, 10)}`;
+                await ESOPDocuments.downloadDocument(API, `${ESOPReports.endpointPath(reportType)}?${query}`,
+                    authHeaders(), `${stem}.${format}`);
+                toast(`הדוח הורד כ-${format.toUpperCase()}`);
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                setReportsBusy(false);
+            }
+        }
+
+        async function saveCurrentReportView() {
+            const reportType = currentReportType();
+            const check = collectReportParams();
+            if (!check.ok) {
+                reportsFilterError(check.message);
+                return;
+            }
+            const name = prompt("שם לתצוגה השמורה (למשל \"תנועה - רבעון נוכחי\"):");
+            if (name === null) return;
+            if (!name.trim()) {
+                toast("שם ריק - התצוגה לא נשמרה", true);
+                return;
+            }
+            // filter_params נשמר כמפתחות ה-query עצמם (date_from/date_to), כדי
+            // שטעינה חזרה תהיה מילוי ישיר של אותם שדות בלי מיפוי נוסף.
+            const filterParams = {};
+            check.params.forEach((value, key) => { filterParams[key] = value; });
+
+            setReportsBusy(true);
+            try {
+                const res = await fetch(`${API}/admin/reports/saved`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({
+                        name: name.trim(), report_type: reportType,
+                        filter_params: filterParams,
+                        // פרטי כברירת מחדל (החלטה מוצרית, PLAN v1.1.0), אבל הבחירה
+                        // חשופה: היום יש חשבון מנהל אחד לחברה ולכן שתי האפשרויות
+                        // מתלכדות בפועל - הדגל נשמר נכון כבר עכשיו כדי שדוחות שנוצרו
+                        // לפני v1.5.0/RBAC לא ייתקעו כפרטיים בלי דרך לשתף אותם.
+                        is_private: !document.getElementById("report-save-shared").checked,
+                    })
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                const saved = await res.json();
+                reportsState.selectedSavedId = saved.report_id;
+                await loadSavedReportsList();
+                document.getElementById("saved-report-select").value = saved.report_id;
+                syncReportFilterVisibility();
+                toast("התצוגה נשמרה");
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                setReportsBusy(false);
+            }
+        }
+
+        async function deleteCurrentSavedReport() {
+            const reportId = reportsState.selectedSavedId;
+            if (!reportId) return;
+            const saved = reportsState.savedReports.find(r => r.report_id === reportId);
+            const label = saved ? saved.name : reportId;
+            // התוצאה נאמרת לפני הלחיצה: נמחקת *הגדרת* הסינון בלבד, לא נתונים -
+            // הדוח עצמו ימשיך להיות זמין בבחירה ידנית.
+            if (!confirm(`למחוק את התצוגה השמורה "${label}"?\n\nנמחקת הגדרת הסינון בלבד (לא נתוני החברה), והמחיקה אינה ניתנת לשחזור. הדוח עצמו יישאר זמין לבחירה ידנית.`)) return;
+            setReportsBusy(true);
+            try {
+                const res = await fetch(`${API}/admin/reports/saved/${reportId}`, {
+                    method: "DELETE", headers: authHeaders()
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                reportsState.selectedSavedId = "";
+                await loadSavedReportsList();
+                document.getElementById("saved-report-select").value = "";
+                syncReportFilterVisibility();
+                toast("התצוגה השמורה נמחקה");
+            } catch (err) {
+                toast(err.message, true);
+            } finally {
+                setReportsBusy(false);
+            }
+        }
+
+        // לוח אנליטי - JSON בלבד, אין כפתורי CSV/PDF כאן (החלטת תכנון מפורשת,
+        // ה-endpoint לא מקבל format בכלל).
+        async function loadReportsDashboard() {
+            const barBox = document.getElementById("dash-tax-track-bar");
+            const curveBox = document.getElementById("dash-vesting-curve");
+            const degradedBox = document.getElementById("dash-degraded-warning");
+            barBox.innerHTML = `<p class="text-sm text-slate-500 text-center py-6"><i class="fa-solid fa-spinner fa-spin"></i> טוען...</p>`;
+            curveBox.innerHTML = barBox.innerHTML;
+            degradedBox.innerHTML = "";
+            try {
+                const dash = await apiGet("/admin/reports/dashboard");
+                document.getElementById("dash-total-grants").textContent = dash.total_grants_in_scope;
+                document.getElementById("dash-as-of").textContent = dash.as_of;
+                document.getElementById("dash-horizon").textContent = `${dash.vesting_curve_horizon_months} ח'`;
+                degradedBox.innerHTML = ESOPReports.degradedWarning(
+                    dash.degraded_grant_ids, "מענקים (אין להם לוח הבשלה - לא נספרו כ-0 בעקומה)");
+                barBox.innerHTML = ESOPReports.renderTaxTrackBar(dash.tax_track_breakdown);
+                curveBox.innerHTML = ESOPReports.renderVestingCurve(
+                    dash.forward_vesting_curve, dash.vesting_curve_horizon_months, dash.as_of);
+            } catch (err) {
+                const msg = `<p class="text-sm text-red-400 text-center py-6">${ESOPDocuments.escapeHtml(err.message)}</p>`;
+                barBox.innerHTML = msg;
+                curveBox.innerHTML = msg;
+            }
         }
 
         // --- פולים וסוגי מניות (v1.0.0 שלב ב) -----------------------------
