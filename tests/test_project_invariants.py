@@ -22,11 +22,22 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 QA_DIR = ROOT / "docs" / "qa"
 TESTBOOK = ROOT / "QA_TESTBOOK.md"
+HANDOFF = ROOT / "HANDOFF.md"
+HANDOFF_ARCHIVE_DIR = ROOT / "docs" / "handoff"
 
 # תקציב הגודל של האינדקס. ב-06/08/2026 הקובץ המאוחד היה 52,897 תווים
 # (~18,400 טוקנים) ונקרא מחדש בכל תור. הוא פוצל ל-docs/qa/<גרסה>.md
 # והאינדקס ירד ל-~3,500. התקציב הזה קיים כדי שהוא לא יזחל בחזרה למעלה.
 TESTBOOK_CHAR_BUDGET = 8_000
+
+# אותו כשל בדיוק, קובץ אחר. ב-14/08/2026 HANDOFF.md היה 97,449 תווים -
+# פי 15 מהאינדקס שכבר פוצל בגלל הגודל, והוא זה שנקרא *ראשון* בכל שיחה.
+# הסיבה: הוא היה append-only, בלוק לכל גרסה, ואף אחד לא מחק. פוצל ל-
+# docs/handoff/<גרסה>.md. התקציב נדיב יותר משל האינדקס כי כאן יושב גם
+# החוב הפתוח וגם ההחלטות העומדות - אבל הוא תקרה, לא יעד. המרווח (~23% מעל
+# הגודל אחרי הפיצול) הוא אותו יחס בדיוק כמו TESTBOOK_CHAR_BUDGET מול האינדקס
+# בפועל - תקציב חונק מייצר לחץ להחליש את הבדיקה, וזה בדיוק מה שאסור.
+HANDOFF_CHAR_BUDGET = 14_000
 
 
 def _semver(text: str) -> tuple[int, int, int]:
@@ -112,6 +123,35 @@ def test_testbook_index_stays_small():
         f"סימן שמקרי בדיקה נכתבו לאינדקס במקום ל-docs/qa/<גרסה>.md.\n"
         f"הקובץ נטען בכל תור — כל תו כאן מוכפל באלף."
     )
+
+
+def test_handoff_stays_small():
+    """HANDOFF.md נקרא *ראשון* בכל שיחה. הוא מחזיק הווה, לא היסטוריה.
+
+    כשגרסה נסגרת, הבלוק שלה עובר ל-docs/handoff/<גרסה>.md. הקובץ הזה
+    מחזיק רק: מצב נוכחי, הצעד הבא, החלטות עומדות, וחוב פתוח.
+    """
+    size = len(HANDOFF.read_text(encoding="utf-8"))
+    assert size <= HANDOFF_CHAR_BUDGET, (
+        f"HANDOFF.md הוא {size:,} תווים, מעל התקציב של {HANDOFF_CHAR_BUDGET:,}.\n"
+        f"סימן שבלוק של גרסה שנסגרה נצבר כאן במקום לעבור ל-docs/handoff/<גרסה>.md.\n"
+        f"הקובץ נקרא ראשון בכל שיחה — כל תו כאן משולם מחדש בכל תור."
+    )
+
+
+def test_handoff_archive_points_back_at_the_active_file():
+    """ארכיון בלי הפניה חזרה הוא ארכיון שמישהו יקרא בטעות כמצב נוכחי.
+
+    כל קובץ ב-docs/handoff/ חייב להצהיר שהוא ארכיון ולהפנות ל-HANDOFF.md.
+    """
+    archives = sorted(HANDOFF_ARCHIVE_DIR.glob("*.md"))
+    assert archives, "docs/handoff/ ריק — הפיצול של 14/08/2026 בוטל או הועבר?"
+    for path in archives:
+        text = path.read_text(encoding="utf-8")
+        assert "ארכיון" in text and "HANDOFF.md" in text, (
+            f"{path.name} לא מצהיר שהוא ארכיון ולא מפנה חזרה ל-HANDOFF.md.\n"
+            f"בלי זה, שיחה עתידית עלולה לקרוא מצב ישן כאילו הוא הנוכחי."
+        )
 
 
 def test_failure_patterns_are_present_in_the_index():
