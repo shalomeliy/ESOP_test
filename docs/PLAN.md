@@ -1,5 +1,11 @@
 # PLAN.md — v0.9.1 Phase B: Export / Import / Reconciliation
 
+> **ארכיון היסטורי.** תוכנית שהושלמה במלואה (ראו Status למטה). הועברה מ-
+> שורש הריפו ל-`docs/` ב-14/08/2026 — היא לא מסמך מצב, לא מתעדכנת, ואף שיחה
+> חדשה לא אמורה לקרוא אותה. המצב הנוכחי יושב ב-[`HANDOFF.md`](../HANDOFF.md).
+> קוד ובדיקות עדיין מפנים אליה בשם `PLAN.md` (למשל `tests/test_export.py`,
+> `backend/app/api/export.py`) — לכן שם הקובץ לא שונה.
+
 Grounded in the ESOP_test repo as of `VERSION` = `0.9.1` (phase A already shipped per `docs/qa/v0.9.1.md:3-7`). Produced from an approved feature spec (five-perspective expert fan-out + tax-domain-expert sign-off, all approved by the participant). All file:line references below were read directly from the repo.
 
 **Status: COMPLETE — all 13 steps of §8 done.** Step 13 (release-manager, 11/08/2026): `VERSION` stayed `0.9.1` — it was already bumped to that value during phase A (commit `a86bfea`), and no plan document called for a further number, so nothing to change there; `QA_TESTBOOK.md`'s v0.9.1 index row was updated to describe both phases as complete; annotated tag `v0.9.1` created locally (not pushed — `066766c`). Full suite: 332 passed. Phase B of v0.9.1 is closed. See `HANDOFF.md` for what's next.
