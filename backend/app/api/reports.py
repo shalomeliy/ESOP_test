@@ -54,8 +54,12 @@ def _respond(report_type: str, result, fmt: str, current_user: User, db: Session
     db.commit()
 
     if fmt == "json":
+        # columns נשלח במפורש ולא נגזר בלקוח מ-Object.keys(rows[0]): סדר המפתחות
+        # בדיקט של השורה וסדר columns הם שני מקורות שחייבים להישאר מסונכרנים ידנית,
+        # וכשהם נפרדים טעות מיישרת עמודת כסף מתחת לכותרת של עמודת כסף אחרת - שגיאה
+        # שנראית נכונה. CSV/PDF כבר משתמשים ב-columns; עכשיו גם המסך.
         return {
-            "report_type": report_type, "generated_at": utcnow(),
+            "report_type": report_type, "generated_at": utcnow(), "columns": result.columns,
             "rows": result.rows, "summary": result.summary, "disclosures": result.disclosures,
         }
 
