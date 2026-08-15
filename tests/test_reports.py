@@ -30,12 +30,15 @@ json.dumps(body)`` יהיה בדיקת דליפה אמיתית ולא כמעט-�
 import csv
 import io
 import json
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event
 
 from backend.app.auth import hash_password
+from backend.app.database import engine
 from backend.app.models import (
     AuditLog, Company, Employee, EmployeeStatus, ExerciseRequest, ExerciseRequestStatus,
     Grant, GrantType, LEDGER_SOURCE_LIVE, LedgerEvent, LedgerOwnership, OptionPool,
@@ -1000,3 +1003,91 @@ def test_every_row_key_is_declared_as_a_column_so_csv_drops_nothing(client, worl
             f"חסר ב-columns (יישמט מה-CSV בשקט): {sorted(set(row) - columns)} · "
             f"מוצהר בלי דאטה (עמודה ריקה במסך): {sorted(columns - set(row))}"
         )
+
+
+# ===================================================================
+# v1.1.1 פריט ב: המחיר לא נשאל פר-מענק
+#
+# הבדיקות למעלה מגנות על *מה* הדוח מחשב; אלה מגנות על *כמה שאילתות* הוא משלם
+# בדרך. שתי הרשתות נחוצות: רפקטור שמקבל את המחיר הנכון ב-251 שאילתות עובר את
+# כל הבדיקות הקודמות בהצלחה, ובדיוק זה היה המצב עד כאן.
+# ===================================================================
+
+@contextmanager
+def _statements_matching(fragment):
+    """אוסף כל statement שה-engine הריץ ומכיל את fragment. נרשם על ה-engine
+    עצמו ולא על ה-Session של הבדיקה, כי ה-endpoint פותח Session משלו (ראו
+    ההערה על מגבלת הטרנזקציה ב-conftest.py::db_session)."""
+    seen = []
+
+    def _on_execute(conn, cursor, statement, parameters, context, executemany):
+        if fragment in statement:
+            seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _on_execute)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", _on_execute)
+
+
+@pytest.mark.parametrize("endpoint", ["compensation-expense", "asc718-readiness"])
+def test_price_history_is_read_once_per_report_not_once_per_grant(client, world, endpoint):
+    """לפני v1.1.1: שאילתת-קיום אחת + שאילתה לכל מענק (על הדאטה החי: 251).
+    אחרי: טעינה אחת, והמיקום בתוכה נעשה בזיכרון. הקביעה היא "בדיוק 1" ולא
+    "פחות מ-N" - סף רופף היה מתיר ל-N+1 לחזור בשקט בגודל אחר."""
+    with _statements_matching("stock_prices_history") as statements:
+        _rows(client, endpoint, world.admin_a)
+
+    assert len(statements) == 1, (
+        f"{endpoint}: היסטוריית המחירים נקראה {len(statements)} פעמים במקום פעם אחת - "
+        f"ה-N+1 חזר. השאילתות:\n" + "\n".join(statements)
+    )
+    # "שאילתה אחת" לבדו היה עובר גם אם הסינון לפי חברה נשמט - טעינת המחירים של
+    # *כל* החברות היא עדיין שאילתה אחת, והיא דליפה חוצת-חברות (דפוס P2).
+    assert "company_id" in statements[0], (
+        f"{endpoint}: טעינת המחירים אינה מסוננת לפי company_id:\n{statements[0]}"
+    )
+
+
+def test_movement_report_scopes_the_ledger_by_join_not_by_a_list_of_ids(client, world):
+    """ה-IN(...) הקודם שלח כל aggregate_id של החברה כמשתנה bind נפרד (788 על
+    הדאטה החי, מול תקרת SQLITE_LIMIT_VARIABLE_NUMBER). הקביעה היא על *צורת*
+    השאילתה כי זה מה שהתיקון שינה - הפלט עצמו נבדק בבדיקות התנועה למעלה."""
+    with _statements_matching("ledger_events") as statements:
+        _rows(client, "movement", world.admin_a,
+              date_from="2024-01-01", date_to="2024-12-31")
+
+    assert len(statements) == 1, (
+        f"ציפינו לשאילתת ledger אחת, קיבלנו {len(statements)}:\n" + "\n".join(statements)
+    )
+    assert "ledger_ownership" in statements[0], (
+        "שאילתת ה-ledger_events אינה מצטרפת ל-ledger_ownership - ההיקף חזר להיות "
+        f"רשימת מזהים בזיכרון:\n{statements[0]}"
+    )
+
+
+def test_two_prices_on_the_same_date_resolve_deterministically_by_price_id(client, world, db_session):
+    """**התנהגות שהוגדרה ב-v1.1.1, לא כזו שנשמרה.** ל-ORDER BY price_date DESC
+    LIMIT 1 לא היה שובר-שוויון, ולכן שתי שורות באותו price_date החזירו שורה
+    שרירותית - כולל fmv_price שונה. ההכרעה: ה-price_id הגבוה לאותו תאריך.
+
+    **זה דטרמיניזם, לא רצנטיות.** price_id הוא UUID4 (models.py), ולכן "הגבוה"
+    אינו "שנכתב אחרון" - הבדיקה הזו מאשרת שאותו קלט מחזיר תמיד אותו מחיר, ולא
+    שהמחיר המעודכן גובר. המזהים כאן נבחרו ממויינים בכוונה כדי שהציפייה תהיה
+    קריאה; עם UUID אמיתי המנצח שרירותי אך יציב."""
+    db_session.add(
+        StockPricesHistory(price_id="PRC-RPT-A-2021-B", company_id="COMP-RPT-A",
+                           price_date=date(2021, 1, 1), fmv_price=11.0, currency="USD")
+    )
+    db_session.commit()
+
+    row = _row_by(_rows(client, "compensation-expense", world.admin_a)["rows"],
+                  "grant_id", "GRANT-RPT-A1")
+
+    assert row["matched_price_date"] == "2021-01-01"
+    assert row["fmv_at_grant_date"] == 11.0, (
+        "שתי שורות מחיר ב-01/01/2021: נבחרה PRC-RPT-A-2021 (10.0) ולא "
+        "PRC-RPT-A-2021-B (11.0). ה-tie-break המוצהר הוא price_id הגבוה."
+    )
+    assert row["contribution"] == (11.0 - 2.0) * 4_800

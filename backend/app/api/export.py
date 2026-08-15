@@ -74,7 +74,15 @@ def export_company_data(current_user: User = Depends(require_roles(UserRole.COMP
     return run
 
 
-@router.get("/admin/export/{run_id}/download")
+@router.get("/admin/export/{run_id}/download",
+            response_class=FileResponse,
+            responses={200: {"content": {
+                                 "application/json": {"schema": {"type": "string", "format": "binary"}},
+                                 # ?format=csv מחזיר ZIP (ראו _DOWNLOAD_FORMATS). הצהרה
+                                 # על json בלבד הייתה תיעוד *שגוי*, גרוע מהשתיקה שקדמה לו.
+                                 "application/zip": {"schema": {"type": "string", "format": "binary"}}},
+                             "description": "חבילת הייצוא עצמה כקובץ. אין response_model: "
+                                            "האנדפוינט מחזיר FileResponse, לא גוף מסודר."}})
 def download_export(run_id: str, format: str = "json",
                     current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                     db: Session = Depends(get_db)):

@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import Employee, User, UserSession, Company, Trustee
-from backend.app.schemas import LoginRequest, LoginResponse, ChangePasswordRequest
+from backend.app.schemas import (
+    LoginRequest, LoginResponse, ChangePasswordRequest, StatusOut, CurrentUserOut,
+)
 from backend.app.services.audit import record_audit_event
 from backend.app.auth import (
     hash_password, verify_password, create_session, get_current_user,
@@ -68,7 +70,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/auth/change-password")
+@router.post("/auth/change-password", response_model=StatusOut)
 def change_password(payload: ChangePasswordRequest, authorization: str = Header(None),
                      current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """זמין תמיד דרך get_current_user בלבד (לא require_roles) - אחרת משתמש עם
@@ -98,7 +100,7 @@ def change_password(payload: ChangePasswordRequest, authorization: str = Header(
     return {"status": "password_changed"}
 
 
-@router.post("/auth/logout")
+@router.post("/auth/logout", response_model=StatusOut)
 def logout(authorization: str = Header(None), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
@@ -107,7 +109,7 @@ def logout(authorization: str = Header(None), current_user: User = Depends(get_c
     return {"status": "logged_out"}
 
 
-@router.get("/auth/me")
+@router.get("/auth/me", response_model=CurrentUserOut)
 def get_me(current_user: User = Depends(get_current_user)):
     return {
         "user_id": current_user.user_id,

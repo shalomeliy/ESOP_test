@@ -41,7 +41,9 @@ def notifications_unread_count(current_user: User = Depends(get_current_user), d
     return NotificationCountOut(count=_feed_for(current_user, db).total)
 
 
-@router.post("/notifications/{key:path}/dismiss", status_code=204)
+@router.post("/notifications/{key:path}/dismiss", status_code=204,
+             responses={204: {"description": "נסגר. אין גוף תשובה בכלל, ולכן גם אין "
+                                             "response_model - 204 ו-body הם סתירה."}})
 def dismiss_notification(key: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """idempotent: נשען על ה-unique index ברמת ה-DB במקום check-then-insert,
     שהוא race שמייצר כפילויות בדיוק בלחיצה כפולה."""

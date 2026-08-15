@@ -557,3 +557,144 @@ def test_every_company_scoped_table_is_registered_or_explicitly_special_cased():
         f"הטבלאות האלה נושאות עמודת company_id בפועל אבל ה-TableSpec שלהן "
         f"ב-TABLE_REGISTRY לא מצהיר force_company_id=True: {sorted(unforced)}"
     )
+
+
+# ===================================================================
+# v1.1.1 פריט ד1: הבדיקות לא כותבות לתיקיות העבודה של הפרויקט
+# ===================================================================
+
+def test_file_stores_are_redirected_out_of_the_project_tree_during_tests():
+    """שלוש דליפות באותו שורש, שנתפסו אחת-אחת: ה-DB החי (נסגר ב-conftest עם
+    ESOP_DATABASE_URL), document_store (נסגר ב-test_documents.py) ו-export_store
+    (נשאר פתוח עד v1.1.1 - 3,427 קבצים, 19MB, 100% יתומים).
+
+    כולן אותו דפוס: קבוע ברמת מודול שנגזר מ-``__file__``, שבדיקה שלא חשבה על
+    הנושא לא יודעת שהיא צריכה לעקוף. הבדיקה הזו הופכת את זה ממשמעת לאכיפה -
+    אם store רביעי ייווסף ולא ייעקף, או שהפיקסצ'ר ייעלם, זה ייפול כאן ולא
+    יתגלה בעוד שנה לפי גודל תיקייה."""
+    import backend.app.api.documents as api_documents_module
+    import backend.app.api.export as api_export_module
+    import backend.app.services.documents as documents_module
+    import backend.app.services.export as export_module
+
+    bindings = [
+        ("services/export.py", export_module, "EXPORT_STORE_DIR"),
+        ("api/export.py", api_export_module, "EXPORT_STORE_DIR"),
+        ("services/documents.py", documents_module, "DOCUMENT_STORE_DIR"),
+        ("api/documents.py", api_documents_module, "DOCUMENT_STORE_DIR"),
+    ]
+
+    for label, module, attr in bindings:
+        current = Path(getattr(module, attr)).resolve()
+        assert ROOT not in current.parents and current != ROOT, (
+            f"{label}::{attr} מצביע ל-{current}, שנמצא בתוך עץ הפרויקט. "
+            "כל הרצת בדיקות תשאיר שם קבצים אמיתיים שהשורה שלהם ב-DB נזרקת עם "
+            "ה-DB הזמני (conftest.py::isolated_file_stores)."
+        )
+
+
+# ===================================================================
+# v1.1.1 פריט ג: אין אינטרפולציה גולמית של שגיאה ל-innerHTML
+# ===================================================================
+
+# הפורטלים הם HTML סטטי בלי build step, ולכן אין להם בדיקת יחידה - אבל *כן*
+# אפשר לאכוף את הכלל שהם עצמם הצהירו עליו (clients/shared/documents.js:
+# "כל טקסט שמגיע מה-DB עובר כאן לפני שהוא נכנס ל-innerHTML"). הביטוי מכוון
+# צר בכוונה: התבנית האסורה היא ${...err/message/detail...} *ישירות* בתוך
+# מחרוזת שמושמת ל-innerHTML, ולא "כל ${} ב-innerHTML" - האחרון היה תופס
+# עשרות שימושים תקינים (קלאסים, colspan, ערכי ESOPDocuments.escapeHtml
+# עצמם) ובדיקה שנופלת על false positive היא בדיקה שידחפו לה ignore.
+_RAW_ERROR_INTERPOLATION = re.compile(
+    r"innerHTML\s*=\s*`[^`]*\$\{\s*(?:err|error|e)\.(?:message|detail)\s*\}"
+)
+
+PORTAL_FILES = ("admin_portal/index_manage.html", "employee_portal/index_emp.html",
+                "trustee_portal/index_trustee.html")
+
+
+@pytest.mark.parametrize("relative_path", PORTAL_FILES)
+def test_portal_never_interpolates_a_raw_error_into_innerhtml(relative_path):
+    """נמצאו 11 מקומות כאלה ב-14/08/2026, לצד 9 באותם קבצים שכן הבריחו - שני
+    דפוסים סותרים באותו קובץ, כלומר הקורא הבא לא יכול לדעת מה הכלל.
+
+    err.message אינו ערך מתוך <select> כפי שהוערך תחילה: הוא *גוף התשובה* של
+    השרת (documents.js::errorDetail), ולכן 500 בטקסט חופשי או HTML מ-proxy
+    נכנסים לתוך <td> ומפרקים את הטבלה. השתמש ב-ESOPDocuments.errorRow/errorText."""
+    path = ROOT / "clients" / relative_path
+    matches = _RAW_ERROR_INTERPOLATION.findall(path.read_text(encoding="utf-8"))
+
+    assert not matches, (
+        f"{relative_path}: {len(matches)} הזרקות שגיאה גולמיות ל-innerHTML. "
+        "עבור ל-ESOPDocuments.errorRow(colspan, err.message) או errorText(err.message)."
+    )
+
+
+def test_the_shared_escaping_helpers_stay_exported():
+    """שלושת הפורטלים קוראים ל-ESOPDocuments.errorRow/errorText/escapeHtml מתוך
+    HTML גולמי, כלומר שינוי שם או הסרה מה-export לא ייפול בשום מקום אחר - הוא
+    יתגלה כשורת שגיאה ריקה במסך של המשתמש."""
+    source = (ROOT / "clients" / "shared" / "documents.js").read_text(encoding="utf-8")
+
+    for name in ("escapeHtml", "errorRow", "errorText", "errorMessage"):
+        assert re.search(rf"^\s*{name}:\s*{name},", source, re.MULTILINE), (
+            f"documents.js אינו מייצא {name} דרך global.ESOPDocuments"
+        )
+
+    for relative_path in PORTAL_FILES:
+        portal = (ROOT / "clients" / relative_path).read_text(encoding="utf-8")
+        if "ESOPDocuments." in portal:
+            assert "shared/documents.js" in portal, (
+                f"{relative_path} משתמש ב-ESOPDocuments בלי לטעון את shared/documents.js"
+            )
+
+
+# ===================================================================
+# v1.1.1 פריט ד2: כל endpoint מתעד את תשובת ההצלחה שלו
+# ===================================================================
+
+def test_every_endpoint_documents_its_success_response():
+    """24 endpoints החזירו dict בלי response_model, כלומר ב-/docs הופיע גוף ריק.
+    לא דליפה (הם מחזירים dict מפורש, לא ORM גולמי) - פער תיעוד.
+
+    הבדיקה מקבלת שלוש צורות תקינות, כי "מתועד" אינו "יש response_model":
+      1. response_model - סכימת JSON.
+      2. הצהרת content-type לא-JSON (הורדות: application/pdf עם format=binary).
+      3. 204 בלי גוף - שם response_model הוא סתירה, לא חוסר.
+
+    למה אינווריאנט ולא צ'קליסט: endpoint חדש נכתב בדרך כלל בלי response_model
+    (זה ברירת המחדל של FastAPI), ולכן הפער הזה חוזר מעצמו בכל גרסה."""
+    from backend.app.main import app
+
+    undocumented = []
+    for path, operations in sorted(app.openapi()["paths"].items()):
+        for method, operation in sorted(operations.items()):
+            if method.upper() not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                continue
+            responses = operation.get("responses", {})
+            success = responses.get("200") or responses.get("204") or {}
+            content = success.get("content", {})
+            schema = next(iter(content.values()), {}).get("schema") if content else None
+
+            if schema and schema != {}:
+                continue
+            if not content and "204" in responses:
+                continue
+            undocumented.append(f"{method.upper()} {path} (content={list(content) or '-'})")
+
+    assert not undocumented, (
+        f"{len(undocumented)} endpoints בלי תשובת הצלחה מתועדת ב-/docs:\n  "
+        + "\n  ".join(undocumented)
+    )
+
+
+def test_the_report_envelope_still_declares_columns():
+    """columns הוא השדה שכל שלושת הפורטלים גוזרים ממנו את כותרות הטבלה.
+    ReportEnvelopeOut הוגדר ב-v1.1.0 *בלי* השדה הזה ולא חובר לאף endpoint, כך
+    שהחיסרון לא התגלה; חיבור שלו במצב ההוא היה מוחק את columns מהתשובה בשקט
+    ושובר את הכותרות בלי שאף בדיקת endpoint תיפול. מכאן הבדיקה הזו."""
+    from backend.app.schemas import ReportEnvelopeOut
+
+    for field in ("report_type", "generated_at", "columns", "rows", "summary", "disclosures"):
+        assert field in ReportEnvelopeOut.model_fields, (
+            f"ReportEnvelopeOut חסר את {field} - response_model שמחובר לדוחות ימחק אותו בשקט"
+        )

@@ -12,6 +12,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "tools.run_sandbox", "--port", "8001"],
       "port": 8001
+    },
+    {
+      "name": "esop-api-sandbox-alt",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "tools.run_sandbox", "--port", "8011"],
+      "port": 8011
     }
   ]
 }

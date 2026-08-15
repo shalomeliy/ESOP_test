@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import User, UserRole
-from backend.app.schemas import SearchResultItem
+from backend.app.schemas import SearchResultItem, VersionOut
 from backend.app.services.search_engine import SearchEngine
 from backend.app.auth import get_current_user
 from backend.app.version import get_version
@@ -28,7 +28,7 @@ def search(q: str, current_user: User = Depends(get_current_user), db: Session =
             for r in results]
 
 
-@router.get("/version")
+@router.get("/version", response_model=VersionOut)
 def read_version():
     """גרסת המערכת - ציבורי, בלי אימות, כדי ששלושת הפורטלים יוכלו להציג אותה.
     נקרא מהקובץ מחדש בכל בקשה כדי שעדכון גרסה ישתקף מיד, בלי restart לשרת."""

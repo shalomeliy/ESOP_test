@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.models import SAVED_REPORT_TYPES, SavedReport, User, UserRole
-from backend.app.schemas import SavedReportCreateRequest, SavedReportOut
+from backend.app.schemas import (
+    SavedReportCreateRequest, SavedReportOut, ReportEnvelopeOut, ReportsDashboardOut,
+    SavedReportDeleteOut,
+)
 from backend.app.services.audit import record_audit_event
 from backend.app.services.company_scope import build_company_scope
 from backend.app.services.reports import (
@@ -37,6 +40,15 @@ router = APIRouter()
 # ===================================================================
 
 _VALID_FORMATS = {"json", "csv", "pdf"}
+
+# שבעת הדוחות מחזירים JSON *או* קובץ, תלוי ב-?format. response_model לבדו היה
+# מצהיר ב-/docs "application/json" בלבד - כלומר התיעוד היה נעשה *פחות* נכון
+# מהמצב שלפניו, שבו לא הצהיר כלום. שני סוגי התוכן מוצהרים כאן במפורש
+# (v1.1.1 פריט ד2). ה-StreamingResponse עצמו עובר בלי ולידציה כי FastAPI
+# מדלגת על response_model כשה-endpoint מחזיר Response מוכן.
+_FORMAT_RESPONSES = {
+    200: {"content": {"application/json": {}, "text/csv": {}, "application/pdf": {}}}
+}
 
 
 def _validate_format(fmt: str) -> str:
@@ -78,7 +90,8 @@ def _respond(report_type: str, result, fmt: str, current_user: User, db: Session
     )
 
 
-@router.get("/admin/reports/pool-status")
+@router.get("/admin/reports/pool-status", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_pool_status(format: str = "json",
                        current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                        db: Session = Depends(get_db)):
@@ -88,7 +101,8 @@ def report_pool_status(format: str = "json",
     return _respond("POOL_STATUS", result, fmt, current_user, db)
 
 
-@router.get("/admin/reports/trustee-exposure")
+@router.get("/admin/reports/trustee-exposure", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_trustee_exposure(format: str = "json",
                             current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                             db: Session = Depends(get_db)):
@@ -98,7 +112,8 @@ def report_trustee_exposure(format: str = "json",
     return _respond("TRUSTEE_EXPOSURE", result, fmt, current_user, db)
 
 
-@router.get("/admin/reports/deadline-risk")
+@router.get("/admin/reports/deadline-risk", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_deadline_risk(format: str = "json",
                          current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                          db: Session = Depends(get_db)):
@@ -108,7 +123,8 @@ def report_deadline_risk(format: str = "json",
     return _respond("DEADLINE_RISK", result, fmt, current_user, db)
 
 
-@router.get("/admin/reports/exercise-activity")
+@router.get("/admin/reports/exercise-activity", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_exercise_activity(format: str = "json", date_from: Optional[date] = None, date_to: Optional[date] = None,
                              current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                              db: Session = Depends(get_db)):
@@ -121,7 +137,8 @@ def report_exercise_activity(format: str = "json", date_from: Optional[date] = N
                     notes_extra=f"date_from={date_from} date_to={date_to}")
 
 
-@router.get("/admin/reports/compensation-expense")
+@router.get("/admin/reports/compensation-expense", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_compensation_expense(format: str = "json",
                                 current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                                 db: Session = Depends(get_db)):
@@ -131,7 +148,8 @@ def report_compensation_expense(format: str = "json",
     return _respond("COMPENSATION_EXPENSE", result, fmt, current_user, db)
 
 
-@router.get("/admin/reports/movement")
+@router.get("/admin/reports/movement", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_movement(date_from: date, date_to: date, format: str = "json",
                     current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                     db: Session = Depends(get_db)):
@@ -144,7 +162,8 @@ def report_movement(date_from: date, date_to: date, format: str = "json",
                     notes_extra=f"date_from={date_from} date_to={date_to}")
 
 
-@router.get("/admin/reports/asc718-readiness")
+@router.get("/admin/reports/asc718-readiness", response_model=ReportEnvelopeOut,
+             responses=_FORMAT_RESPONSES)
 def report_asc718_readiness(format: str = "json",
                             current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                             db: Session = Depends(get_db)):
@@ -154,7 +173,7 @@ def report_asc718_readiness(format: str = "json",
     return _respond("ASC718_READINESS", result, fmt, current_user, db)
 
 
-@router.get("/admin/reports/dashboard")
+@router.get("/admin/reports/dashboard", response_model=ReportsDashboardOut)
 def reports_dashboard(current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                       db: Session = Depends(get_db)):
     """JSON בלבד - אין format param, אין CSV/PDF (החלטת תכנון מפורשת, PLAN v1.1.0)."""
@@ -235,7 +254,7 @@ def get_saved_report(report_id: str, current_user: User = Depends(require_roles(
     return _saved_report_out(row)
 
 
-@router.delete("/admin/reports/saved/{report_id}")
+@router.delete("/admin/reports/saved/{report_id}", response_model=SavedReportDeleteOut)
 def delete_saved_report(report_id: str, current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                         db: Session = Depends(get_db)):
     row = db.query(SavedReport).filter(SavedReport.report_id == report_id).first()

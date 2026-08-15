@@ -5,6 +5,7 @@ from backend.app.database import get_db
 from backend.app.types import business_today
 from backend.app.models import Employee, User, UserRole
 from backend.app.services.engine import DeterministicESOPEngine, MissingVestingScheduleError
+from backend.app.schemas import EmployeeDashboardOut
 from backend.app.auth import require_roles
 from backend.app.api.exercise_requests import _vested_at, _trustee_holding_status
 
@@ -15,7 +16,7 @@ router = APIRouter()
 # EMPLOYEE PORTAL
 # ===================================================================
 
-@router.get("/employee/dashboard/{employee_id}")
+@router.get("/employee/dashboard/{employee_id}", response_model=EmployeeDashboardOut)
 def get_employee_dashboard(employee_id: str, current_user: User = Depends(require_roles(UserRole.EMPLOYEE)), db: Session = Depends(get_db)):
     # עובד רואה רק את עצמו. קודם כל employee_id היה נגיש לכל עובד מאומת (IDOR).
     if employee_id != current_user.employee_id:

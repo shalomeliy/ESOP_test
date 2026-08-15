@@ -84,6 +84,43 @@
     }
   }
 
+  /* שורת/פסקת שגיאה מוברחת ומוכנה להזרקה. נוספה ב-v1.1.1 (פריט ג) אחרי שנמצאו
+   * 11 מקומות שהזריקו err.message *גולמי* ל-innerHTML לצד 9 שכן קראו ל-
+   * escapeHtml - שני דפוסים באותו קובץ, כלומר הקורא הבא לא יודע מה הכלל.
+   *
+   * וההנחה ש"זה בסדר כי הערך מגיע מ-<select>" לא נכונה: err.message הוא *גוף
+   * התשובה*, ראו errorDetail ממש למעלה. FastAPI מחזירה בו פרמטרים מהבקשה, ו-500
+   * בטקסט חופשי או HTML מ-proxy נכנסים ישר לתוך <td> ומפרקים את הטבלה. זה הפגם
+   * החי כאן - לא XSS (אין דרך למשתמש אחר לשלוט בפרמטרים האלה), אבל גם לא תקין.
+   *
+   * הקיטום יושב כאן ולא בכל אתר קריאה, וזו הסיבה שזה helper אחד ולא 11 קריאות
+   * ל-escapeHtml: גוף HTML שלם בתוך תא טבלה הוא פגם גם כשהוא מוברח. */
+  var ERROR_MAX_CHARS = 300;
+
+  function errorMessage(message) {
+    var text = String(message === null || message === undefined ? "" : message);
+    if (text.length > ERROR_MAX_CHARS) text = text.slice(0, ERROR_MAX_CHARS) + "…";
+    return escapeHtml(text) || "שגיאה לא מזוהה";
+  }
+
+  /* cls הוא פרמטר ולא קבוע כי שלושת הפורטלים לא חלקו קלאס אחד מלכתחילה (admin
+   * "p-4", trustee/employee "py-4", ושני אתרים עם text-xs/text-sm משלהם). ברירת
+   * מחדל אחת הייתה משנה עיצוב בשקט, וזה לא מה ש-patch של הברחה אמור לעשות.
+   *
+   * Number ו-escapeHtml על colspan ו-cls: שניהם נכנסים לתוך אטריביוט, שהוא הקשר
+   * שונה מתוכן. כל אתרי הקריאה מעבירים ליטרל, ולכן זו הגנה שלא עולה כלום - וכן
+   * הדבר שכבר נשבר במקום אחד בקודבייס הזה (ראו openEmployeeModal). */
+  function errorRow(colspan, message, cls) {
+    return '<tr><td colspan="' + Number(colspan) + '" class="'
+      + escapeHtml(cls || "p-4 text-center text-red-400") + '">'
+      + errorMessage(message) + "</td></tr>";
+  }
+
+  function errorText(message, cls) {
+    return '<p class="' + escapeHtml(cls || "text-sm text-red-400 text-center py-4") + '">'
+      + errorMessage(message) + "</p>";
+  }
+
   /* הורדה מאומתת. תגית <a href> לא נושאת את כותרת ה-Authorization ולכן הייתה
    * מקבלת 401 - הקובץ נמשך ב-fetch ומוגש לדפדפן כ-blob. ה-endpoint מפעיל את
    * בדיקת הבעלות ורושם שורת audit, ולכן זו הדרך היחידה להגיע ל-PDF; קבצי
@@ -139,6 +176,9 @@
     orDash: orDash,
     formatTimestamp: formatTimestamp,
     errorDetail: errorDetail,
+    errorMessage: errorMessage,
+    errorRow: errorRow,
+    errorText: errorText,
     downloadDocument: downloadDocument,
     fileNameFor: fileNameFor,
     supersededMarker: supersededMarker,

@@ -21,6 +21,7 @@ company_id על Grant/VestingSchedule/ExerciseRequest/ExerciseTaxRecord/AuditLog
 import csv
 import io
 from dataclasses import dataclass, field
+from bisect import bisect_right
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -266,15 +267,51 @@ COMPENSATION_EXPENSE_BASIS = (
 )
 
 
-def _nearest_preceding_price(db: Session, company_id: str, on_or_before: date) -> Optional[StockPricesHistory]:
+class _PriceLookup:
     """מחיר אחרון שנרשם *עד ועד בכלל* on_or_before - לעולם לא מחיר שנרשם אחרי
     תאריך ההענקה (look-ahead bias אסור, ראו PLAN v1.1.0), ולעולם לא נופל חזרה
-    ל-exercise_price כתחליף FMV."""
-    return (
+    ל-exercise_price כתחליף FMV.
+
+    האינווריאנט זהה לגמרי לקודמו (`_nearest_preceding_price`, שאילתה למענק);
+    מה שהשתנה הוא *מתי* משלמים עליו - טעינה אחת לחברה במקום שאילתה פר-מענק
+    (v1.1.1 פריט ב: 251 שאילתות על הדאטה החי, בשני קוראים).
+
+    **הכרעת tie-break, שלא הייתה מוגדרת קודם:** ל-`ORDER BY price_date DESC
+    LIMIT 1` אין שובר-שוויון, ולכן כששתי שורות חלקו price_date SQLite בחר
+    ביניהן שרירותית - כולל fmv_price שונה. כאן הבחירה מוצהרת: השורה האחרונה
+    לפי (price_date, price_id) עולה.
+
+    *** מה שזה **אינו**: "המחיר שנרשם אחרון". *** price_id הוא
+    `default=generate_uuid` (models.py), כלומר UUID4 אקראי - ה-price_id הגבוה
+    אינו הרשומה החדשה יותר, הוא פשוט מחרוזת שממיינת גבוה. הרווח כאן הוא
+    **דטרמיניזם בלבד**: אותה קלט תמיד מחזיר אותו מחיר, במקום בחירה שתלויה
+    בתוכנית הביצוע של SQLite. אין בסכימה עמודת מועד-כתיבה, ולכן "אחרון גובר"
+    אינו ניתן למימוש בלי עמודה חדשה - וזו הכרעה לגרסה, לא ל-patch."""
+
+    def __init__(self, rows: List[StockPricesHistory]):
+        self._rows = rows
+        self._dates = [r.price_date for r in rows]
+
+    @property
+    def has_any(self) -> bool:
+        """"לחברה אין שום מחיר רשום" (NO_PRICE_DATA) מול "יש מחירים אבל אף אחד
+        לא קודם למענק הזה" (NO_PRECEDING_PRICE) - שתי סיבות החרגה נפרדות שאסור
+        להן להתמוסס לאחת (ראו build_compensation_expense). נגזר מאותה טעינה,
+        ולכן אין יותר שאילתת-קיום נפרדת לכל דוח."""
+        return bool(self._rows)
+
+    def at(self, on_or_before: date) -> Optional[StockPricesHistory]:
+        # bisect_right ולא bisect_left: התאריך עצמו נכלל ("עד ועד בכלל").
+        i = bisect_right(self._dates, on_or_before)
+        return self._rows[i - 1] if i else None
+
+
+def _price_lookup(db: Session, company_id: str) -> _PriceLookup:
+    return _PriceLookup(
         db.query(StockPricesHistory)
-        .filter(StockPricesHistory.company_id == company_id, StockPricesHistory.price_date <= on_or_before)
-        .order_by(StockPricesHistory.price_date.desc())
-        .first()
+        .filter(StockPricesHistory.company_id == company_id)
+        .order_by(StockPricesHistory.price_date, StockPricesHistory.price_id)
+        .all()
     )
 
 
@@ -292,10 +329,7 @@ def build_compensation_expense(db: Session, scope: CompanyScope) -> ReportResult
     בשקט", לא החלטה חדשה שהומצאה כאן.
     """
     grants = _loader("grants")(db, scope)
-    company_has_any_price = (
-        db.query(StockPricesHistory.price_id)
-        .filter(StockPricesHistory.company_id == scope.company_id).first() is not None
-    )
+    prices = _price_lookup(db, scope.company_id)
 
     columns = ["grant_id", "pool_id", "grant_type", "total_options", "exercise_price", "currency",
                "matched_price_date", "fmv_at_grant_date", "contribution", "exclusion_reason",
@@ -316,13 +350,13 @@ def build_compensation_expense(db: Session, scope: CompanyScope) -> ReportResult
             "is_estimate": True, "basis": COMPENSATION_EXPENSE_BASIS,
         }
 
-        if not company_has_any_price:
+        if not prices.has_any:
             row["exclusion_reason"] = NO_PRICE_DATA
             exclusion_counts[NO_PRICE_DATA] += 1
             rows.append(row)
             continue
 
-        price_row = _nearest_preceding_price(db, scope.company_id, g.grant_date)
+        price_row = prices.at(g.grant_date)
         if price_row is None:
             row["exclusion_reason"] = NO_PRECEDING_PRICE
             exclusion_counts[NO_PRECEDING_PRICE] += 1
@@ -376,16 +410,16 @@ _AUDIT_ONLY_ENTITY_TYPES = ("Document", "ExerciseTaxRecord", "ShareClass", "Shar
 def _ledger_movements_in_scope(db: Session, scope: CompanyScope, date_a: date, date_b: date) -> list:
     """מראה export.py::_ledger_events_in_scope (היקף לפי LedgerOwnership, לא
     שאילתה עצמאית) - עם תוספת טווח על effective_date (Date טהור, לא UtcDateTime
-    - אין כאן סוגיית אזור-זמן/ח1-ח2, אפשר לסנן ישירות ב-DB)."""
-    aggregate_ids = {
-        row[0] for row in db.query(LedgerOwnership.aggregate_id)
-        .filter(LedgerOwnership.company_id == scope.company_id).all()
-    }
-    if not aggregate_ids:
-        return []
+    - אין כאן סוגיית אזור-זמן/ח1-ח2, אפשר לסנן ישירות ב-DB).
+
+    JOIN ולא IN(...) מרשימת aggregate_ids בזיכרון (v1.1.1 פריט ב): הרשימה גדלה
+    עם החברה (788 היום) וכל id נשלח כמשתנה bind נפרד. אין שכפול שורות כי
+    aggregate_id הוא ה-PK של LedgerOwnership, ולכן גם חוזה המיון למטה נשמר -
+    הוא על עמודות LedgerEvent ולא נוגע ב-join."""
     return (
         db.query(LedgerEvent)
-        .filter(LedgerEvent.aggregate_id.in_(aggregate_ids),
+        .join(LedgerOwnership, LedgerOwnership.aggregate_id == LedgerEvent.aggregate_id)
+        .filter(LedgerOwnership.company_id == scope.company_id,
                LedgerEvent.effective_date >= date_a, LedgerEvent.effective_date <= date_b)
         .order_by(LedgerEvent.aggregate_id, LedgerEvent.sequence_no)
         .all()
@@ -459,16 +493,13 @@ def build_movement(db: Session, scope: CompanyScope, date_a: date, date_b: date)
 
 def build_asc718_readiness(db: Session, scope: CompanyScope) -> ReportResult:
     grants = _loader("grants")(db, scope)
-    company_has_any_price = (
-        db.query(StockPricesHistory.price_id)
-        .filter(StockPricesHistory.company_id == scope.company_id).first() is not None
-    )
+    prices = _price_lookup(db, scope.company_id)
 
     columns = ["grant_id", "pool_id", "has_vesting_schedule", "has_preceding_stock_price",
                "has_exercise_price_recorded"]
     rows = []
     for g in grants:
-        has_price = company_has_any_price and _nearest_preceding_price(db, scope.company_id, g.grant_date) is not None
+        has_price = prices.has_any and prices.at(g.grant_date) is not None
         rows.append({
             "grant_id": g.grant_id, "pool_id": g.pool_id,
             "has_vesting_schedule": g.vesting_schedule is not None,

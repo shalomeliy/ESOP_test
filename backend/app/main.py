@@ -8,6 +8,7 @@ from backend.app.api import (
     trustee, employee_dashboard, documents, notifications, search_meta, export,
     cap_table, reports,
 )
+from backend.app.schemas import ApiRootOut
 from backend.app.version import VERSION, get_version
 
 # רשימת מקורות מפורשת במקום "*". ברירת המחדל מכסה שני דפוסי השימוש בפועל:
@@ -63,6 +64,6 @@ app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
 # הגשת הקליינטים (UI) ישירות מהשרת
 app.mount("/clients", StaticFiles(directory="clients"), name="clients")
 
-@app.get("/")
+@app.get("/", response_model=ApiRootOut)
 def root():
     return {"message": "ESOP Engine API is Running. Access /docs for API documentation.", "version": get_version()}

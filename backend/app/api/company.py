@@ -8,7 +8,7 @@ from backend.app.models import (
 )
 from backend.app.schemas import (
     CompanyUpdateRequest, CompanyOut, DocumentAcknowledgmentWindowOverrideOut,
-    DocumentAcknowledgmentWindowOverrideUpsertRequest,
+    DocumentAcknowledgmentWindowOverrideUpsertRequest, CompanyDeleteOut,
 )
 from backend.app.services.audit import record_audit_event
 from backend.app.auth import require_roles
@@ -134,7 +134,8 @@ def upsert_acknowledgment_window_override(
     return new_override
 
 
-@router.delete("/admin/company")
+@router.delete("/admin/company", response_model=CompanyDeleteOut,
+                response_model_exclude_unset=True)
 def delete_my_company(current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     comp = db.query(Company).filter(Company.company_id == current_user.company_id).first()
     if not comp:

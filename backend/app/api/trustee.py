@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from backend.app.database import get_db
 from backend.app.types import business_today
 from backend.app.models import Grant, User, UserRole
-from backend.app.schemas import TrusteePortfolioItem
+from backend.app.schemas import TrusteePortfolioItem, TrusteeDepositConfirmOut
 from backend.app.services.engine import MissingVestingScheduleError
 from backend.app.services.audit import record_audit_event
 from backend.app.services.ledger import append_event
@@ -50,7 +50,7 @@ def trustee_portfolio(current_user: User = Depends(require_roles(UserRole.TRUSTE
     return result
 
 
-@router.patch("/trustee/confirm-deposit/{grant_id}")
+@router.patch("/trustee/confirm-deposit/{grant_id}", response_model=TrusteeDepositConfirmOut)
 def confirm_trustee_deposit(grant_id: str, deposit_date: date, current_user: User = Depends(require_roles(UserRole.TRUSTEE)), db: Session = Depends(get_db)):
     grant = db.query(Grant).filter(Grant.grant_id == grant_id).first()
     if not grant:

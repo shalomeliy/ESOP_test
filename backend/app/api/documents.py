@@ -206,7 +206,12 @@ def send_document_for_acknowledgment(document_id: str,
     return _document_out(db, document)
 
 
-@router.get("/admin/documents/{document_id}/download")
+@router.get("/admin/documents/{document_id}/download",
+            response_class=FileResponse,
+            responses={200: {"content": {"application/pdf": {
+                                 "schema": {"type": "string", "format": "binary"}}},
+                             "description": "קובץ ה-PDF עצמו. אין response_model: "
+                                            "האנדפוינט מחזיר FileResponse, לא JSON."}})
 def download_document_admin(document_id: str,
                             current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
                             db: Session = Depends(get_db)):
@@ -229,7 +234,12 @@ def list_my_documents(current_user: User = Depends(require_roles(UserRole.EMPLOY
     ).all())
 
 
-@router.get("/employee/documents/{document_id}/download")
+@router.get("/employee/documents/{document_id}/download",
+            response_class=FileResponse,
+            responses={200: {"content": {"application/pdf": {
+                                 "schema": {"type": "string", "format": "binary"}}},
+                             "description": "קובץ ה-PDF עצמו. אין response_model: "
+                                            "האנדפוינט מחזיר FileResponse, לא JSON."}})
 def download_document_employee(document_id: str,
                                current_user: User = Depends(require_roles(UserRole.EMPLOYEE)),
                                db: Session = Depends(get_db)):
@@ -279,7 +289,12 @@ def list_pending_documents_trustee(current_user: User = Depends(require_roles(Us
     ).all())
 
 
-@router.get("/trustee/documents/{document_id}/download")
+@router.get("/trustee/documents/{document_id}/download",
+            response_class=FileResponse,
+            responses={200: {"content": {"application/pdf": {
+                                 "schema": {"type": "string", "format": "binary"}}},
+                             "description": "קובץ ה-PDF עצמו. אין response_model: "
+                                            "האנדפוינט מחזיר FileResponse, לא JSON."}})
 def download_document_trustee(document_id: str,
                               current_user: User = Depends(require_roles(UserRole.TRUSTEE)),
                               db: Session = Depends(get_db)):

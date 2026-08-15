@@ -551,7 +551,7 @@
                     </tr>
                 `).join("") || `<tr><td colspan="5" class="py-4 text-center text-slate-500">אין בקשות עדיין</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(5, err.message, "py-4 text-center text-red-400");
             }
         }
 
@@ -588,7 +588,7 @@
                     </tr>
                 `).join("") || `<tr><td colspan="6" class="py-4 text-center text-slate-500">לא נשלחו אליך מסמכים</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(6, err.message, "py-4 text-center text-red-400");
             }
         }
 
@@ -665,10 +665,10 @@
                     box.innerHTML = results.map(r => `
                         <button onclick="jumpToResult('${r.entity_type}', '${r.entity_id}')" class="w-full text-right px-4 py-2.5 hover:bg-slate-900 border-b border-slate-800/50 last:border-0 block">
                             <div class="flex items-center justify-between gap-2">
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">${r.entity_type}</span>
-                                <span class="text-white text-sm truncate">${r.title}</span>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">${ESOPDocuments.escapeHtml(r.entity_type)}</span>
+                                <span class="text-white text-sm truncate">${ESOPDocuments.escapeHtml(r.title)}</span>
                             </div>
-                            <div class="text-xs text-slate-500 truncate mt-0.5">${r.subtitle}</div>
+                            <div class="text-xs text-slate-500 truncate mt-0.5">${ESOPDocuments.escapeHtml(r.subtitle)}</div>
                         </button>
                     `).join("");
                 }

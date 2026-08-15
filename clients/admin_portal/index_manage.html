@@ -1004,29 +1004,51 @@
             } catch (err) { toast(err.message, true); }
         }
 
+        // v1.1.1 פריט ג: העובדים שהוצגו לאחרונה, לפי מזהה. קיים כדי ש-onclick לא
+        // יצטרך לשאת את האובייקט עצמו - ראו ההערה ב-loadEmployees למטה.
+        let employeesById = {};
+
         async function loadEmployees() {
             const tbody = document.getElementById("employees-table-body");
+            const esc = ESOPDocuments.escapeHtml;
             try {
                 const emps = await apiGet("/admin/employees");
+                employeesById = {};
+                emps.forEach(e => { employeesById[e.employee_id] = e; });
+                // *** הבריחה כאן אינה סטייל, היא תיקון באג. *** הגרסה הקודמת בנתה
+                // onclick='openEmployeeModal(${JSON.stringify(e)})' בתוך אטריביוט
+                // ב*גרש בודד*: JSON.stringify מבריח " אבל לא ', כך ששם פרטי עם גרש
+                // אחד - O'Brien, שם חוקי לגמרי - בורח מהאטריביוט ושובר את כפתור
+                // העריכה. עם קלט עוין זו הזרקת event handler. המזהה עובר עכשיו
+                // ב-data-* (הקשר של אטריביוט מצוטט, שם escapeHtml *כן* מספיק)
+                // וההידרציה נעשית מ-employeesById - כלומר אין יותר קונטקסט של
+                // מחרוזת JS בתוך HTML, שהוא ההקשר שההברחה לא מכסה.
                 tbody.innerHTML = emps.map(e => `
                     <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
-                        <td class="p-3 font-mono text-xs text-slate-400">${e.employee_id}</td>
-                        <td class="p-3 text-white">${e.first_name} ${e.last_name}</td>
-                        <td class="p-3 text-slate-300">${e.email}</td>
-                        <td class="p-3 font-mono text-xs ${e.company_id === session.company_id ? "text-emerald-400" : "text-amber-400"}">${e.company_id || "—"}</td>
-                        <td class="p-3"><span class="text-xs px-2 py-0.5 rounded bg-slate-800">${e.status}</span></td>
+                        <td class="p-3 font-mono text-xs text-slate-400">${esc(e.employee_id)}</td>
+                        <td class="p-3 text-white">${esc(e.first_name)} ${esc(e.last_name)}</td>
+                        <td class="p-3 text-slate-300">${esc(e.email)}</td>
+                        <td class="p-3 font-mono text-xs ${e.company_id === session.company_id ? "text-emerald-400" : "text-amber-400"}">${e.company_id ? esc(e.company_id) : "—"}</td>
+                        <td class="p-3"><span class="text-xs px-2 py-0.5 rounded bg-slate-800">${esc(e.status)}</span></td>
                         <td class="p-3 flex gap-2">
-                            <button onclick='openEmployeeModal(${JSON.stringify(e)})' class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-pen"></i> ערוך</button>
-                            <button onclick="deleteEmployee('${e.employee_id}')" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-solid fa-trash"></i> מחק</button>
+                            <button data-emp-id="${esc(e.employee_id)}" onclick="openEmployeeModal(this.dataset.empId)" class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-pen"></i> ערוך</button>
+                            <button data-emp-id="${esc(e.employee_id)}" onclick="deleteEmployee(this.dataset.empId)" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-solid fa-trash"></i> מחק</button>
                         </td>
                     </tr>
                 `).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-500">אין עובדים</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(6, err.message);
             }
         }
 
-        function openEmployeeModal(emp) {
+        // מקבל מזהה (מהטבלה) או כלום (כפתור "הוסף עובד"). האובייקט עצמו לא מועבר
+        // יותר דרך ה-DOM - v1.1.1 פריט ג.
+        function openEmployeeModal(employeeId) {
+            const emp = employeeId ? employeesById[employeeId] : null;
+            return openEmployeeModalWith(emp);
+        }
+
+        function openEmployeeModalWith(emp) {
             document.getElementById("employee-modal-error").classList.add("hidden");
             if (emp) {
                 document.getElementById("employee-modal-title").textContent = "ערוך עובד";
@@ -1167,7 +1189,7 @@
                     </tr>
                 `).join("") || `<tr><td colspan="8" class="p-4 text-center text-slate-500">אין מענקים</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(8, err.message);
             }
         }
 
@@ -1231,7 +1253,7 @@
                     </div>
                 `).join("");
             } catch (err) {
-                body.innerHTML = `<p class="text-sm text-red-400 text-center py-4">${err.message}</p>`;
+                body.innerHTML = ESOPDocuments.errorText(err.message);
             }
         }
 
@@ -1253,10 +1275,13 @@
                         <i class="fa-solid fa-circle-question"></i> אין נתון - לא נמצא אירוע עד לחתך המבוקש.</div>`;
                     return;
                 }
+                // <pre> אינו מונע פענוח HTML - הוא משמר רווחים בלבד. מצב ה-ledger
+                // מכיל מחרוזות מאוחסנות (שמות, הערות), ולכן ה-JSON מוברח לפני
+                // ההזרקה. אין כאן שום markup מכוון שההברחה עלולה לשבור (v1.1.1).
                 resultEl.innerHTML = `<div class="p-3 bg-slate-950 border border-slate-700 rounded-xl">
-                    <pre class="text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre-wrap">${JSON.stringify(data.state, null, 2)}</pre></div>`;
+                    <pre class="text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre-wrap">${ESOPDocuments.escapeHtml(JSON.stringify(data.state, null, 2))}</pre></div>`;
             } catch (err) {
-                resultEl.innerHTML = `<p class="text-sm text-red-400">${err.message}</p>`;
+                resultEl.innerHTML = ESOPDocuments.errorText(err.message, "text-sm text-red-400");
             }
         }
 
@@ -1318,10 +1343,10 @@
             document.getElementById("grant-modal").classList.add("open");
             try {
                 const [emps, pools] = await Promise.all([apiGet("/admin/employees"), apiGet("/admin/pools")]);
-                empSelect.innerHTML = emps.map(e => `<option value="${e.employee_id}">${e.first_name} ${e.last_name} (${e.employee_id})</option>`).join("")
+                empSelect.innerHTML = emps.map(e => `<option value="${ESOPDocuments.escapeHtml(e.employee_id)}">${ESOPDocuments.escapeHtml(e.first_name)} ${ESOPDocuments.escapeHtml(e.last_name)} (${ESOPDocuments.escapeHtml(e.employee_id)})</option>`).join("")
                     || `<option value="">אין עובדים</option>`;
                 grantModalPools = pools;
-                poolSelect.innerHTML = pools.map(p => `<option value="${p.pool_id}">${p.pool_id} - פנויות ${p.unallocated_shares.toLocaleString()}</option>`).join("")
+                poolSelect.innerHTML = pools.map(p => `<option value="${ESOPDocuments.escapeHtml(p.pool_id)}">${ESOPDocuments.escapeHtml(p.pool_id)} - פנויות ${p.unallocated_shares.toLocaleString()}</option>`).join("")
                     || `<option value="">אין פולים בחברה שלך</option>`;
                 updatePoolInfo();
             } catch (err) {
@@ -1393,7 +1418,7 @@
                     </tr>
                 `).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-500">אין בקשות</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(6, err.message);
             }
         }
 
@@ -1434,7 +1459,7 @@
                     </tr>
                 `).join("") || `<tr><td colspan="8" class="p-4 text-center text-slate-500">אין מסמכים</td></tr>`;
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-red-400">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(8, err.message);
             }
         }
 
@@ -2199,7 +2224,7 @@
 
                 tbodyPools.innerHTML = pools.map(p => `
                     <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
-                        <td class="p-3 font-mono text-xs text-slate-400">${p.pool_id}</td>
+                        <td class="p-3 font-mono text-xs text-slate-400">${ESOPDocuments.escapeHtml(p.pool_id)}</td>
                         <td class="p-3 text-white">${p.total_shares.toLocaleString()}</td>
                         <td class="p-3 text-slate-300">${p.allocated_shares.toLocaleString()}</td>
                         <td class="p-3 text-emerald-400">${p.unallocated_shares.toLocaleString()}</td>
@@ -2614,7 +2639,7 @@
                     </tr>`;
                 }).join("");
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="4" class="text-red-400 text-xs py-2">${err.message}</td></tr>`;
+                tbody.innerHTML = ESOPDocuments.errorRow(4, err.message, "text-red-400 text-xs py-2");
             }
         }
 
@@ -2663,10 +2688,10 @@
                     box.innerHTML = results.map(r => `
                         <button onclick="jumpToResult('${r.entity_type}')" class="w-full text-right px-4 py-2.5 hover:bg-slate-900 border-b border-slate-800/50 last:border-0 block">
                             <div class="flex items-center justify-between gap-2">
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">${r.entity_type}</span>
-                                <span class="text-white text-sm truncate">${r.title}</span>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">${ESOPDocuments.escapeHtml(r.entity_type)}</span>
+                                <span class="text-white text-sm truncate">${ESOPDocuments.escapeHtml(r.title)}</span>
                             </div>
-                            <div class="text-xs text-slate-500 truncate mt-0.5">${r.subtitle}</div>
+                            <div class="text-xs text-slate-500 truncate mt-0.5">${ESOPDocuments.escapeHtml(r.subtitle)}</div>
                         </button>
                     `).join("");
                 }

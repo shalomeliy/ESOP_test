@@ -8,6 +8,7 @@ from backend.app.database import get_db
 from backend.app.models import Employee, EmployeeStatus, OptionPool, Grant, User, UserRole, UserSession
 from backend.app.schemas import (
     EmployeeStatusUpdate, EmployeeCreateRequest, EmployeeUpdateRequest, EmployeeOut, EmployeeCreateResponse,
+    EmployeeDeleteOut, EmployeeStatusChangeOut,
 )
 from backend.app.services.engine import DeterministicESOPEngine, MissingVestingScheduleError
 from backend.app.services.audit import record_audit_event
@@ -109,7 +110,8 @@ def update_employee(employee_id: str, payload: EmployeeUpdateRequest,
     return emp
 
 
-@router.delete("/admin/employees/{employee_id}")
+@router.delete("/admin/employees/{employee_id}", response_model=EmployeeDeleteOut,
+                response_model_exclude_unset=True)
 def delete_employee(employee_id: str,
                      termination_date: date | None = Query(
                          None, description="חובה כשלעובד יש מענקים: תאריך סיום ההעסקה בפועל."),
@@ -167,7 +169,7 @@ def delete_employee(employee_id: str,
 
 
 # --- COMPANY ADMIN PORTAL ENDPOINTS (legacy) ---
-@router.patch("/admin/employees/{employee_id}/status")
+@router.patch("/admin/employees/{employee_id}/status", response_model=EmployeeStatusChangeOut)
 def update_employee_status(employee_id: str, payload: EmployeeStatusUpdate,
                             current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)), db: Session = Depends(get_db)):
     employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()

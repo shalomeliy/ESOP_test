@@ -585,6 +585,119 @@ class SavedReportOut(BaseModel):
 class ReportEnvelopeOut(BaseModel):
     report_type: str
     generated_at: datetime
+    # *** columns נוסף ב-v1.1.1, והיעדרו כאן היה מלכודת. *** ה-schema הוגדר
+    # ב-v1.1.0 אבל לא חובר לאף endpoint, ולכן אף אחד לא גילה שהוא חסר את השדה
+    # שה-endpoint באמת מחזיר. חיבור שלו כ-response_model במצב הקודם היה מוחק את
+    # columns מהתשובה בשקט - וזה השדה שכל שלושת הפורטלים גוזרים ממנו את כותרות
+    # הטבלה (ראו ההערה ב-api/reports.py::_respond ואת הבדיקה
+    # test_every_row_key_is_declared_as_a_column_so_csv_drops_nothing).
+    columns: List[str]
     rows: List[Dict[str, Any]]
     summary: Dict[str, Any]
     disclosures: List[str] = []
+
+
+# ===================================================================
+# v1.1.1 פריט ד2: מעטפות לתשובות שהיו dict לא-מתועד ב-/docs
+#
+# כל אחת מהן מתעדת צורה שה-endpoint *כבר* מחזיר - אף שדה לא נוסף ואף שדה לא
+# הוסר. שני מקומות מחזירים שתי צורות שונות לפי מסלול (מחיקה קשה מול רכה),
+# ושם ה-endpoint משתמש ב-response_model_exclude_unset=True: בלעדיו המסלול
+# הקצר היה מתחיל להחזיר את השדה הנוסף כ-null, כלומר שינוי חוזה גלוי ללקוח
+# בתוך patch.
+# ===================================================================
+
+class StatusOut(BaseModel):
+    """{"status": "..."} - logout ו-change-password."""
+    status: str
+
+
+class ApiRootOut(BaseModel):
+    message: str
+    version: str
+
+
+class VersionOut(BaseModel):
+    version: str
+
+
+class CurrentUserOut(BaseModel):
+    user_id: str
+    username: str
+    role: str
+    # שלושת המזהים תלויי-תפקיד: לאדמין יש company_id, לנאמן trustee_id,
+    # לעובד employee_id - ולכן None בשניים מהם הוא המצב הרגיל, לא חוסר נתון.
+    company_id: Optional[str] = None
+    trustee_id: Optional[str] = None
+    employee_id: Optional[str] = None
+
+
+class CompanyDeleteOut(BaseModel):
+    company_id: str
+    deleted: str
+    is_active: Optional[bool] = None
+
+
+class EmployeeDeleteOut(BaseModel):
+    employee_id: str
+    deleted: str
+    new_status: Optional[str] = None
+
+
+class EmployeeStatusChangeOut(BaseModel):
+    employee_id: str
+    status: EmployeeStatus
+    returned_options: float
+
+
+class SavedReportDeleteOut(BaseModel):
+    deleted: bool
+    report_id: str
+
+
+class TrusteeDepositConfirmOut(BaseModel):
+    grant_id: str
+    # str ולא date: ה-endpoint מחזיר str(deposit_date) כבר היום.
+    deposit_date: str
+    status: str
+
+
+class EmployeeDashboardGrantOut(BaseModel):
+    grant_id: str
+    total_options: float
+    # None כשאין לוח הבשלה - ומסומן במפורש ב-vesting_data_missing ולא מתחזה
+    # ל-0.0. אותו כלל P4 שנאכף בכל הקודבייס: נתון חסר אינו אפס.
+    vested_options: Optional[float] = None
+    vesting_data_missing: bool
+    exercise_price: float
+    is_trustee_holding_period_met: bool
+    holding_period_end_date: Optional[str] = None
+    is_within_post_termination_window: bool
+    post_termination_exercise_deadline: Optional[str] = None
+
+
+class EmployeeDashboardOut(BaseModel):
+    employee_name: str
+    grants: List[EmployeeDashboardGrantOut]
+
+
+class DashboardTaxTrackItemOut(BaseModel):
+    grant_type: str
+    count: int
+    pct_of_total: float
+
+
+class DashboardVestingPointOut(BaseModel):
+    as_of: date
+    cumulative_vested: float
+
+
+class ReportsDashboardOut(BaseModel):
+    as_of: date
+    total_grants_in_scope: int
+    tax_track_breakdown: List[DashboardTaxTrackItemOut]
+    forward_vesting_curve: List[DashboardVestingPointOut]
+    vesting_curve_horizon_months: int
+    # מענקים בלי לוח הבשלה, שנספרו אך לא נכללו בעקומה. רשימה ריקה היא "אין
+    # בעיה"; היעדר השדה היה "לא נמדד" - שתי משמעויות שאסור לאחד.
+    degraded_grant_ids: List[str]

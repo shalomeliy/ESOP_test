@@ -145,10 +145,12 @@ def estimate_export_row_count(db: Session, company_id: str) -> int:
         count += db.query(func.count(ExerciseTaxRecord.record_id)).filter(
             ExerciseTaxRecord.request_id.in_(scope.request_ids)).scalar()
 
-    aggregate_ids = _ids(db, LedgerOwnership.aggregate_id, LedgerOwnership.company_id == company_id)
-    if aggregate_ids:
-        count += db.query(func.count(LedgerEvent.event_id)).filter(
-            LedgerEvent.aggregate_id.in_(aggregate_ids)).scalar()
+    # JOIN ולא IN(...) - אותו תיקון כמו ב-_ledger_events_in_scope למטה (v1.1.1
+    # פריט ב); זו השאילתה שמזינה את assert_export_within_size_limit, כלומר דווקא
+    # החברה הגדולה שבשבילה המגבלה קיימת היא זו שהייתה שולחת הכי הרבה משתני bind.
+    count += db.query(func.count(LedgerEvent.event_id)).join(
+        LedgerOwnership, LedgerOwnership.aggregate_id == LedgerEvent.aggregate_id).filter(
+        LedgerOwnership.company_id == company_id).scalar()
 
     for entity_type, entity_ids in {
         "Company": {company_id}, "Employee": scope.employee_ids, "Grant": scope.grant_ids,
@@ -211,13 +213,16 @@ def _ledger_events_in_scope(db: Session, scope: CompanyScope) -> list:
     בדיוק כמו ledger.py::_assert_ledger_ownership. סדר לפי (aggregate_id,
     sequence_no) ולא recorded_at: זה סדר הקיפול הקנוני (models.py, אותה הערה
     על uq_ledger_events_aggregate_seq), וגם מה שהופך CSV/JSON לדטרמיניסטי בין
-    שתי הרצות ייצוא זהות."""
-    aggregate_ids = _ids(db, LedgerOwnership.aggregate_id, LedgerOwnership.company_id == scope.company_id)
-    if not aggregate_ids:
-        return []
+    שתי הרצות ייצוא זהות.
+
+    JOIN ולא IN(...) - אותו תיקון בדיוק כמו reports.py::_ledger_movements_in_scope
+    (v1.1.1 פריט ב), ובמכוון בשני המקומות: ה-docstring שם מצהיר שהוא "מראה" של
+    הפונקציה הזו, ותיקון צד אחד היה הופך את ההצהרה לשקרית. כאן זה אף חשוב יותר -
+    אין פילטר תאריכים, כלומר נטענים *כל* האירועים של החברה."""
     return (
         db.query(LedgerEvent)
-        .filter(LedgerEvent.aggregate_id.in_(aggregate_ids))
+        .join(LedgerOwnership, LedgerOwnership.aggregate_id == LedgerEvent.aggregate_id)
+        .filter(LedgerOwnership.company_id == scope.company_id)
         .order_by(LedgerEvent.aggregate_id, LedgerEvent.sequence_no)
         .all()
     )

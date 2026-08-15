@@ -106,6 +106,40 @@ def create_schema(guard_production_db):
     Base.metadata.drop_all(bind=engine)
 
 
+@pytest.fixture(autouse=True)
+def isolated_file_stores(tmp_path, monkeypatch):
+    """*** ההגנה על ה-DB החי לא כיסתה את הקבצים שלצידו. ***
+
+    v1.1.1 פריט ד1. ``EXPORT_STORE_DIR`` נגזר מ-``__file__`` ולכן הצביע תמיד על
+    ``export_store/`` האמיתי בשורש הפרויקט, ואף בדיקה לא עקפה אותו - כך שכל
+    הרצת ``pytest`` כתבה לשם bundles אמיתיים שהשורה שלהם ב-DB נזרקה עם ה-DB
+    הזמני. נמצאו 3,427 קבצים (19MB), 100% מהם בלי אף שורה ב-data_transfer_runs
+    שמפנה אליהם - כלומר הצטברות של הרצות בדיקה, לא דאטה.
+
+    זה בדיוק ההיגיון שכבר נוסח ב-test_documents.py::isolated_document_store
+    ("אחרת כל הרצת בדיקות משאירה קבצים אמיתיים מאחור") - הוא פשוט חל שם על
+    קובץ אחד ולא על הסוויטה. כאן, ולא במודול בדיקה, כי שלוש הדליפות שכבר קרו
+    (DB, document_store, export_store) חולקות שורש אחד: קבוע ברמת מודול שנפתר
+    בזמן import, שבדיקה שלא חשבה על הנושא לא יודעת שהיא צריכה לעקוף.
+
+    כל מודול מחזיק binding נפרד לקבוע (``from ... import X`` ולא import מודול),
+    ולכן שני המודולים של כל store צריכים תיקון - לא רק זה שמגדיר אותו."""
+    import backend.app.api.export as api_export_module  # noqa: PLC0415
+    import backend.app.services.export as export_module  # noqa: PLC0415
+
+    monkeypatch.setattr(export_module, "EXPORT_STORE_DIR", tmp_path / "export_store")
+    monkeypatch.setattr(api_export_module, "EXPORT_STORE_DIR", tmp_path / "export_store")
+
+    # document_store נעקף כבר ב-test_documents.py, אבל רק שם - ו-105 קבצים
+    # יתומים בתיקייה האמיתית מוכיחים שגם בדיקות אחרות מייצרות מסמכים. הפיקסצ'ר
+    # המקומי שם ספציפי יותר וימשיך לדרוס את זה; זו שכבת הרשת, לא החלפה שלו.
+    import backend.app.api.documents as api_documents_module  # noqa: PLC0415
+    import backend.app.services.documents as documents_module  # noqa: PLC0415
+
+    monkeypatch.setattr(documents_module, "DOCUMENT_STORE_DIR", tmp_path / "document_store")
+    monkeypatch.setattr(api_documents_module, "DOCUMENT_STORE_DIR", tmp_path / "document_store")
+
+
 @pytest.fixture
 def db_session(create_schema):
     """Session בתוך טרנזקציה שמתגלגלת אחורה בסוף כל בדיקה - כל בדיקה מתחילה
