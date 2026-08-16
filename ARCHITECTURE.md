@@ -49,7 +49,8 @@ copy the scoping pattern of a sibling in the same router rather than inventing o
 | `document_access.py` | single shared ownership check for document reads |
 | `export.py` / `import_.py` | company data export / dry-run+commit import, both built on `company_scope.TABLE_REGISTRY` |
 | `reconciliation.py` | re-runs vesting+tax engines on an imported bundle, diffs against saved results |
-| `cap_table.py` | pure read-time fully-diluted dilution calc, no persistence |
+| `cap_table.py` | pure read-time fully-diluted dilution calc, no persistence. Since v1.2.0 the **issued side is a ledger replay**, not a column filter — see below |
+| `buyback.py` | single source for the buyback preview *and* its execution — validation + full diff, writes nothing |
 | `reports.py` | the 7 reports + BI dashboard, all built from `CompanyScope` |
 | `notifications.py` | deadline/notification computation, nothing persisted |
 | `search_engine.py` | `difflib`-based deterministic fuzzy search |
@@ -57,11 +58,11 @@ copy the scoping pattern of a sibling in the same router rather than inventing o
 
 ## The ledger — event-sourced state, not directly-edited columns
 
-`backend/app/services/ledger.py`, models at `models.py:447` (`LedgerEvent`) and `:482`
+`backend/app/services/ledger.py`, models at `models.py:454` (`LedgerEvent`) and `:489`
 (`LedgerOwnership`). Business state for six aggregate types is a **fold over an
 append-only event sequence**, not a mutable column:
 
-- **Ledger-native aggregates** (have a projector in `PROJECTORS`, `ledger.py:233`):
+- **Ledger-native aggregates** (have a projector in `PROJECTORS`, `ledger.py:260`):
   `OptionPool`, `Employee`, `Grant`, `VestingSchedule`, `ExerciseRequest`, `ShareIssuance`.
   Everything else (Document, AuditLog, notifications, tax packs) is computed directly from
   columns/other tables — not ledger-projected.
@@ -79,12 +80,35 @@ append-only event sequence**, not a mutable column:
 - **Read/projection**: `events_for()` (`ledger.py:116`) supports two independent time cuts:
   `as_of_effective_date` ("what was true in the world by X") and `as_of_knowledge_date`
   ("what did the system know by X"). `project(db, aggregate_type, aggregate_id, ...)`
-  (`ledger.py:243`) dispatches to the aggregate's projector and returns `None` if the
+  (`ledger.py:270`) dispatches to the aggregate's projector and returns `None` if the
   aggregate has no events at all — never a zero-value default (see failure pattern P4).
 
 When adding a new mutation to a ledger-native aggregate: append an event through
 `append_event()`, don't just update the column — the column (if one still exists in
 parallel) and the ledger will silently diverge otherwise.
+
+**Base events vs deltas, and the one aggregate that breaks the pattern.** Every projector
+folds one `*_ESTABLISHED` base event plus signed deltas above it. All base events are dated
+`LEDGER_EPOCH` (`date.min`) and therefore sort first — *except* `ShareIssuance`, whose base
+event carries the real `issue_date`, because that date is what makes an `as_of` snapshot
+correct. A delta can therefore sort **before** its own base event, so
+`project_share_issuance` (`ledger.py:220`) accumulates into `pending_delta` instead of
+skipping, and applies it right after the base lands. The other five projectors keep the
+plain `and state is not None` skip; don't copy `pending_delta` into them.
+
+**`ShareIssuance` is the worked example of a two-event aggregate** (v1.2.0):
+`SHARE_ISSUANCE_ESTABLISHED` (base) + `SHARE_ISSUANCE_ADJUSTED` (signed delta — buyback,
+correction, or cancellation; the business reason lives in `payload.reason`, not in the type
+name). `compute_cap_table_snapshot` (`cap_table.py:22`) replays those events for the issued
+side; the `issue_date <= as_of` cut in that query is **load-bearing** and must stay — without
+it every historical snapshot flags `partial` on healthy data. The frozen copy of the
+pre-v1.2.0 column algorithm in `tests/test_cap_table.py:579` is the equivalence proof that
+the switch changed no historical number; it is deliberately not called from production code
+and must never be "updated" to match it.
+
+`tests/test_project_invariants.py::test_every_ledger_event_type_is_folded_by_some_projector`
+enforces that every type in `LEDGER_EVENT_TYPES` reaches an explicit branch in some
+projector — an event type nobody folds is written successfully and changes nothing.
 
 ## `company_scope` — the multi-tenant isolation contract
 

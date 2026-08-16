@@ -14,6 +14,7 @@
 וזה מנוגד לכלל "לא מחלישים בדיקה".
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -556,6 +557,105 @@ def test_every_company_scoped_table_is_registered_or_explicitly_special_cased():
     assert not unforced, (
         f"הטבלאות האלה נושאות עמודת company_id בפועל אבל ה-TableSpec שלהן "
         f"ב-TABLE_REGISTRY לא מצהיר force_company_id=True: {sorted(unforced)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# v1.2.0 (B11, מפרט §11.4): אירוע שנכתב ולא משנה כלום בשקט.
+#
+# ה-ledger הוא append-only, ולכן סוג אירוע חדש נכתב בהצלחה גם כשאף פרויקטור
+# אינו יודע לקפל אותו - התוצאה אינה שגיאה אלא מספר שלא זז. זה בדיוק הכשל
+# שקרה עם POOL_ALLOCATED (ראו ההערה על LEDGER_EPOCH ב-services/ledger.py),
+# והוא מתגלה רק כשמישהו משווה ידנית עמודה מוטטת מול פרויקציה.
+# ---------------------------------------------------------------------------
+
+_LEDGER_SOURCE = ROOT / "backend" / "app" / "services" / "ledger.py"
+
+
+def _event_types_each_projector_branches_on() -> dict[str, set[str]]:
+    """כל מחרוזת שמושווית מול ``e.event_type`` בתוך פונקציית קיפול, לפי AST.
+
+    **לא** "כל מחרוזת שמופיעה בפונקציה": ה-docstring של
+    ``project_share_issuance`` מזכיר בשמם שלושה סוגי אירוע, ובהם POOL_ALLOCATED
+    שאינו שלו כלל - קריאה תמימה של מחרוזות הייתה מכריזה על כיסוי מתוך תיעוד.
+    **ולא regex**: ``e.event_type == "X"`` מפוצל על פני שורות בכמה מהפרויקטורים,
+    ובדיקה שנופלת על עיצוב קוד היא בדיקה שידחפו לה ignore.
+
+    ``in (...)`` נתמך אף שאף פרויקטור אינו משתמש בו היום - אחרת האיחוד הראשון
+    של שני סוגים לענף אחד היה מפיל את הבדיקה על צורה תקינה לחלוטין."""
+    tree = ast.parse(_LEDGER_SOURCE.read_text(encoding="utf-8"))
+
+    projectors: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "PROJECTORS" for target in node.targets
+        ):
+            projectors = {value.id for value in node.value.values if isinstance(value, ast.Name)}
+    assert projectors, "לא נמצא מיפוי PROJECTORS ב-services/ledger.py"
+
+    branched: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name in projectors):
+            continue
+        found: set[str] = set()
+        for compare in ast.walk(node):
+            if not isinstance(compare, ast.Compare):
+                continue
+            if not (isinstance(compare.left, ast.Attribute) and compare.left.attr == "event_type"):
+                continue
+            for op, comparator in zip(compare.ops, compare.comparators):
+                if isinstance(op, ast.Eq):
+                    literals = [comparator]
+                elif isinstance(op, ast.In) and isinstance(comparator, (ast.Tuple, ast.List, ast.Set)):
+                    literals = list(comparator.elts)
+                else:
+                    continue
+                found.update(
+                    literal.value for literal in literals
+                    if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+                )
+        branched[node.name] = found
+
+    unparsed = projectors - set(branched)
+    assert not unparsed, (
+        f"PROJECTORS מפנה לשמות שאינם def ברמת המודול ב-ledger.py: {sorted(unparsed)}"
+    )
+    return branched
+
+
+def test_every_ledger_event_type_is_folded_by_some_projector():
+    """כל טיפוס ב-LEDGER_EVENT_TYPES מופיע בענף מפורש **באחד** מהפרויקטורים.
+
+    הצורה חלשה בכוונה (״באחד״, בלי לדרוש איזה): LEDGER_EVENT_TYPES היא קבוצה
+    שטוחה בלי מיפוי לסוג הצובר, והשם אינו מפתח אמין - GRANT_CREATED
+    ו-TRUSTEE_DEPOSIT_CONFIRMED שייכים שניהם ל-Grant. מיפוי טיפוס→צובר הוא
+    שיפור עתידי; הצורה הזו כבר תופסת את הכשל שבגללו היא נכתבת."""
+    from backend.app.models import LEDGER_EVENT_TYPES
+
+    folded = set().union(*_event_types_each_projector_branches_on().values())
+
+    never_folded = LEDGER_EVENT_TYPES - folded
+    assert not never_folded, (
+        f"סוגי אירוע שאף פרויקטור אינו מקפל: {sorted(never_folded)}. "
+        "אירוע כזה נכתב ל-ledger בהצלחה ולא משנה שום מספר - כשל שקט. "
+        "הוסף ענף ב-services/ledger.py, או הסר את הטיפוס מ-LEDGER_EVENT_TYPES."
+    )
+
+
+def test_no_projector_branches_on_an_event_type_that_cannot_be_written():
+    """אותו כשל מהכיוון השני: ענף שמשווה מול מחרוזת שאינה ב-LEDGER_EVENT_TYPES
+    לעולם אינו נכנס, כי append_event דוחה כל טיפוס שאינו בקבוצה. שגיאת כתיב
+    בשם אירוע נראית כמו קוד עובד ומתנהגת כמו קוד חסר."""
+    from backend.app.models import LEDGER_EVENT_TYPES
+
+    branched = _event_types_each_projector_branches_on()
+    unknown = {
+        f"{function}: {event_type}"
+        for function, types in branched.items()
+        for event_type in types - LEDGER_EVENT_TYPES
+    }
+    assert not unknown, (
+        f"ענפי קיפול על סוגי אירוע שאינם ב-LEDGER_EVENT_TYPES: {sorted(unknown)}"
     )
 
 
