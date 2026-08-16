@@ -10,6 +10,7 @@ from backend.app.types import system_today_utc
 from backend.app.database import SessionLocal, engine, Base
 import backend.app.models as models
 from backend.app.auth import hash_password
+from backend.app.services.ledger import append_event, record_ownership
 
 
 def shift_months(d: date, months: int) -> date:
@@ -20,6 +21,125 @@ def shift_months(d: date, months: int) -> date:
     month += 1
     day = min(d.day, calendar.monthrange(year, month)[1])
     return date(year, month, day)
+
+
+# ===================================================================
+# טבלת הון (Cap Table) - v1.2.0
+#
+# עד כאן ההזרעה לא יצרה אף ישות של טבלת הון, ולכן חישוב הדילול (v1.0.0 שלב ב)
+# והרכישה העצמית (v1.2.0) היו קיימים כקוד ולא כדאטה: כל הדגמה או בדיקה ידנית
+# חייבה להזין ביד סוג מניה, בעל מניות והנפקה לפני שאפשר היה בכלל לראות מסך.
+#
+# "עובד בעל מניות" הוא כאן *מקרה דאטה* ולא פיצ'ר: אין במערכת שום מסלול שהופך
+# מימוש אופציות למניות ממשיות (סיכון 8 ב-docs/qa/v1.0.0.md), ולכן הקישור
+# ל-Employee נזרע במפורש ואינו נגזר משום תהליך.
+# ===================================================================
+
+# (מפתח, שם, class_type, seniority_order) - מספר קטן יותר = משולם קודם
+# ב-waterfall של פירוק (ראו models.py.ShareClass).
+CAP_TABLE_SHARE_CLASSES = [
+    ("COMMON", "Common", "Common", 2),
+    ("PREF-A", "Preferred A", "Preferred", 1),
+]
+
+# (מפתח, שם, shareholder_type, employee_id, [(מפתח סוג מניה, כמות, לפני כמה חודשים)])
+COMP_001_HOLDERS = [
+    ("FOUNDER-1", "אורי בן-ארי", "FOUNDER", None, [("COMMON", 3_000_000, 72)]),
+    ("FOUNDER-2", "נועה שגיא", "FOUNDER", None, [("COMMON", 2_000_000, 72)]),
+    # שתי מנות לאותו משקיע ובאותו סוג מניה, בכוונה: גם הפילוח בתמונת המצב מסכם
+    # לפי (בעל מניות, סוג מניה) ולא לפי שורה, וגם למסך הרכישה העצמית יש בחירת
+    # מנה אמיתית להציג - האנדפוינט מקבל share_issuance_id (הכרעה ה5).
+    ("INVESTOR-SEED", "Aleph Seed Fund", "INVESTOR", None,
+     [("PREF-A", 1_000_000, 48), ("PREF-A", 200_000, 36)]),
+    ("INVESTOR-A", "Blue River Ventures", "INVESTOR", None, [("PREF-A", 800_000, 30)]),
+    ("EMP-001", "ישראל ישראלי", "EMPLOYEE", "EMP-001", [("COMMON", 40_000, 18)]),
+    ("EMP-TAX-WORKINCOME-1", "מסלול הכנסת-עבודה", "EMPLOYEE", "EMP-TAX-WORKINCOME-1",
+     [("COMMON", 25_000, 6)]),
+]
+
+# חברה שנייה עם טבלת הון משלה - בלעדיה בדיקת בידוד הטננטים בסנדבוקס מצביעה
+# תמיד לחברה *ריקה*, כלומר "404 כי אין שם כלום" ולא "404 כי זו חברה אחרת".
+COMP_002_HOLDERS = [
+    ("FOUNDER-1", "Dana Meridian", "FOUNDER", None, [("COMMON", 800_000, 60)]),
+    ("INVESTOR-A", "Hudson Bay Partners", "INVESTOR", None, [("PREF-A", 300_000, 24)]),
+]
+
+
+def seed_cap_table(db, company_id: str, today: date, authorized_shares: float, holders) -> dict:
+    """מזריע טבלת הון שלמה לחברה אחת ומחזיר ספירות.
+
+    *** האירוע נכתב כאן ולא ב-backfill_ledger ***: מ-v1.2.0 צד המונפק מחושב
+    ב-replay מלא (services/cap_table.py), ולכן שורת הנפקה בלי היסטוריית ledger
+    היא תקלת שלמות-דאטה שמדליקה partial ואזהרה. DB זרוע חייב להיות שלם כבר
+    אחרי seed_data לבדו ולא להישען על סקריפט שני שאולי לא רץ.
+
+    *** source נשאר LIVE (ברירת המחדל) ולעולם לא BACKFILL ***: הבדיקה
+    ב-backfill_ledger.main מסרבת לרוץ אם קיים ולו אירוע גיבוי אחד ב-DB, כך
+    שאירוע שנכתב כאן עם source=BACKFILL היה חוסם בשקט את גיבוי כל שאר הישויות.
+    """
+    company = db.query(models.Company).filter(models.Company.company_id == company_id).first()
+    if company is None:
+        raise RuntimeError(f"seed_cap_table: החברה {company_id} אינה קיימת")
+
+    total_issued = sum(shares for _, _, _, _, issuances in holders
+                       for _, shares, _ in issuances)
+    # אותה תקרה בדיוק שהאנדפוינט אוכף (api/cap_table.py) - הזרעה שמפרה אותה
+    # הייתה יוצרת DB שהקוד עצמו היה דוחה, וזה מתגלה רק בהזנה הבאה.
+    if total_issued > authorized_shares:
+        raise RuntimeError(
+            f"seed_cap_table: {company_id} מזריעה {total_issued:,.0f} מניות "
+            f"מעל התקרה {authorized_shares:,.0f}"
+        )
+    company.total_authorized_shares = authorized_shares
+
+    class_ids = {}
+    for key, name, class_type, seniority in CAP_TABLE_SHARE_CLASSES:
+        share_class = models.ShareClass(
+            share_class_id=f"SC-{company_id}-{key}", company_id=company_id,
+            name=name, class_type=class_type, seniority_order=seniority,
+        )
+        db.add(share_class)
+        class_ids[key] = share_class.share_class_id
+    db.flush()
+
+    counts = {"share_classes": len(class_ids), "shareholders": 0, "issuances": 0,
+              "shares": 0.0}
+    for holder_key, name, holder_type, employee_id, issuances in holders:
+        shareholder = models.Shareholder(
+            shareholder_id=f"SH-{company_id}-{holder_key}", company_id=company_id,
+            name=name, shareholder_type=holder_type, employee_id=employee_id,
+        )
+        db.add(shareholder)
+        db.flush()
+        counts["shareholders"] += 1
+
+        for ordinal, (class_key, shares, months_ago) in enumerate(issuances, start=1):
+            issue_date = shift_months(today, -months_ago)
+            issuance = models.ShareIssuance(
+                share_issuance_id=f"SI-{company_id}-{holder_key}-{ordinal}",
+                company_id=company_id, shareholder_id=shareholder.shareholder_id,
+                share_class_id=class_ids[class_key], shares=float(shares),
+                issue_date=issue_date,
+            )
+            db.add(issuance)
+            db.flush()
+
+            record_ownership(db, aggregate_id=issuance.share_issuance_id,
+                             aggregate_type="ShareIssuance", company_id=company_id)
+            # effective_date=issue_date ולא LEDGER_EPOCH - אותה בחירה בדיוק כמו
+            # באנדפוינט: התאריך הוא עובדה היסטורית אמיתית, וזה מה שהופך תמונת
+            # מצב לפי as_of היסטורי לנכונה.
+            append_event(
+                db, event_type="SHARE_ISSUANCE_ESTABLISHED", aggregate_type="ShareIssuance",
+                aggregate_id=issuance.share_issuance_id,
+                payload={"shares": issuance.shares, "shareholder_id": issuance.shareholder_id,
+                        "share_class_id": issuance.share_class_id, "issue_date": issuance.issue_date},
+                effective_date=issue_date,
+            )
+            counts["issuances"] += 1
+            counts["shares"] += issuance.shares
+
+    return counts
 
 
 def build_schema_via_migrations() -> None:
@@ -1096,7 +1216,21 @@ def seed_database():
         db.commit()
 
         # -------------------------------------------------------------
-        # 18. יצירת משתמשי התחברות (Users) לשלושת הפורטלים - כניסה אחת לכל
+        # 18. טבלת הון (Cap Table) - v1.2.0. ראו seed_cap_table למעלה.
+        # שתי חברות ולא אחת: בלי טבלת הון שנייה כל בדיקת גישה חוצת-חברות
+        # מצביעה לחברה ריקה, ואז "404" אינו מוכיח דבר.
+        # -------------------------------------------------------------
+        print("📊 יוצר טבלת הון (סוגי מניות, מייסדים, משקיעים, עובדים-בעלי-מניות)...")
+        cap_001 = seed_cap_table(db, "COMP-001", today, 10_000_000, COMP_001_HOLDERS)
+        cap_002 = seed_cap_table(db, "COMP-002", today, 2_000_000, COMP_002_HOLDERS)
+        db.commit()
+        print(f"   COMP-001: {cap_001['shareholders']} בעלי מניות, "
+              f"{cap_001['issuances']} הנפקות, {cap_001['shares']:,.0f} מניות · "
+              f"COMP-002: {cap_002['shareholders']} / {cap_002['issuances']} / "
+              f"{cap_002['shares']:,.0f}")
+
+        # -------------------------------------------------------------
+        # 19. יצירת משתמשי התחברות (Users) לשלושת הפורטלים - כניסה אחת לכל
         # חברה (COMPANY_ADMIN), כניסה אחת לכל נאמן (TRUSTEE), וכניסה לקבוצת
         # עובדים מייצגת (EMPLOYEE) לצורך בדיקות. אותה סיסמת דמו לכולם.
         # -------------------------------------------------------------
