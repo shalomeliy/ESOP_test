@@ -487,9 +487,10 @@
                                 <th class="p-3 font-semibold">סוג מניה</th>
                                 <th class="p-3 font-semibold">מניות</th>
                                 <th class="p-3 font-semibold">תאריך הנפקה</th>
+                                <th class="p-3 font-semibold">פעולות</th>
                             </tr>
                         </thead>
-                        <tbody id="issuances-table-body"><tr><td colspan="5" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
+                        <tbody id="issuances-table-body"><tr><td colspan="6" class="p-4 text-center text-slate-500">טוען...</td></tr></tbody>
                     </table>
                 </div>
             </section>
@@ -828,6 +829,72 @@
                 <button id="issuance-submit-btn" onclick="submitIssuanceModal()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">שמור</button>
                 <button onclick="closeIssuanceModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">ביטול</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Modal: רכישה עצמית / תיקון הנפקה (v1.2.0, docs/spec/v1.2.0.md §6).
+         *** לא אשף חדש ***: מרחיב את מכונת המצבים שכבר קיימת בייצוא/ייבוא
+         (idle → preview-running → preview-shown → committing → done|failed)
+         ולא מוסיף שפת אינטראקציה שנייה לאותו פורטל.
+
+         זה המודאל הראשון בקובץ עם role/aria-modal/aria-labelledby, לכידת
+         Escape והחזרת פוקוס - לזרימה דו-שלבית בלתי-הפיכה זה מסלול כשל ממשי
+         ולא נוי (§10). z-[60] ולא z-[70]: מודאל ציר הזמן נפתח *מעליו* מהקבלה. -->
+    <div id="buyback-modal" class="modal-backdrop fixed inset-0 bg-black/60 z-[60] items-center justify-center p-4"
+         role="dialog" aria-modal="true" aria-labelledby="buyback-modal-title">
+        <div class="bg-slate-900 border border-rose-500/30 rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-1">
+                <h3 id="buyback-modal-title" tabindex="-1" class="text-lg font-bold text-white focus:outline-none">
+                    <i class="fa-solid fa-circle-minus text-rose-400"></i> רכישה עצמית / תיקון הנפקה
+                </h3>
+                <button id="buyback-close-btn" onclick="closeBuybackModal()" aria-label="סגור"
+                        class="text-slate-400 hover:text-white text-xl min-h-[44px] px-3">&times;</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-4 font-mono" id="buyback-lot-id">-</p>
+
+            <!-- מצב idle: המנה שנבחרה + הקלט -->
+            <div id="buyback-idle">
+                <div id="buyback-lot-summary" class="p-4 bg-slate-950 border border-slate-800 rounded-2xl text-sm mb-4"></div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1" for="buyback-shares">כמות מניות</label>
+                        <input type="number" id="buyback-shares" min="0" dir="ltr"
+                               class="w-full min-h-[44px] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                        <p class="text-[10px] text-slate-500 mt-1">חיובי = רכישה עצמית. שלילי = תיקון כלפי מעלה.</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1" for="buyback-effective-date">תאריך תוקף</label>
+                        <input type="date" id="buyback-effective-date"
+                               class="w-full min-h-[44px] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1" for="buyback-reason">סיבה</label>
+                        <select id="buyback-reason"
+                                class="w-full min-h-[44px] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white text-sm">
+                            <option value="BUYBACK">רכישה עצמית</option>
+                            <option value="CORRECTION">תיקון</option>
+                            <option value="CANCELLATION">ביטול</option>
+                        </select>
+                    </div>
+                </div>
+                <button id="buyback-preview-btn" onclick="runBuybackPreview()"
+                        class="w-full min-h-[44px] mt-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium py-2 rounded-xl transition">
+                    <i class="fa-solid fa-magnifying-glass"></i> הצג תצוגה מקדימה
+                </button>
+            </div>
+
+            <!-- מצב preview-running / committing -->
+            <div id="buyback-progress" class="hidden text-sm text-slate-400 text-center py-8">
+                <i class="fa-solid fa-spinner fa-spin"></i> <span id="buyback-progress-text"></span>
+            </div>
+
+            <!-- מצב preview-shown: הדיף + ההקלדה החוזרת -->
+            <div id="buyback-preview" class="hidden" aria-live="polite"></div>
+
+            <!-- מצב done: הקבלה -->
+            <div id="buyback-receipt" class="hidden" aria-live="polite"></div>
+
+            <div id="buyback-error" class="hidden mt-3 p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl text-xs"></div>
         </div>
     </div>
 
@@ -1207,36 +1274,43 @@
             VESTING_PAUSE_RECORDED: "הקפאת הבשלה נרשמה",
             EXERCISE_REQUEST_SUBMITTED: "בקשת מימוש הוגשה",
             EXERCISE_REQUEST_DECIDED: "בקשת מימוש הוכרעה",
+            SHARE_ISSUANCE_ESTABLISHED: "הנפקת מניות (בסיס)",
+            SHARE_ISSUANCE_ADJUSTED: "התאמת הנפקה (רכישה עצמית / תיקון)",
         };
 
         let ledgerModalGrantId = null;
+        // v1.2.0: הצובר אינו בהכרח Grant יותר - הקבלה של הרכישה העצמית פותחת
+        // את אותו מודאל על ShareIssuance. ברירת המחדל שומרת על כל הקוראים הקיימים.
+        let ledgerModalAggregateType = "Grant";
 
-        async function openLedgerModal(grantId) {
-            ledgerModalGrantId = grantId;
-            document.getElementById("ledger-modal-grant-id").textContent = grantId;
+        async function openLedgerModal(aggregateId, aggregateType = "Grant") {
+            ledgerModalGrantId = aggregateId;
+            ledgerModalAggregateType = aggregateType;
+            document.getElementById("ledger-modal-grant-id").textContent = aggregateId;
             document.getElementById("ledger-as-of-effective").value = "";
             document.getElementById("ledger-as-of-knowledge").value = "";
             document.getElementById("ledger-as-of-result").innerHTML = "";
             document.getElementById("ledger-modal").classList.add("open");
-            await loadLedgerTimeline(grantId);
+            await loadLedgerTimeline(aggregateId);
         }
 
         function closeLedgerModal() {
             document.getElementById("ledger-modal").classList.remove("open");
             ledgerModalGrantId = null;
+            ledgerModalAggregateType = "Grant";
         }
 
-        async function loadLedgerTimeline(grantId) {
+        async function loadLedgerTimeline(aggregateId) {
             const body = document.getElementById("ledger-timeline-body");
             body.innerHTML = `<p class="text-sm text-slate-500 text-center py-4">טוען...</p>`;
             try {
-                const events = await apiGet(`/admin/ledger/Grant/${grantId}/events`);
+                const events = await apiGet(`/admin/ledger/${ledgerModalAggregateType}/${aggregateId}/events`);
                 if (events.length === 0) {
                     // מענק שנוצר לפני שהגיבוי (backfill_ledger.py) רץ, ולפני שהחיווט
                     // החי (שלב 2) היה קיים - לא באג, פער תיעוד ידוע (R-060-08).
                     body.innerHTML = `<p class="text-sm text-amber-400 text-center py-4">
                         <i class="fa-solid fa-triangle-exclamation"></i> אין אירועים -
-                        המענק הזה נוצר לפני שהגיבוי (backfill) רץ על ה-DB הזה.</p>`;
+                        הישות הזו נוצרה לפני שהגיבוי (backfill) רץ על ה-DB הזה.</p>`;
                     return;
                 }
                 body.innerHTML = events.map(e => `
@@ -1267,7 +1341,7 @@
             resultEl.innerHTML = `<p class="text-sm text-slate-500">טוען...</p>`;
             try {
                 const qs = params.toString();
-                const data = await apiGet(`/admin/ledger/Grant/${ledgerModalGrantId}/as-of${qs ? "?" + qs : ""}`);
+                const data = await apiGet(`/admin/ledger/${ledgerModalAggregateType}/${ledgerModalGrantId}/as-of${qs ? "?" + qs : ""}`);
                 if (data.state === null) {
                     // "אין נתון" מפורש - לא 0/ריק. יכול לקרות גם אם החתך המבוקש
                     // קודם לתאריך הגיבוי (ראו QA-060-46 ב-QA_TESTBOOK.md).
@@ -2368,15 +2442,27 @@
 
         function renderIssuancesTable() {
             const tbody = document.getElementById("issuances-table-body");
+            const esc = ESOPDocuments.escapeHtml;
+            // המזהה עובר ב-data-* וההידרציה נעשית מ-capTableIssuances - אותה
+            // תבנית בדיוק כמו employeesById (v1.1.1 פריט ג), ולא
+            // onclick="fn('${id}')": מחרוזת JS בתוך אטריביוט היא ההקשר היחיד
+            // ש-escapeHtml אינו מכסה.
             tbody.innerHTML = capTableIssuances.map(i => `
                 <tr class="border-b border-slate-800/50 hover:bg-slate-900/50">
-                    <td class="p-3 font-mono text-xs text-slate-400">${i.share_issuance_id}</td>
+                    <td class="p-3 font-mono text-xs text-slate-400">${esc(i.share_issuance_id)}</td>
                     <td class="p-3 text-white">${shareholderName(i.shareholder_id)}</td>
                     <td class="p-3 text-slate-300 text-xs">${shareClassName(i.share_class_id)}</td>
-                    <td class="p-3 text-white">${i.shares.toLocaleString()}</td>
+                    <td class="p-3 text-white" dir="ltr">${i.shares.toLocaleString()}</td>
                     <td class="p-3 text-slate-400 font-mono text-xs">${i.issue_date}</td>
+                    <td class="p-3">
+                        <button data-issuance-id="${esc(i.share_issuance_id)}"
+                                onclick="openBuybackModal(this.dataset.issuanceId, this)"
+                                class="text-rose-400 hover:text-rose-300 text-xs min-h-[44px]">
+                            <i class="fa-solid fa-circle-minus"></i> רכישה עצמית
+                        </button>
+                    </td>
                 </tr>
-            `).join("") || `<tr><td colspan="5" class="p-4 text-center text-slate-500">אין הנפקות</td></tr>`;
+            `).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-500">אין הנפקות</td></tr>`;
         }
 
         async function loadCapTableTab() {
@@ -2390,7 +2476,7 @@
                 renderIssuancesTable();
             } catch (err) {
                 shTbody.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
-                isTbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
+                isTbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">${ESOPDocuments.escapeHtml(err.message)}</td></tr>`;
             }
             await loadCapTableSnapshot();
         }
@@ -2547,6 +2633,329 @@
             } finally {
                 btn.disabled = false;
             }
+        }
+
+        // --- רכישה עצמית / תיקון הנפקה (v1.2.0) ---------------------------
+        // מכונת המצבים: idle → preview-running → preview-shown → committing →
+        // done | failed, עם "התחל מחדש" חזרה ל-idle. אין כאן ולידציה עסקית
+        // משלה: התצוגה המקדימה *היא* תשובת השרת, ולכן מה שמוצג הוא בדיוק מה
+        // שהכללים שיחליטו על הכתיבה החזירו (מפרט §7).
+        const BUYBACK_REASON_LABELS = { BUYBACK: "רכישה עצמית", CORRECTION: "תיקון", CANCELLATION: "ביטול" };
+
+        let buybackState = "idle";
+        let buybackIssuanceId = null;
+        let buybackRequest = null;   // מה שנשלח ל-preview, כדי שהביצוע ישלח את אותו דבר בדיוק
+        let buybackPreview = null;
+        let buybackReturnFocusTo = null;
+
+        function buybackIssuance() {
+            return capTableIssuances.find(i => i.share_issuance_id === buybackIssuanceId) || null;
+        }
+
+        function setBuybackState(state, progressText) {
+            buybackState = state;
+            const show = (id, on) => document.getElementById(id).classList.toggle("hidden", !on);
+            show("buyback-idle", state === "idle");
+            show("buyback-progress", state === "preview-running" || state === "committing");
+            show("buyback-preview", state === "preview-shown");
+            show("buyback-receipt", state === "done");
+            if (progressText) document.getElementById("buyback-progress-text").textContent = progressText;
+            // בזמן כתיבה גם כפתור הסגירה נחסם, לא רק Escape - אחרת יש דלת שנייה
+            // החוצה באמצע בקשה שכבר יצאה לשרת.
+            document.getElementById("buyback-close-btn").disabled = (state === "committing");
+        }
+
+        function showBuybackError(message) {
+            const box = document.getElementById("buyback-error");
+            box.textContent = message;   // textContent ולא innerHTML: זה גוף התשובה של השרת
+            box.classList.remove("hidden");
+        }
+
+        function openBuybackModal(issuanceId, triggerEl) {
+            buybackIssuanceId = issuanceId;
+            buybackRequest = null;
+            buybackPreview = null;
+            buybackReturnFocusTo = triggerEl || null;
+            const issuance = buybackIssuance();
+            const esc = ESOPDocuments.escapeHtml;
+
+            document.getElementById("buyback-error").classList.add("hidden");
+            document.getElementById("buyback-lot-id").textContent = issuanceId;
+            document.getElementById("buyback-shares").value = "";
+            document.getElementById("buyback-effective-date").value = new Date().toISOString().slice(0, 10);
+            document.getElementById("buyback-reason").value = "BUYBACK";
+            document.getElementById("buyback-lot-summary").innerHTML = issuance ? `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div><span class="text-slate-400">בעל מניות:</span> <b class="text-white">${shareholderName(issuance.shareholder_id)}</b></div>
+                    <div><span class="text-slate-400">סוג מניה:</span> <span class="text-slate-200">${shareClassName(issuance.share_class_id)}</span></div>
+                    <div><span class="text-slate-400">במנה כרגע:</span> <b class="text-white" dir="ltr">${issuance.shares.toLocaleString()}</b></div>
+                    <div><span class="text-slate-400">תאריך הנפקה:</span> <span class="font-mono text-slate-300">${esc(issuance.issue_date)}</span></div>
+                </div>` : `<span class="text-amber-400">פרטי המנה לא נטענו - רעננו את הטאב.</span>`;
+
+            setBuybackState("idle");
+            document.getElementById("buyback-modal").classList.add("open");
+            // הפוקוס עובר לכותרת ולא נשאר על הכפתור שמאחורי המודאל.
+            document.getElementById("buyback-modal-title").focus();
+        }
+
+        function closeBuybackModal() {
+            // §9: Escape וסגירה מותרים ב-idle/preview-shown/done/failed, וחסומים
+            // בזמן committing - בקשת הכתיבה כבר בדרך, וסגירת המסך לא מבטלת אותה.
+            if (buybackState === "committing") return;
+            document.getElementById("buyback-modal").classList.remove("open");
+            const wasDone = buybackState === "done";
+            buybackState = "idle";
+            buybackIssuanceId = null;
+            buybackRequest = null;
+            buybackPreview = null;
+            if (buybackReturnFocusTo && document.body.contains(buybackReturnFocusTo)) {
+                buybackReturnFocusTo.focus();
+            }
+            buybackReturnFocusTo = null;
+            // רק אחרי ביצוע - טעינה מחדש אחרי נטישה של תצוגה מקדימה תרמז שנכתב משהו.
+            if (wasDone) refreshCapTableAfterBuyback();
+        }
+
+        async function refreshCapTableAfterBuyback() {
+            try {
+                await refreshCapTableData();
+                renderShareholdersTable();
+                renderIssuancesTable();
+                await loadCapTableSnapshot();
+            } catch (err) { toast(err.message, true); }
+        }
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") return;
+            if (!document.getElementById("buyback-modal").classList.contains("open")) return;
+            closeBuybackModal();
+        });
+
+        async function runBuybackPreview() {
+            const shares = parseFloat(document.getElementById("buyback-shares").value);
+            const effectiveDate = document.getElementById("buyback-effective-date").value;
+            const reason = document.getElementById("buyback-reason").value;
+            document.getElementById("buyback-error").classList.add("hidden");
+            if (!shares || !effectiveDate) {
+                showBuybackError("יש להזין כמות מניות שאינה אפס ותאריך תוקף");
+                return;
+            }
+            buybackRequest = { share_issuance_id: buybackIssuanceId, shares, effective_date: effectiveDate, reason };
+            setBuybackState("preview-running", "מחשב תצוגה מקדימה...");
+            try {
+                const res = await fetch(`${API}/admin/cap-table/buyback/preview`, {
+                    method: "POST", headers: authHeaders(), body: JSON.stringify(buybackRequest)
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                buybackPreview = await res.json();
+                renderBuybackPreview(buybackPreview);
+                setBuybackState("preview-shown");
+                document.getElementById("buyback-preview-heading").focus();
+            } catch (err) {
+                // failed: תיבת שגיאה אחת inline עם טקסט האילוץ מהשרת כפי שהוא
+                // (למשל "the lot holds only 200000" או דחיית מנה בלי היסטוריית
+                // ledger), וחזרה ל-idle כדי שאפשר יהיה לתקן ולנסות שוב.
+                setBuybackState("idle");
+                showBuybackError(err.message);
+            }
+        }
+
+        // מספר עם סימן מפורש, ב-dir="ltr". הדלתא נושאת סימן *ומילה*, לא רק צבע.
+        function buybackDelta(delta) {
+            const word = delta < 0 ? "הפחתה" : "תוספת";
+            const sign = delta < 0 ? "−" : "+";
+            const color = delta < 0 ? "text-rose-400" : "text-emerald-400";
+            return `<span class="${color}">${word} <span dir="ltr">${sign}${Math.abs(delta).toLocaleString()}</span></span>`;
+        }
+
+        function buybackNumberOrUnknown(value) {
+            return (value === null || value === undefined)
+                ? `<span class="text-amber-400">לא ידוע</span>`
+                : `<span dir="ltr">${value.toLocaleString()}</span>`;
+        }
+
+        function buybackPctLine(pct) {
+            return (pct === null || pct === undefined)
+                ? `<span class="text-slate-500">אחוז לא זמין</span>`
+                : `<span dir="ltr">${(pct * 100).toFixed(2)}%</span>`;
+        }
+
+        function renderBuybackPreview(p) {
+            const esc = ESOPDocuments.escapeHtml;
+            const employeeLine = p.shareholder.employee_id
+                ? `<span class="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">עובד: ${esc(p.shareholder.employee_id)}</span>`
+                : `<span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">אינו עובד במערכת</span>`;
+
+            // הבאנר החלקי מוצג *בתוך* התצוגה המקדימה ולא בראש הטאב: דיף נקי
+            // מעל בסיס חלקי הוא התוצאה הגרועה ביותר של המסך הזה (§9).
+            const partialBanner = p.partial ? `
+                <div class="p-3 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-xl text-xs mb-3">
+                    <i class="fa-solid fa-triangle-exclamation"></i> <b>הבסיס חלקי</b> - חלק מהמספרים ברמת החברה
+                    אינם כוללים את כל השורות, ולכן גם ה"אחרי" חלקי:
+                    <ul class="list-disc pr-5 mt-1">${p.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>
+                </div>` : "";
+
+            document.getElementById("buyback-preview").innerHTML = `
+                <h4 id="buyback-preview-heading" tabindex="-1" class="text-base font-bold text-white mb-1 focus:outline-none">
+                    תצוגה מקדימה - <span class="text-amber-400">עדיין לא נכתב דבר</span>
+                </h4>
+                <p class="text-xs text-slate-500 mb-3">
+                    ${esc(BUYBACK_REASON_LABELS[p.reason] || p.reason)} ·
+                    תאריך תוקף <span class="font-mono">${esc(p.effective_date)}</span> ·
+                    מנה <span class="font-mono">${esc(p.share_issuance_id)}</span> מ-<span class="font-mono">${esc(p.issue_date)}</span>
+                </p>
+                ${partialBanner}
+
+                <div class="p-4 bg-slate-950 border border-slate-800 rounded-2xl mb-3">
+                    <div class="flex items-center gap-2 flex-wrap mb-3">
+                        <span class="text-slate-400 text-sm">בעל המניות:</span>
+                        <b class="text-white">${esc(p.shareholder.name || p.shareholder.shareholder_id)}</b>
+                        ${employeeLine}
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                        <div class="p-3 bg-slate-900 rounded-xl">
+                            <p class="text-xs text-slate-400">במנה - לפני</p>
+                            <p class="text-white font-bold mt-1" dir="ltr">${p.lot_before.toLocaleString()}</p>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl">
+                            <p class="text-xs text-slate-400">השינוי</p>
+                            <p class="font-bold mt-1">${buybackDelta(p.lot_delta)}</p>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl border border-indigo-500/30">
+                            <p class="text-xs text-slate-400">במנה - אחרי</p>
+                            <p class="text-indigo-300 font-bold mt-1" dir="ltr">${p.lot_after.toLocaleString()}</p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mt-3">
+                        <div class="p-3 bg-slate-900 rounded-xl">
+                            <p class="text-xs text-slate-400">ההחזקה הכוללת (בעל מניות + סוג מניה) - לפני</p>
+                            <p class="text-white font-bold mt-1">${buybackNumberOrUnknown(p.holding_before)}</p>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl border border-indigo-500/30">
+                            <p class="text-xs text-slate-400">ההחזקה הכוללת - אחרי</p>
+                            <p class="text-indigo-300 font-bold mt-1">${buybackNumberOrUnknown(p.holding_after)}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
+                    <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl">
+                        <p class="text-xs text-slate-400">מניות מונפקות בחברה</p>
+                        <p class="mt-1"><span dir="ltr">${p.company_before.outstanding_shares.toLocaleString()}</span>
+                            <span class="text-slate-500">→</span>
+                            <b class="text-white" dir="ltr">${p.company_after.outstanding_shares.toLocaleString()}</b></p>
+                        <p class="text-xs text-slate-500 mt-1">${buybackPctLine(p.company_before.outstanding_pct_of_authorized)}
+                            → ${buybackPctLine(p.company_after.outstanding_pct_of_authorized)} מהמורשות</p>
+                    </div>
+                    <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl">
+                        <p class="text-xs text-slate-400">דילול-מלא</p>
+                        <p class="mt-1"><span dir="ltr">${p.company_before.fully_diluted_shares.toLocaleString()}</span>
+                            <span class="text-slate-500">→</span>
+                            <b class="text-white" dir="ltr">${p.company_after.fully_diluted_shares.toLocaleString()}</b></p>
+                        <p class="text-xs text-slate-500 mt-1">${buybackPctLine(p.company_before.fully_diluted_pct_of_authorized)}
+                            → ${buybackPctLine(p.company_after.fully_diluted_pct_of_authorized)} מהמורשות</p>
+                    </div>
+                </div>
+
+                <p class="text-xs text-slate-400 mb-4">
+                    <i class="fa-solid fa-scale-balanced"></i> מס: <b>${esc(p.tax_treatment)}</b>
+                    (${esc(p.tax_reason_code)}) - המערכת אינה מחשבת כאן מס, ואינה מציגה 0.
+                </p>
+
+                <label class="block text-xs text-slate-400 mb-1" for="buyback-confirm-shares">
+                    להקלדה חוזרת של הכמות (<span dir="ltr">${buybackRequest.shares.toLocaleString()}</span>) לאישור:
+                </label>
+                <input type="number" id="buyback-confirm-shares" dir="ltr" oninput="onBuybackConfirmInput()"
+                       class="w-full min-h-[44px] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white mb-3">
+                <div class="flex flex-col md:flex-row gap-3">
+                    <button id="buyback-execute-btn" onclick="executeBuyback()" disabled
+                            class="flex-1 min-h-[44px] bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-xl transition">
+                        אשר ובצע רכישה עצמית
+                    </button>
+                    <button onclick="restartBuyback()"
+                            class="flex-1 min-h-[44px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">
+                        התחל מחדש
+                    </button>
+                </div>`;
+        }
+
+        function onBuybackConfirmInput() {
+            const typed = parseFloat(document.getElementById("buyback-confirm-shares").value);
+            document.getElementById("buyback-execute-btn").disabled = !(typed === buybackRequest.shares);
+        }
+
+        function restartBuyback() {
+            document.getElementById("buyback-error").classList.add("hidden");
+            buybackPreview = null;
+            setBuybackState("idle");
+        }
+
+        async function executeBuyback() {
+            document.getElementById("buyback-error").classList.add("hidden");
+            const typed = parseFloat(document.getElementById("buyback-confirm-shares").value);
+            setBuybackState("committing", "מבצע ורושם אירוע ledger...");
+            try {
+                // אותו גוף בקשה שהתצוגה המקדימה קיבלה, ועוד שני שדות: הסימן
+                // שהוחזר (409 אם המנה זזה מאז) וההקלדה החוזרת. שום מספר מחושב
+                // מהדפדפן לא נשלח - השרת מחשב את הפרויקציה מחדש מהמקור.
+                const res = await fetch(`${API}/admin/cap-table/buyback`, {
+                    method: "POST", headers: authHeaders(),
+                    body: JSON.stringify({ ...buybackRequest,
+                                          expected_sequence_no: buybackPreview.expected_sequence_no,
+                                          confirm_shares: typed })
+                });
+                if (!res.ok) throw new Error(await ESOPDocuments.errorDetail(res));
+                renderBuybackReceipt(await res.json());
+                setBuybackState("done");
+                document.getElementById("buyback-receipt-heading").focus();
+                toast("הרכישה העצמית בוצעה ונרשמה ב-ledger");
+            } catch (err) {
+                // failed. חזרה ל-preview-shown ולא ל-idle: 409 ("המנה זזה מאז
+                // התצוגה המקדימה") נפתר ב"התחל מחדש", והאדמין צריך לראות מול
+                // מה בדיוק נדחתה הבקשה.
+                setBuybackState("preview-shown");
+                showBuybackError(err.message);
+            }
+        }
+
+        function renderBuybackReceipt(receipt) {
+            const esc = ESOPDocuments.escapeHtml;
+            // *** אין כאן כפתור "בטל" מושבת ***: כפתור אפור מרמז על הפיכות
+            // בתנאים כלשהם, ואין כזו (מפרט §6).
+            document.getElementById("buyback-receipt").innerHTML = `
+                <h4 id="buyback-receipt-heading" tabindex="-1" class="text-base font-bold text-emerald-400 mb-2 focus:outline-none">
+                    <i class="fa-solid fa-circle-check"></i> בוצע ונרשם
+                </h4>
+                <div class="p-4 bg-slate-950 border border-slate-800 rounded-2xl text-sm space-y-2">
+                    <div><span class="text-slate-400">מזהה אירוע ledger:</span>
+                        <span class="font-mono text-white break-all">${esc(receipt.ledger_event_id)}</span></div>
+                    <div><span class="text-slate-400">המנה אחרי:</span>
+                        <b class="text-white" dir="ltr">${receipt.lot_after.toLocaleString()}</b></div>
+                    <div><span class="text-slate-400">מניות מונפקות בחברה:</span>
+                        <b class="text-white" dir="ltr">${receipt.company_after.outstanding_shares.toLocaleString()}</b>
+                        · דילול-מלא <b class="text-white" dir="ltr">${receipt.company_after.fully_diluted_shares.toLocaleString()}</b></div>
+                    <div><span class="text-slate-400">מס:</span> ${esc(receipt.tax_treatment)} (${esc(receipt.tax_reason_code)})</div>
+                </div>
+                <p class="text-xs text-amber-300 mt-3">
+                    <i class="fa-solid fa-lock"></i> אירוע ledger נוסף בלבד. אפשר לקזז אותו באירוע מפצה -
+                    <b>לעולם לא למחוק ולא לערוך</b>.
+                </p>
+                <div class="flex flex-col md:flex-row gap-3 mt-4">
+                    <button onclick="openBuybackLedgerTimeline()"
+                            class="flex-1 min-h-[44px] bg-purple-600 hover:bg-purple-500 text-white font-medium py-2 rounded-xl transition">
+                        <i class="fa-solid fa-timeline"></i> פתח את ציר הזמן של המנה
+                    </button>
+                    <button onclick="closeBuybackModal()"
+                            class="flex-1 min-h-[44px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition">
+                        סגור
+                    </button>
+                </div>`;
+        }
+
+        function openBuybackLedgerTimeline() {
+            const issuanceId = buybackIssuanceId;
+            closeBuybackModal();   // מרענן גם את הטאב, כי המצב הוא done
+            openLedgerModal(issuanceId, "ShareIssuance");
         }
 
         async function loadCompany() {

@@ -629,6 +629,47 @@ def test_portal_never_interpolates_a_raw_error_into_innerhtml(relative_path):
     )
 
 
+def test_the_buyback_modal_keeps_its_accessibility_contract():
+    """v1.2.0 §10. אף מודאל אחר בפורטל (2,738 שורות) אינו לוכד Escape, אינו
+    מעביר פוקוס ואינו מצהיר role - ובקובץ כולו היו שלוש תכונות aria. כלומר
+    החובות האלה כאן אינן "הסטנדרט של הקובץ" אלא חריגה ממנו, ובלי אינווריאנט
+    העריכה הבאה תיישר אותן חזרה לרוב בלי שאיש ישים לב.
+
+    הן אינן קוסמטיקה: זו זרימה דו-שלבית שכותבת אירוע ledger בלתי-הפיך."""
+    portal = (ROOT / "clients" / "admin_portal" / "index_manage.html").read_text(encoding="utf-8")
+    modal = portal[portal.index('id="buyback-modal"'):portal.index('id="ei-action-modal"')]
+
+    for attribute in ('role="dialog"', 'aria-modal="true"', 'aria-labelledby="buyback-modal-title"'):
+        assert attribute in modal, f"מודאל הרכישה העצמית איבד את {attribute}"
+
+    # אזור התצוגה המקדימה ואזור הקבלה - שניהם משתנים בלי שהמשתמש לחץ עליהם.
+    for region in ('id="buyback-preview"', 'id="buyback-receipt"'):
+        segment = modal[modal.index(region):modal.index(region) + 200]
+        assert 'aria-live="polite"' in segment, f"{region} אינו מוכרז ל-screen reader"
+
+    # Escape ו"סגור" חסומים בזמן הכתיבה בלבד - לא תמיד, ולא אף פעם.
+    assert 'if (buybackState === "committing") return;' in portal, (
+        "closeBuybackModal אינו חוסם יציאה בזמן committing"
+    )
+    assert 'document.getElementById("buyback-modal-title").focus();' in portal, (
+        "פתיחת המודאל אינה מעבירה פוקוס לכותרת"
+    )
+
+
+def test_the_buyback_row_action_never_interpolates_an_id_into_a_js_string():
+    """~25 אתרי onclick="fn('${id}')" עדיין קיימים בשלושת הפורטלים (חוב פתוח
+    ב-HANDOFF.md), ו-escapeHtml *אינו* מכסה מחרוזת JS בתוך אטריביוט. הקוד
+    החדש לא יצטרף לחוב הזה: המזהה עובר ב-data-*, כמו התיקון ב-v1.1.1."""
+    portal = (ROOT / "clients" / "admin_portal" / "index_manage.html").read_text(encoding="utf-8")
+
+    assert not re.search(r"onclick=\"openBuybackModal\('", portal), (
+        "כפתור הרכישה העצמית חזר להזרקת מזהה לתוך מחרוזת JS בתוך אטריביוט"
+    )
+    assert 'data-issuance-id="${esc(i.share_issuance_id)}"' in portal, (
+        "שורת ההנפקה אינה מעבירה את המזהה ב-data-* מוברח"
+    )
+
+
 def test_the_shared_escaping_helpers_stay_exported():
     """שלושת הפורטלים קוראים ל-ESOPDocuments.errorRow/errorText/escapeHtml מתוך
     HTML גולמי, כלומר שינוי שם או הסרה מה-export לא ייפול בשום מקום אחר - הוא
