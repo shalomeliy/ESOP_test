@@ -12,13 +12,48 @@ from backend.app.schemas import (
     CreateShareholderRequest, ShareholderOut,
     CreateShareIssuanceRequest, ShareIssuanceOut,
     CapTableSnapshotOut,
+    BuybackRequest, ExecuteBuybackRequest, BuybackPreviewOut, BuybackReceiptOut,
 )
 from backend.app.services.audit import record_audit_event
+from backend.app.services.buyback import BuybackRejected, build_buyback_projection
 from backend.app.services.cap_table import compute_cap_table_snapshot
 from backend.app.services.ledger import append_event, record_ownership
 from backend.app.auth import require_roles
 
 router = APIRouter()
+
+
+# ===================================================================
+# בעלות על ישות טבלת הון - נקודה אחת, v1.2.0.
+#
+# עד כאן הבדיקה הועתקה ביד בכל handler (שלוש פעמים), וזו הצורה שהולידה שתי
+# בעיות IDOR קודמות: העתקה רביעית ששוכחת שורה אחת אינה נראית בשום בדיקה.
+#
+# *** 404 ולא 403 ***: הצורה הישנה החזירה 404 ל"לא נמצא" ו-403 ל"קיים בחברה
+# אחרת" - כלומר אורקל קיום חוצה-טננטים: מי שמנחש מזהים למד מהקוד אילו מהם
+# אמיתיים. שני המקרים מוחזרים עכשיו זהים.
+#
+# הסינון הוא על עמודת company_id *הישירה* של הישות, לעולם לא דרך join -
+# ראו models.py.ShareIssuance.company_id.
+# ===================================================================
+
+def _get_owned_or_404(db: Session, model, pk: str, company_id: str, label: str):
+    row = db.get(model, pk)
+    if row is None or row.company_id != company_id:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return row
+
+
+def get_owned_shareholder(db: Session, shareholder_id: str, company_id: str) -> Shareholder:
+    return _get_owned_or_404(db, Shareholder, shareholder_id, company_id, "Shareholder")
+
+
+def get_owned_share_class(db: Session, share_class_id: str, company_id: str) -> ShareClass:
+    return _get_owned_or_404(db, ShareClass, share_class_id, company_id, "Share class")
+
+
+def get_owned_issuance(db: Session, share_issuance_id: str, company_id: str) -> ShareIssuance:
+    return _get_owned_or_404(db, ShareIssuance, share_issuance_id, company_id, "Share issuance")
 
 
 # ===================================================================
@@ -103,17 +138,10 @@ def create_share_issuance(payload: CreateShareIssuanceRequest,
     """הקצאת מניות ל-Shareholder קיים - ledger-native (ראו models.py.ShareIssuance).
     issue_date הוא קלט מפורש מהקורא ולא מהשעון, כדי שהזנת נתונים היסטוריים
     ו-snapshot-לפי-תאריך עתידי (שלב ב) יהיו נכונים."""
-    shareholder = db.query(Shareholder).filter(Shareholder.shareholder_id == payload.shareholder_id).first()
-    if not shareholder:
-        raise HTTPException(status_code=404, detail="Shareholder not found")
-    if shareholder.company_id != current_user.company_id:
-        raise HTTPException(status_code=403, detail="Cannot issue shares to a shareholder outside your company")
-
-    share_class = db.query(ShareClass).filter(ShareClass.share_class_id == payload.share_class_id).first()
-    if not share_class:
-        raise HTTPException(status_code=404, detail="Share class not found")
-    if share_class.company_id != current_user.company_id:
-        raise HTTPException(status_code=403, detail="Cannot issue shares of a class outside your company")
+    # v1.2.0: שתי הבדיקות עברו לתלות המשותפת למעלה, ושתיהן מחזירות עכשיו 404
+    # אחיד - "לא קיים" ו"קיים בחברה אחרת" חייבים להיראות זהים מבחוץ.
+    get_owned_shareholder(db, payload.shareholder_id, current_user.company_id)
+    get_owned_share_class(db, payload.share_class_id, current_user.company_id)
 
     if payload.shares <= 0:
         raise HTTPException(status_code=400, detail="shares must be positive")
@@ -177,3 +205,84 @@ def get_cap_table_snapshot(as_of: Optional[date] = None,
     as_of לא חוקי (למשל מחרוזת שאינה תאריך) נדחה כבר ע"י FastAPI/Pydantic
     (422) - אין פענוח תאריך ידני כאן."""
     return compute_cap_table_snapshot(db, current_user.company_id, as_of)
+
+
+# ===================================================================
+# רכישה עצמית / תיקון הנפקה - v1.2.0. מפרט: docs/spec/v1.2.0.md.
+#
+# שני האנדפוינטים קוראים ל-*אותה* build_buyback_projection. תצוגה מקדימה
+# שמריצה ולידציה משלה הייתה שער שני וחלש יותר (§7).
+# ===================================================================
+
+@router.post("/admin/cap-table/buyback/preview", response_model=BuybackPreviewOut)
+def preview_buyback(payload: BuybackRequest,
+                    current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                    db: Session = Depends(get_db)):
+    """הדיף המלא לפני שנכתב משהו. *** אינו כותב דבר *** - אין commit בנתיב
+    הזה, וקריאה ואז נטישה משאירה אפס אירועים חדשים (קריטריון 9)."""
+    issuance = get_owned_issuance(db, payload.share_issuance_id, current_user.company_id)
+    try:
+        return build_buyback_projection(db, issuance=issuance, shares=payload.shares,
+                                        effective_date=payload.effective_date, reason=payload.reason)
+    except BuybackRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/admin/cap-table/buyback", response_model=BuybackReceiptOut)
+def execute_buyback(payload: ExecuteBuybackRequest,
+                    current_user: User = Depends(require_roles(UserRole.COMPANY_ADMIN)),
+                    db: Session = Depends(get_db)):
+    """מבצע. אירוע ה-ledger והפחתת העמודה קורים ב*אותה טרנזקציה* - זו התבנית
+    של OptionPool.allocated_shares, והיא מה שמונע סטייה בין העמודה ל-ledger.
+
+    *** אין כאן מספרים מהדפדפן ***: הפרויקציה מחושבת מחדש מהמקור, והבקשה
+    נדחית אם המנה זזה מאז התצוגה המקדימה (קריטריון 10)."""
+    if payload.confirm_shares != payload.shares:
+        raise HTTPException(status_code=400,
+                            detail="confirm_shares does not match shares - the amount must be re-typed exactly")
+
+    issuance = get_owned_issuance(db, payload.share_issuance_id, current_user.company_id)
+
+    try:
+        projection = build_buyback_projection(db, issuance=issuance, shares=payload.shares,
+                                              effective_date=payload.effective_date, reason=payload.reason)
+    except BuybackRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 409 ולא 400: הבקשה עצמה תקינה, המצב מתחתיה זז. ההבחנה חשובה ללקוח -
+    # 409 אומר "רענן את התצוגה ונסה שוב", 400 אומר "הבקשה שגויה".
+    if projection["expected_sequence_no"] != payload.expected_sequence_no:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"the lot changed since the preview was taken "
+                    f"(expected sequence {payload.expected_sequence_no}, "
+                    f"current {projection['expected_sequence_no']}) - re-run the preview"),
+        )
+
+    before_shares = issuance.shares
+    issuance.shares = projection["lot_after"]
+
+    event = append_event(
+        db, event_type="SHARE_ISSUANCE_ADJUSTED", aggregate_type="ShareIssuance",
+        aggregate_id=issuance.share_issuance_id,
+        payload={"delta_shares": projection["lot_delta"], "reason": payload.reason},
+        effective_date=payload.effective_date, actor_user_id=current_user.user_id,
+    )
+
+    # פעולה הרסנית חייבת לרשום before *וגם* after - record_audit_event תומך
+    # בשניהם, ושלושת מסלולי טבלת ההון הקיימים העבירו after בלבד.
+    record_audit_event(db, "ShareIssuance", issuance.share_issuance_id, "UPDATE", current_user.user_id,
+                       before={"shares": before_shares},
+                       after={"shares": issuance.shares, "reason": payload.reason,
+                              "effective_date": payload.effective_date})
+
+    db.commit()
+
+    return {
+        "ledger_event_id": event.event_id,
+        "share_issuance_id": issuance.share_issuance_id,
+        "lot_after": projection["lot_after"],
+        "company_after": projection["company_after"],
+        "tax_treatment": projection["tax_treatment"],
+        "tax_reason_code": projection["tax_reason_code"],
+    }

@@ -218,15 +218,42 @@ def project_exercise_request(events: list) -> Optional[dict]:
 
 
 def project_share_issuance(events: list) -> Optional[dict]:
-    """v1.0.0 שלב א: אירוע בסיס יחיד בלבד (SHARE_ISSUANCE_ESTABLISHED) - אין
-    עדיין דלתא מעליו (תיקון/ביטול/העברה נדחים ל-v1.4.0, ראו models.py.ShareIssuance).
-    אותו דפוס בדיוק כמו project_grant."""
+    """בסיס (SHARE_ISSUANCE_ESTABLISHED) + דלתא חתומה מעליו (SHARE_ISSUANCE_ADJUSTED,
+    v1.2.0: תיקון/ביטול/רכישה עצמית).
+
+    *** pending_delta - למה זה לא כמו שאר הפרויקטורים ***: כל שאר הפרויקטורים
+    כאן מדלגים על דלתא כש-state עדיין None (``and state is not None``), כי
+    אירוע הבסיס שלהם מעוגן ל-LEDGER_EPOCH ולכן *תמיד* ראשון במיון. אירוע הבסיס
+    של ShareIssuance הוא היחיד שמתועד ב-effective_date=issue_date אמיתי
+    (api/cap_table.py::create_share_issuance) - כי התאריך הזה נושא משמעות
+    ל-as_of ואי אפשר להזיז אותו. לכן דלתא יכולה להגיע *לפני* הבסיס במיון
+    (effective_date, sequence_no).
+
+    בצורת ה"דלג" הרגילה זה היה נבלע פעמיים: הדלתא מדולגת כי state הוא None,
+    ואז הבסיס *משים* מעליה את הסכום המקורי המלא. התוצאה אינה "מוקרן לאפס" אלא
+    ההפך - הפרויקציה מחזירה את הסכום המקורי בעוד העמודה המוטטת כבר הופחתה,
+    כלומר סטייה קבועה בין העמודה ל-ledger. זו בדיוק מחלקת הבאג שכבר קרתה
+    בפועל עם POOL_ALLOCATED (ראו ההערה על LEDGER_EPOCH למעלה) וש-ה-ledger קיים
+    כדי למנוע.
+
+    האנדפוינט דוחה קשיחות אירוע המתוארך לפני ההנפקה, אבל services/import_.py
+    כותב LedgerEvent ישירות ולעולם לא דרך append_event - כלומר ההגנה כאן היא
+    היחידה שמכסה את נתיב הייבוא. צבירה במקום דילוג, ולא חריגה: פרויקטור שזורק
+    היה מפיל GET snapshot שלם על שורה אחת פגומה."""
     state = None
+    pending_delta = 0.0
     for e in events:
         p = json.loads(e.payload)
         if e.event_type == "SHARE_ISSUANCE_ESTABLISHED":
             state = {"shares": p["shares"], "shareholder_id": p["shareholder_id"],
                      "share_class_id": p["share_class_id"], "issue_date": _parse_date(p["issue_date"])}
+            state["shares"] += pending_delta
+            pending_delta = 0.0
+        elif e.event_type == "SHARE_ISSUANCE_ADJUSTED":
+            if state is None:
+                pending_delta += p["delta_shares"]
+            else:
+                state["shares"] += p["delta_shares"]
     return state
 
 

@@ -521,7 +521,12 @@ class ShareIssuanceOut(BaseModel):
 class ShareholderClassBreakdownRow(BaseModel):
     shareholder_id: str
     share_class_id: str
-    shares: float
+    # None = לצמד יש שורת הנפקה שאין לה שום היסטוריית ledger (תקלת שלמות) -
+    # לעולם לא 0 שקרי, בדיוק כמו PoolSnapshotRow.total_shares למטה. v1.2.0:
+    # לפני המעבר ל-replay השדה היה float לא-אופציונלי, כי סינון-העמודה לא הכיר
+    # בכלל את המצב "שורה קיימת בלי אירועים".
+    # שים לב: 0.0 הוא ערך *נכון* ומובחן - מנה שנרכשה במלואה (קריטריון 5).
+    shares: Optional[float] = None
 
 
 class PoolSnapshotRow(BaseModel):
@@ -546,6 +551,81 @@ class CapTableSnapshotOut(BaseModel):
     warnings: List[str]
     by_shareholder_and_class: List[ShareholderClassBreakdownRow]
     pools: List[PoolSnapshotRow]
+
+
+# ===================================================================
+# רכישה עצמית / תיקון הנפקה - v1.2.0. ראו services/buyback.py.
+#
+# אין שדה מחיר, בכוונה מפורשת (מפרט §5 ה2): מחיר בלי בסיס עלות מזמין אדמין
+# להסיק שהמערכת "יודעת" את הכלכלה ולגזור ממנה רווח ביד. אין ל-ShareIssuance
+# בסיס עלות ואין ל-Shareholder מסלול מס.
+# ===================================================================
+
+class BuybackRequest(BaseModel):
+    # המנה נבחרת במפורש ולא נגזרת בכלל אוטומטי: בעל מניות יכול להחזיק כמה
+    # שורות הנפקה באותו סוג מניה, וכלל התאמה (FIFO/פרו-ראטה) הוא כלל עסקי
+    # בעל משמעות מס שאיש לא אימת. ידניות גלויה עדיפה על אוטומציה מומצאת.
+    share_issuance_id: str
+    # חיובי = רכישה עצמית. שלילי = תיקון כלפי מעלה (נבדק מול תקרת המניות).
+    shares: float
+    effective_date: date
+    reason: str = "BUYBACK"
+
+
+class ExecuteBuybackRequest(BuybackRequest):
+    # הסימן שהתצוגה המקדימה החזירה. לא תואם => 409, כי המנה זזה מאז.
+    expected_sequence_no: int
+    # הקלדה חוזרת של הכמות - מאשר כוונה ומאמת מחדש את המספר המכריע בבת אחת.
+    # תקדים בריפו: tools/sweep_orphan_files --delete דורש הקלדת yes.
+    confirm_shares: float
+
+
+class BuybackShareholderOut(BaseModel):
+    shareholder_id: str
+    name: Optional[str] = None
+    # None = בעל מניות שאינו עובד במערכת. רכישה מעובד היא החלטה שונה מרכישה
+    # ממשקיע, ולכן השדה על פני התצוגה ולא מוסק ממנה.
+    employee_id: Optional[str] = None
+
+
+class BuybackCompanyNumbers(BaseModel):
+    outstanding_shares: float
+    fully_diluted_shares: float
+    total_authorized_shares: Optional[float] = None
+    outstanding_pct_of_authorized: Optional[float] = None
+    fully_diluted_pct_of_authorized: Optional[float] = None
+
+
+class BuybackPreviewOut(BaseModel):
+    share_issuance_id: str
+    issue_date: date
+    effective_date: date
+    reason: str
+    shareholder: BuybackShareholderOut
+    share_class_id: str
+    lot_before: float
+    lot_delta: float
+    lot_after: float
+    # None = לצמד יש שורה בלי היסטוריית ledger, ולכן ההחזקה הכוללת אינה ידועה.
+    holding_before: Optional[float] = None
+    holding_after: Optional[float] = None
+    company_before: BuybackCompanyNumbers
+    company_after: BuybackCompanyNumbers
+    partial: bool
+    warnings: List[str]
+    expected_sequence_no: int
+    # לעולם לא סכום, שיעור, ניכוי או רווח - ולעולם לא 0.0. ראו services/buyback.py.
+    tax_treatment: str
+    tax_reason_code: str
+
+
+class BuybackReceiptOut(BaseModel):
+    ledger_event_id: str
+    share_issuance_id: str
+    lot_after: float
+    company_after: BuybackCompanyNumbers
+    tax_treatment: str
+    tax_reason_code: str
 
 
 # ===================================================================

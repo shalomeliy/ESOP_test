@@ -429,10 +429,17 @@ LEDGER_EVENT_TYPES = {
     "VESTING_PAUSE_RECORDED",
     "EXERCISE_REQUEST_SUBMITTED",   # בסיס וגם דלתא חיה: הגשת בקשת מימוש
     "EXERCISE_REQUEST_DECIDED",     # דלתא: אישור/דחייה
-    # בסיס וגם דלתא חיה (v1.0.0 שלב א): הקצאת מניות ל-Shareholder. סוג אירוע
-    # יחיד בלבד בשלב א - אין עדיין תיקון/ביטול/העברה של מניות שהוקצו (v1.4.0/
-    # M&A, לא כאן); ראו ShareIssuance למטה.
+    # בסיס (v1.0.0 שלב א): הקצאת מניות ל-Shareholder. ראו ShareIssuance למטה.
     "SHARE_ISSUANCE_ESTABLISHED",
+    # דלתא חתומה (v1.2.0): תיקון, ביטול או רכישה עצמית של מניות שהוקצו.
+    # *** סוג אחד גנרי ולא שלושה ***: כלל הגרעיניות כאן הוא "גרעיניות האירוע
+    # משקפת את מבנה הענפים של הקיפול", אותו נימוק בדיוק כמו EMPLOYEE_STATUS_CHANGED
+    # למעלה - שלושת המקרים נופלים לאותו ענף קיפול יחיד, ולכן שלושה שמות היו
+    # אוצר מילים בלי הבדל התנהגותי. הסיבה העסקית נשמרת ב-payload.reason.
+    # *** דלתא ולא ערך מוחלט ***: כל אירועי הדלתא הקיימים חתומים
+    # (POOL_ALLOCATED/POOL_UNVEST_RETURNED), ודלתאות מתחברות תחת append-only,
+    # בעוד ערך מוחלט מאבד בשקט התאמה שנייה שהתבצעה במקביל.
+    "SHARE_ISSUANCE_ADJUSTED",
 }
 
 LEDGER_AGGREGATE_TYPES = {"OptionPool", "Employee", "Grant", "VestingSchedule", "ExerciseRequest", "ShareIssuance"}

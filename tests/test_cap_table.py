@@ -309,12 +309,24 @@ def test_create_share_issuance_unknown_shareholder_is_404(client, world, share_c
     assert response.status_code == 404
 
 
-def test_create_share_issuance_to_another_companys_shareholder_is_403(client, world, shareholder_b, share_class_a):
-    response = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
+def test_create_share_issuance_to_another_companys_shareholder_is_404_like_a_missing_one(
+        client, world, shareholder_b, share_class_a, shareholder_a):
+    """*** שינוי התנהגות מכוון, v1.2.0 (מפרט §7, קריטריון 8). ***
+    עד כאן זה היה 403, וזה היה אורקל קיום חוצה-טננטים: 403 אמר "המזהה הזה
+    אמיתי, הוא פשוט לא שלך", בעוד מזהה מומצא החזיר 404. שני המקרים זהים עכשיו,
+    כולל גוף התשובה - הבדל בטקסט היה מחזיר את אותו אורקל בדלת האחורית."""
+    real_but_foreign = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
         "shareholder_id": shareholder_b["shareholder_id"], "share_class_id": share_class_a["share_class_id"],
         "shares": 100.0, "issue_date": "2024-01-01",
     })
-    assert response.status_code == 403
+    invented = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
+        "shareholder_id": "SH-DOES-NOT-EXIST", "share_class_id": share_class_a["share_class_id"],
+        "shares": 100.0, "issue_date": "2024-01-01",
+    })
+
+    assert real_but_foreign.status_code == 404
+    assert invented.status_code == 404
+    assert real_but_foreign.json() == invented.json(), "התשובות חייבות להיות בלתי-מבחינות"
 
 
 def test_create_share_issuance_unknown_share_class_is_404(client, world, shareholder_a):
@@ -325,12 +337,21 @@ def test_create_share_issuance_unknown_share_class_is_404(client, world, shareho
     assert response.status_code == 404
 
 
-def test_create_share_issuance_of_another_companys_share_class_is_403(client, world, shareholder_a, share_class_b):
-    response = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
+def test_create_share_issuance_of_another_companys_share_class_is_404_like_a_missing_one(
+        client, world, shareholder_a, share_class_b):
+    """אותו שינוי מכוון כמו למעלה, בצד סוג המניה."""
+    real_but_foreign = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
         "shareholder_id": shareholder_a["shareholder_id"], "share_class_id": share_class_b["share_class_id"],
         "shares": 100.0, "issue_date": "2024-01-01",
     })
-    assert response.status_code == 403
+    invented = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
+        "shareholder_id": shareholder_a["shareholder_id"], "share_class_id": "SC-DOES-NOT-EXIST",
+        "shares": 100.0, "issue_date": "2024-01-01",
+    })
+
+    assert real_but_foreign.status_code == 404
+    assert invented.status_code == 404
+    assert real_but_foreign.json() == invented.json()
 
 
 @pytest.mark.parametrize("bad_shares", [0.0, -50.0])
@@ -539,6 +560,185 @@ def test_share_issuance_ledger_ownership_is_scoped_to_the_issuing_company(client
     ownership = world.db.get(LedgerOwnership, issuance_id)
     assert ownership is not None
     assert ownership.company_id == "COMP-CT-A"
+
+
+# ===================================================================
+# בדיקת שקילות רגרסיה ל-v1.2.0 (מפרט §11.1) - *** נכתבת לפני הפיצ'ר ***.
+#
+# למה היא קיימת: v1.2.0 מעבירה את צד המונפק ב-compute_cap_table_snapshot
+# מסינון-עמודה ישיר (issue_date <= as_of) ל-replay מלא של ה-ledger. הסיכון
+# הגדול בגרסה אינו "הרכישה העצמית לא עובדת" - זה ייכשל ברעש - אלא שהמעבר
+# ישנה *בשקט* מספר היסטורי שכבר דווח למשתמש.
+#
+# הצורה: האלגוריתם *הישן* מוקפא כאן בתוך הבדיקה (_frozen_column_algorithm),
+# ולא נקרא מקוד הייצור. כך אחרי שקוד הייצור יוחלף ב-replay, הבדיקה עדיין
+# מחזיקה את ההתנהגות המקורית ומשווה מולה - וזו ההוכחה שהמעבר לא שינה דבר.
+# לו הבדיקה הייתה קוראת לקוד הייצור לשני הצדדים, היא הייתה עוברת תמיד.
+# ===================================================================
+
+def _frozen_column_algorithm(db, company_id, as_of):
+    """העתק מוקפא של צד המונפק כפי שהוא ב-services/cap_table.py לפני v1.2.0.
+    *** אין לעדכן אותו כשקוד הייצור משתנה *** - זו כל הנקודה שלו."""
+    from backend.app.models import ShareIssuance
+
+    rows = (
+        db.query(ShareIssuance)
+        .filter(ShareIssuance.company_id == company_id, ShareIssuance.issue_date <= as_of)
+        .all()
+    )
+    outstanding = 0.0
+    by_key: dict[tuple[str, str], float] = {}
+    for row in rows:
+        key = (row.shareholder_id, row.share_class_id)
+        by_key[key] = by_key.get(key, 0.0) + row.shares
+        outstanding += row.shares
+    return outstanding, by_key
+
+
+@pytest.fixture
+def issuance_history(client, world, share_class_a, shareholder_a):
+    """היסטוריית הנפקות אמיתית בשתי חברות ובשני בעלי מניות, כדי שהשקילות
+    תיבדק על פילוח לא-טריוויאלי ולא על שורה בודדת. חברה B מקבלת הנפקה משלה
+    באותם תאריכים - שקילות שמתעלמת מבידוד הטננטים אינה שווה כלום."""
+    second = client.post(f"{API}/admin/shareholders", headers=world.admin_a,
+                         json={"name": "Seed Fund", "shareholder_type": "INVESTOR"})
+    assert second.status_code == 200, second.text
+    second_id = second.json()["shareholder_id"]
+
+    for shareholder_id, shares, issue_date in [
+        (shareholder_a["shareholder_id"], 1000.0, "2021-03-01"),
+        (second_id, 250.0, "2022-06-15"),
+        (shareholder_a["shareholder_id"], 400.0, "2022-06-15"),   # אותו תאריך, בעל מניות אחר
+        (shareholder_a["shareholder_id"], 125.5, "2024-01-31"),   # מנה שנייה לאותו צמד
+    ]:
+        resp = client.post(f"{API}/admin/share-issuances", headers=world.admin_a, json={
+            "shareholder_id": shareholder_id, "share_class_id": share_class_a["share_class_id"],
+            "shares": shares, "issue_date": issue_date,
+        })
+        assert resp.status_code == 200, resp.text
+
+    return SimpleNamespace(second_shareholder_id=second_id)
+
+
+@pytest.mark.parametrize("as_of", [
+    "2020-01-01",   # לפני כל הנפקה
+    "2021-02-28",   # יום לפני הראשונה
+    "2021-03-01",   # בדיוק ביום הראשונה (גבול <=)
+    "2021-03-02",
+    "2022-06-14",
+    "2022-06-15",   # שתי הנפקות באותו יום
+    "2023-12-31",
+    "2024-01-31",   # המנה השנייה לאותו צמד
+    "2025-07-04",
+])
+def test_cap_table_outstanding_side_matches_the_frozen_pre_v120_algorithm(
+        client, world, issuance_history, as_of):
+    """§11.1: לכל תאריך היסטורי, צד המונפק חייב להחזיר בדיוק את מה שהחזיר
+    לפני המעבר ל-replay - הסכום *וגם* הפילוח."""
+    from backend.app.services.cap_table import compute_cap_table_snapshot
+
+    as_of_date = date.fromisoformat(as_of)
+    expected_total, expected_by_key = _frozen_column_algorithm(world.db, "COMP-CT-A", as_of_date)
+
+    snapshot = compute_cap_table_snapshot(world.db, "COMP-CT-A", as_of_date)
+
+    assert snapshot["outstanding_shares"] == expected_total, (
+        f"as_of={as_of}: המעבר ל-replay שינה את סך המניות המונפקות"
+    )
+    actual_by_key = {
+        (row["shareholder_id"], row["share_class_id"]): row["shares"]
+        for row in snapshot["by_shareholder_and_class"]
+    }
+    assert actual_by_key == expected_by_key, f"as_of={as_of}: הפילוח השתנה"
+
+
+def test_cap_table_outstanding_side_stays_scoped_to_one_company_across_the_replay_switch(
+        client, world, issuance_history, share_class_b, shareholder_b):
+    """בידוד טננטים הוא חלק מהשקילות ולא בדיקה נפרדת: שאילתת ה-replay החדשה
+    מקבצת אירועים לפי aggregate_id, וקיבוץ שמאבד את חתך החברה היה מדליף
+    החזקות של חברה אחרת אל תוך הסכום - בלי שאף בדיקה קיימת תבחין."""
+    from backend.app.services.cap_table import compute_cap_table_snapshot
+
+    resp = client.post(f"{API}/admin/share-issuances", headers=world.admin_b, json={
+        "shareholder_id": shareholder_b["shareholder_id"],
+        "share_class_id": share_class_b["share_class_id"],
+        "shares": 9999.0, "issue_date": "2021-03-01",
+    })
+    assert resp.status_code == 200, resp.text
+
+    as_of_date = date(2025, 7, 4)
+    snapshot_a = compute_cap_table_snapshot(world.db, "COMP-CT-A", as_of_date)
+    expected_a, _ = _frozen_column_algorithm(world.db, "COMP-CT-A", as_of_date)
+
+    assert snapshot_a["outstanding_shares"] == expected_a
+    assert 9999.0 not in [row["shares"] for row in snapshot_a["by_shareholder_and_class"]]
+
+
+def _establish_pool_ledger_history(db, pool_id: str, company_id: str):
+    """נותן לפול היסטוריית ledger, כמו ש-backfill_ledger.py עושה על דאטה אמיתית.
+    בלי זה כל תמונת מצב היסטורית מדליקה partial *מצד הפול*, וזה היה מסתיר את
+    מה שהבדיקות למטה בודקות בצד המונפק."""
+    from backend.app.models import OptionPool
+    from backend.app.services.ledger import LEDGER_EPOCH, append_event, record_ownership
+
+    pool = db.get(OptionPool, pool_id)
+    record_ownership(db, aggregate_id=pool_id, aggregate_type="OptionPool", company_id=company_id)
+    append_event(db, event_type="POOL_BALANCE_ESTABLISHED", aggregate_type="OptionPool",
+                 aggregate_id=pool_id, effective_date=LEDGER_EPOCH,
+                 payload={"allocated_shares": pool.allocated_shares,
+                          "unallocated_shares": pool.unallocated_shares,
+                          "total_shares": pool.total_shares})
+    db.flush()
+
+
+@pytest.mark.parametrize("as_of", ["2020-01-01", "2021-02-28", "2022-01-01", "2023-06-30"])
+def test_historical_snapshot_is_not_flagged_partial_just_because_an_issuance_is_newer(
+        client, world, issuance_history, as_of):
+    """*** קריטריון 14 - הבדיקה שתופסת את רגרסיית ה-partial. ***
+
+    אירוע הבסיס של ShareIssuance מתועד ב-effective_date=issue_date אמיתי ולא
+    ב-LEDGER_EPOCH. לכן שאילתת אירועים שחתוכה ב-as_of מחזירה קבוצה *ריקה* לכל
+    הנפקה מאוחרת מ-as_of. מימוש replay שמפרש קבוצה ריקה כ"אין היסטוריה" היה
+    מדליק partial ואזהרות על כל תמונת מצב היסטורית בכל חברה בריאה - וכל
+    הבדיקות האחרות היו ממשיכות לעבור.
+
+    'הנפקה שטרם קרתה' ו'הנפקה בלי היסטוריה' הם שני מצבים שונים לגמרי.
+    """
+    from backend.app.services.cap_table import compute_cap_table_snapshot
+
+    _establish_pool_ledger_history(world.db, "CT-POOL-A", "COMP-CT-A")
+
+    snapshot = compute_cap_table_snapshot(world.db, "COMP-CT-A", date.fromisoformat(as_of))
+
+    assert snapshot["partial"] is False, (
+        f"as_of={as_of}: partial הודלק על דאטה בריאה. אזהרות: {snapshot['warnings']}"
+    )
+    assert snapshot["warnings"] == []
+
+
+def test_an_issuance_row_without_any_ledger_history_is_flagged_and_never_counted_as_zero(
+        client, world, share_class_a, shareholder_a):
+    """הצד השני של אותו מטבע: שורה שקיימת באמת בלי אף אירוע *כן* מדליקה partial.
+    המצב מיוצר כמו ש-import_.py מייצר אותו - שורה שנוחתת בלי האירוע שלה."""
+    from backend.app.models import ShareIssuance
+    from backend.app.services.cap_table import compute_cap_table_snapshot
+
+    _establish_pool_ledger_history(world.db, "CT-POOL-A", "COMP-CT-A")
+    world.db.add(ShareIssuance(
+        share_issuance_id="ISS-NO-LEDGER", company_id="COMP-CT-A",
+        shareholder_id=shareholder_a["shareholder_id"],
+        share_class_id=share_class_a["share_class_id"],
+        shares=500.0, issue_date=date(2021, 1, 1)))
+    world.db.flush()
+
+    snapshot = compute_cap_table_snapshot(world.db, "COMP-CT-A", date(2023, 1, 1))
+
+    assert snapshot["partial"] is True
+    assert any("ISS-NO-LEDGER" in w for w in snapshot["warnings"])
+    assert snapshot["outstanding_shares"] == 0.0, "הוחרג מהסכום, לא נספר כ-0 שקרי"
+    row = next(r for r in snapshot["by_shareholder_and_class"]
+               if r["shareholder_id"] == shareholder_a["shareholder_id"])
+    assert row["shares"] is None, "צמד עם שורה חסרת היסטוריה מדווח None, לא סכום חלקי"
 
 
 def test_share_issuance_aggregate_type_is_registered_everywhere_ledger_needs_it():
