@@ -52,6 +52,7 @@ A feature is complete only when:
 ## Context discipline
 
 - **Start here: `HANDOFF.md`.** It carries the current version, the next step, open decisions, and open debt. Read it first in a fresh conversation instead of reconstructing state from history.
+- **Run `python tools/context_check.py` at the end of every implementation step** (after the step's tests are green and `HANDOFF.md` is updated), and act on its verdict — **never ask the participant whether to continue here or open a new conversation.** That question is what this measurement replaces: 🟢 → start the next step in this conversation without asking; 🟡 → the step is closed and verified, so this is the moment: update `HANDOFF.md`, commit, and tell the participant to open a new conversation; 🔴 → stop, update `HANDOFF.md`, commit, and say the conversation must close now. The thresholds live in the script (`TURNS_WATCH/CLEAN`, `MB_WATCH/CLEAN`) — tune them there, not by judgment in the moment.
 - A session does not close without updating `HANDOFF.md` — same standing rule as the version's QA file. Cost tracks conversation length, not task difficulty, so state must live in files and conversations must be allowed to end. Open a new conversation between versions.
 - **`HANDOFF.md` holds the present only.** When a version closes, its block moves to `docs/handoff/<version>.md` — it does not accumulate at the root. The file grew to 97,449 chars by 14/08/2026 before the split, which made the one file read first in every conversation the largest context cost in the repo. `test_handoff_stays_small` enforces the budget; **never read the archived files** unless a historical question demands it — same rule as `docs/qa/`.
 - `QA_TESTBOOK.md` is an index only; the test cases live in `docs/qa/<version>.md`. Never read the archived version files or re-merge them into one file.
@@ -67,6 +68,7 @@ pip install -r requirements.txt                             # deps are pinned
 python -m pytest                                            # full suite (plain `pytest` is not on PATH here)
 python -m pytest tests/test_tax_engine.py                   # one file
 python -m pytest tests/test_tax_engine.py::test_never_modeled_combination_raises_with_that_reason   # one test
+python tools/context_check.py                               # end of every step — 🟢 continue / 🟡🔴 close the conversation
 ```
 
 There is no configured linter/formatter (no ruff/flake8/black/mypy in `requirements.txt`) — don't invent a lint step or assume one runs in CI.
