@@ -589,6 +589,71 @@ def test_the_preview_puts_the_lot_and_the_company_on_the_same_clock(client, bb):
     assert body["company_before"]["outstanding_shares"] == 1500.0
 
 
+def test_a_future_effective_date_is_rejected_on_both_endpoints(client, bb):
+    """*** רגרסיית חוסם 1 (סקירה 13) - הצד השני של חוסם 2. ***
+
+    תיקון חוסם 2 העמיד את מספרי החברה על שעון "עכשיו" והבטיח שהקבלה זהה
+    ל-snapshot טרי; ההבטחה הזו נכונה כלפי העבר בלבד, כי ה-snapshot מסנן
+    effective_date <= as_of. בלי השומר, effective_date עתידי הפיק קבלה
+    שמצהירה 750 "נכון להיום" בעוד המונפק היום 1000 - וגם השאיר את העמודה
+    (750) חלוקה על ה-ledger (1000) עד שהאירוע ייכנס לתוקף, כלומר פינה 250
+    מניות מהתקרה המורשית לפני זמנן.
+
+    הבדיקה חוסמת את *שני* האנדפוינטים ומאמתת שלא נכתב דבר - לא די בקוד
+    תשובה, כי הפגם כולו הוא בכתיבה שאסור שתקרה.
+    """
+    from backend.app.models import LedgerEvent, ShareIssuance
+    from backend.app.types import business_today
+
+    future = (business_today() + timedelta(days=400)).isoformat()
+
+    preview = _preview(client, bb, effective_date=future)
+    assert preview.status_code == 400, preview.text
+    assert "in the future" in preview.json()["detail"]
+
+    execute = _execute(client, bb, effective_date=future)
+    assert execute.status_code == 400, execute.text
+    assert "in the future" in execute.json()["detail"]
+
+    assert bb.db.get(ShareIssuance, bb.lot_id).shares == 1000.0
+    assert bb.db.query(LedgerEvent).filter(
+        LedgerEvent.aggregate_id == bb.lot_id,
+        LedgerEvent.event_type == "SHARE_ISSUANCE_ADJUSTED").count() == 0
+
+    # והמספר שהיה מוצג על מסך האישור הבלתי-הפיך אכן לא זז.
+    fresh = client.get(f"{API}/admin/cap-table/snapshot", headers=bb.admin_a).json()
+    assert fresh["outstanding_shares"] == 1000.0
+
+
+def test_the_receipt_matches_a_fresh_snapshot_for_a_backdated_buyback(client, bb):
+    """הכיוון שנשאר חוקי, בטענה מפורשת: אחרי שהעתיד נחסם, האמירה "הקבלה זהה
+    ל-snapshot טרי" חייבת להיבדק על התאריך האחרון שעדיין מותר - היום עצמו -
+    ולא רק על 2023. אחרת שומר הגבול עצמו יכול לזוז ביום אחד בלי צבע אדום."""
+    from backend.app.types import business_today
+
+    today = business_today().isoformat()
+    receipt = _execute(client, bb, effective_date=today)
+    assert receipt.status_code == 200, receipt.text
+    body = receipt.json()
+
+    fresh = client.get(f"{API}/admin/cap-table/snapshot", headers=bb.admin_a).json()
+    assert body["company_after"]["outstanding_shares"] == fresh["outstanding_shares"] == 750.0
+    assert body["company_as_of"] == today
+
+
+def test_a_snapshot_dated_before_an_existing_issuance_is_complete_not_partial(client, bb):
+    """קריטריון 14, בטענה מפורשת ולא בעקיפין: תמונת מצב שתאריכה קודם להנפקה
+    קיימת היא תמונה *שלמה* של אפס מניות, ולא תמונה חלקית. הבלבול הזה הוא חוסם
+    ח1 במפרט - partial שווא על דאטה בריאה - וכל עוד אין טענה שקוראת בשמו את
+    שני השדות, רגרסיה בו חוזרת בלי צבע אדום."""
+    snapshot = client.get(f"{API}/admin/cap-table/snapshot?as_of=2021-06-01",
+                          headers=bb.admin_a).json()
+
+    assert snapshot["partial"] is False
+    assert snapshot["warnings"] == []
+    assert snapshot["outstanding_shares"] == 0.0
+
+
 def test_a_fractional_share_amount_is_rejected(client, bb):
     """אזהרה 7: זו הגרסה הראשונה שמפחיתה מניות, וכל שדה כספי הוא Float (חוב א').
     ה-CHECK של option_pools הוא שוויון צף מדויק שמחזיק רק כל עוד הכמויות שלמות."""

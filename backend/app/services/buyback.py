@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend.app.models import Company, LedgerEvent, ShareIssuance, Shareholder
 from backend.app.services.cap_table import compute_cap_table_snapshot
 from backend.app.services.ledger import events_for, project_share_issuance
+from backend.app.types import business_today
 
 # הסיבות החוקיות לאירוע SHARE_ISSUANCE_ADJUSTED. אוצר מילים סגור שנבדק
 # באפליקציה ולא ב-CHECK, בדיוק כמו LEDGER_EVENT_TYPES עצמו.
@@ -88,10 +89,33 @@ def build_buyback_projection(
             f"({issuance.issue_date}) - shares cannot be adjusted before they were issued"
         )
 
+    # --- עתידי נדחה: הצד השני של חוסם 2 (סקירה 13) ---
+    # תיקון חוסם 2 העמיד את מספרי החברה על שעון "עכשיו" והבטיח שהקבלה זהה
+    # ל-snapshot טרי. ההבטחה הזו נכונה רק כלפי העבר: compute_cap_table_snapshot
+    # מסנן effective_date <= as_of, ולכן אירוע מתוארך-לעתיד *אינו נראה* בתמונה
+    # של היום - הקבלה הייתה מצהירה "נכון ל-<היום>" על מספר שביום הזה אינו נכון,
+    # על מסך אישור בלתי-הפיך שנשאר ב-ledger לנצח. חמור מזה: העמודה מופחתת מיד
+    # (api/cap_table.py), כלומר בין היום לתאריך התוקף העמודה וה-ledger חלוקים -
+    # בדיוק הסטייה שהמפרט §7 בנה את הפיצ'ר כדי למנוע - והתקרה המורשית מתפנה
+    # לפני שהאירוע נכנס לתוקף. הפיצ'ר מתעד עסקה שכבר קרתה (§2), ולכן החסם
+    # העליון נאמן להיקף ואינו מקטין אותו. רכישה עצמית מתוזמנת היא פיצ'ר אחר.
+    as_of = business_today()
+    if effective_date > as_of:
+        raise BuybackRejected(
+            f"effective_date ({effective_date}) is in the future - "
+            f"a buyback records a transaction that already happened"
+        )
+
     # --- קריטריון 16: מנה בלי היסטוריית ledger נדחית, לא "מסומנת" ---
     # אחרת אירוע הדלתא נוחת כאירוע הראשון של הצובר, הפרויקטור לעולם לא יחיל
     # אותו, והעמודה תופחת בלעדיו - סטייה קבועה בין העמודה ל-ledger.
-    lot_state = project_share_issuance(events_for(db, issuance.share_issuance_id))
+    # החתך as_of כאן הוא מה שהופך את "שעון אחד" למובנה ולא לתוצר של השומר
+    # למעלה (סקירה 13, אזהרה 2): בלעדיו lot_before הוא קיפול כל-הזמנים בעוד
+    # מספרי החברה חתוכים ב"היום", ושורה שנכתבה דרך import_.py עם אירוע
+    # מתוארך-לעתיד הייתה מציגה מנה של 900 לצד החזקה כוללת של 1,000 - באותו דיף.
+    lot_state = project_share_issuance(
+        events_for(db, issuance.share_issuance_id, as_of_effective_date=as_of)
+    )
     if lot_state is None:
         raise BuybackRejected(
             f"share issuance {issuance.share_issuance_id} has no ledger history - "
@@ -113,8 +137,10 @@ def build_buyback_projection(
     # הראה לאדמין - על מסך אישור בלתי-הפיך - מספרי חברה שאינם מספרי החברה: כל
     # הפיצ'ר הוא "תיעוד עסקה שכבר קרתה מחוץ למערכת" (§2), ולכן effective_date
     # הוא כמעט תמיד בעבר, והפער היה מגיע ל-9,000 מניות בהוכחת הסוקר.
-    # החמור מזה היה עירוב שני שעונים באותו דיף: lot_before מגיע מקיפול מלא בלי
-    # חתך as-of (למעלה), כלומר "עכשיו", בעוד מספרי החברה נחתכו ב-effective_date.
+    # החמור מזה היה עירוב שני שעונים באותו דיף. *** תיקון סקירה 13, אזהרה 2 ***:
+    # אז נטען כאן ש-lot_before "ממילא היה עכשיו" - וזה לא היה נכון, כי קיפול
+    # בלי חתך as-of הוא קיפול *כל-הזמנים* ולא "עכשיו". היום שני הצדדים חתוכים
+    # באותו as_of במפורש (למעלה), כך שהשוויון מובנה ואינו הנחה.
     # עכשיו שני הבלוקים על אותו שעון, ה-as-of מוחזר במפורש בשדה company_as_of,
     # ו-effective_date נשאר מוצג כתאריך העסקה בלבד. הדלתא נכונה לשני הרגעים:
     # אירוע מתוארך-אחורנית משפיע גם על התמונה של היום.
