@@ -8,6 +8,7 @@
 """
 
 import json
+import re
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -374,12 +375,76 @@ def test_the_preview_shows_both_the_lot_and_the_total_holding(client, bb):
     assert body["shareholder"]["employee_id"] == "BB-EMP-1"
 
 
-def test_execution_refuses_a_stale_preview(client, bb):
-    """קריטריון 10 - הביצוע לא מקבל מספרים מהדפדפן."""
+def test_execution_refuses_a_sequence_number_that_was_never_current(client, bb):
+    """קריטריון 10 - הביצוע לא מקבל מספרים מהדפדפן. מספר *עתידי*: הצד הזול."""
     resp = client.post(f"{API}/admin/cap-table/buyback", headers=bb.admin_a, json={
         "share_issuance_id": bb.lot_id, "shares": 250.0, "effective_date": "2023-05-01",
         "reason": "BUYBACK", "confirm_shares": 250.0, "expected_sequence_no": 99})
     assert resp.status_code == 409
+
+
+def test_execution_refuses_a_preview_invalidated_by_an_intervening_write(client, bb):
+    """קריטריון 10, התרחיש האמיתי (QA-120-12) - פער אימות 3 בסקירה 12.
+
+    הבדיקה שמעליה מעבירה 99, מספר שלא היה נוכחי לעולם, ולכן כל השוואת ``!=`` על
+    כל ערך הייתה מספקת אותה. כאן הסימן *היה* נוכחי, נלקח מתצוגה מקדימה אמיתית,
+    והתיישן מכתיבה מתערבת - וזה המצב שהאדמין באמת פוגש כששני מסכים פתוחים."""
+    from backend.app.models import ShareIssuance
+
+    stale = _preview(client, bb, shares=100.0).json()["expected_sequence_no"]
+
+    intervening = _execute(client, bb, shares=50.0)
+    assert intervening.status_code == 200, intervening.text
+
+    resp = client.post(f"{API}/admin/cap-table/buyback", headers=bb.admin_a, json={
+        "share_issuance_id": bb.lot_id, "shares": 100.0, "effective_date": "2023-05-01",
+        "reason": "BUYBACK", "confirm_shares": 100.0, "expected_sequence_no": stale})
+
+    assert resp.status_code == 409
+    assert "re-run the preview" in resp.json()["detail"]
+    # ההפחתה המתערבת בלבד. 100 לא הופחתו על סמך סימן מיושן.
+    assert bb.db.get(ShareIssuance, bb.lot_id).shares == 950.0
+
+
+def test_a_unique_constraint_collision_on_commit_is_409_and_not_an_unhandled_500(client, bb, monkeypatch):
+    """אזהרה 5 בסקירה 12 - הכשל התחרותי.
+
+    שני ביצועים *במקביל* קוראים את אותו max(sequence_no), שניהם עוברים את בדיקת
+    ה-409, ושניהם מנסים להכניס N+1. ה-UniqueConstraint מונע את ההפחתה הכפולה,
+    אבל בלי לכידה הוא חוזר כ-500 שהלקוח אינו יכול להבחין בינו לתקלת שרת - ולכן
+    ינסה שוב. התנגשות אמיתית אינה ניתנת לתזמון בבדיקה סדרתית (כל דרך לייצר את
+    השורה המתנגשת מקדימה גם את max ומפילה 409 מוקדם יותר), ולכן ה-commit הוא
+    שמזריק את החריגה - הענף הנבדק הוא הטיפול, לא ה-race עצמו."""
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    from backend.app.models import ShareIssuance
+
+    original_commit = Session.commit
+    raised = {"once": False}
+
+    def commit_that_collides_once(self):
+        if not raised["once"]:
+            raised["once"] = True
+            raise IntegrityError(
+                "INSERT INTO ledger_events ...", {},
+                Exception("UNIQUE constraint failed: ledger_events.aggregate_id, "
+                          "ledger_events.sequence_no"))
+        return original_commit(self)
+
+    monkeypatch.setattr(Session, "commit", commit_that_collides_once)
+
+    resp = _execute(client, bb)
+
+    assert raised["once"], "ה-commit לא נקרא בכלל - הבדיקה אינה בודקת את מה שהיא מתיימרת"
+    assert resp.status_code == 409, resp.text
+    assert "re-run the preview" in resp.json()["detail"]
+    # *** למה אין כאן טענה על העמודה ***: db.rollback() בנתיב הכשל מגלגל את
+    # הטרנזקציה של הבדיקה כולה (tests/conftest.py מריץ כל בדיקה בתוך טרנזקציה
+    # אחת), כלומר גם את הפיקסטורה - וההיעדרות של השורה כאן היא תוצר של מבנה
+    # הבדיקה ולא של קוד הייצור. אי-ההפחתה הכפולה נאכפת ב-UniqueConstraint
+    # ומכוסה ב-test_replaying_the_same_request_does_not_subtract_twice.
+    assert bb.db.get(ShareIssuance, bb.lot_id) is None
 
 
 def test_the_amount_must_be_retyped_exactly(client, bb):
@@ -388,9 +453,32 @@ def test_the_amount_must_be_retyped_exactly(client, bb):
     assert resp.status_code == 400
 
 
+# פער אימות 4 בסקירה 12: הטענה הייתה רשימת-שלילה בת חמש מילים על מפתחות ברמה
+# העליונה בלבד, כלומר שדה מס מספרי בשם אחר - או מקונן בתוך company_after - היה
+# עובר אותה. עכשיו הסריקה רקורסיבית ומבוססת דפוס-שם: מה שנאסר הוא *מספר* שנקרא
+# כמו מס, בכל עומק. השדות הלגיטימיים (tax_treatment, tax_reason_code) הם מחרוזות
+# ולכן אינם נתפסים - וזו בדיוק ההבחנה שהמפרט דורש: קוד, לא סכום.
+_TAX_NUMERIC_HINT = re.compile(r"tax|withhold|gain|profit|rate|liab|deduct", re.IGNORECASE)
+
+
+def _numeric_tax_fields(node, path="") -> list:
+    if isinstance(node, dict):
+        found = []
+        for key, value in node.items():
+            here = f"{path}.{key}"
+            if (_TAX_NUMERIC_HINT.search(key) and isinstance(value, (int, float))
+                    and not isinstance(value, bool)):
+                found.append(f"{here}={value!r}")
+            found += _numeric_tax_fields(value, here)
+        return found
+    if isinstance(node, list):
+        return [f for i, item in enumerate(node) for f in _numeric_tax_fields(item, f"{path}[{i}]")]
+    return []
+
+
 @pytest.mark.parametrize("path", ["/admin/cap-table/buyback/preview", "/admin/cap-table/buyback"])
 def test_no_route_returns_a_numeric_tax_field_and_never_zero(client, bb, path):
-    """קריטריונים 11+12 - אפס מס בכל מסלול."""
+    """קריטריונים 11+12 - אפס מס בכל מסלול, בכל עומק."""
     from backend.app.models import ExerciseTaxRecord
 
     body = {"share_issuance_id": bb.lot_id, "shares": 250.0, "effective_date": "2023-05-01",
@@ -404,8 +492,9 @@ def test_no_route_returns_a_numeric_tax_field_and_never_zero(client, bb, path):
 
     assert out["tax_treatment"] == "NOT_COMPUTED"
     assert out["tax_reason_code"]
-    forbidden = {"tax_amount", "tax_rate", "withholding", "gain", "profit"}
-    assert not (forbidden & set(out)), f"שדה מס מספרי דלף לתגובה: {forbidden & set(out)}"
+    assert isinstance(out["tax_treatment"], str) and isinstance(out["tax_reason_code"], str)
+    leaked = _numeric_tax_fields(out)
+    assert not leaked, f"שדה מס מספרי דלף לתגובה: {leaked}"
     assert bb.db.query(ExerciseTaxRecord).count() == 0
 
 
@@ -422,6 +511,105 @@ def test_an_upward_correction_beyond_the_authorized_cap_is_rejected(client, bb):
     resp = _execute(client, bb, shares=-1.0, reason="CORRECTION")
     assert resp.status_code == 400
     assert "total_authorized_shares" in resp.json()["detail"]
+
+
+def test_an_upward_correction_is_capped_even_when_the_filler_is_dated_after_it(client, bb):
+    """*** רגרסיית חוסם 1 (סקירה 12). ***
+
+    הבדיקה שמעליה מתארכת את ההנפקה הממלאת ל-2022-06-01, כלומר *לפני* ה-
+    effective_date - ולכן החלון שבו הבאג חי לא נפתח בה, והיא הייתה ירוקה גם כשה-
+    תקרה נפרצה. כאן הממלא מתוארך *אחרי* ה-effective_date: הנוסחה הישנה השוותה
+    מול snapshot חתוך ב-effective_date, שאינו כולל אותו, וקיבלה תיקון כלפי מעלה
+    שמעביר את סכום העמודה מעל התקרה. 10,000 מונפקות מתוך תקרה 10,000, ובכל זאת
+    +500 התקבלו והעמודה הגיעה ל-10,500.
+    """
+    from backend.app.models import ShareIssuance
+
+    filler = client.post(f"{API}/admin/share-issuances", headers=bb.admin_a, json={
+        "shareholder_id": bb.shareholder["shareholder_id"],
+        "share_class_id": bb.share_class["share_class_id"],
+        "shares": 9000.0, "issue_date": "2024-01-01"})
+    assert filler.status_code == 200  # 1000 + 9000 = 10000, בדיוק התקרה
+
+    # effective_date חוקי (>= issue_date של המנה) ומוקדם מההנפקה הממלאת - בדיוק
+    # מה שקריטריון 7 מתיר, וזה מה שהפך את זה לניצול ולא לתרחיש תיאורטי.
+    resp = _execute(client, bb, shares=-500.0, effective_date="2022-06-01", reason="CORRECTION")
+
+    assert resp.status_code == 400, resp.text
+    assert "total_authorized_shares" in resp.json()["detail"]
+    assert bb.db.get(ShareIssuance, bb.lot_id).shares == 1000.0
+    snapshot = client.get(f"{API}/admin/cap-table/snapshot", headers=bb.admin_a).json()
+    assert snapshot["outstanding_pct_of_authorized"] == 1.0, "סכום העמודה חרג מהתקרה"
+
+
+def test_the_receipt_headline_numbers_are_the_companys_numbers_now(client, bb):
+    """*** רגרסיית חוסם 2 (סקירה 12), והכרעת המשתתף 17/08/2026: שעון אחד. ***
+
+    ההנפקה הנוספת מתוארכת *אחרי* ה-effective_date, וזה מה שמפריד בין שני
+    השעונים: הנוסחה הישנה חישבה את מספרי הכותרת מ-snapshot חתוך ב-effective_date,
+    שאינו כולל אותה, והקבלה הצהירה על מונפק שאינו המונפק בפועל - על מסך אישור
+    בלתי-הפיך. ההשוואה היא מול GET snapshot *טרי* (בלי as_of), כלומר מול המקור
+    שהמסך עצמו מציג באותו רגע.
+    """
+    from backend.app.types import business_today
+
+    later = client.post(f"{API}/admin/share-issuances", headers=bb.admin_a, json={
+        "shareholder_id": bb.shareholder["shareholder_id"],
+        "share_class_id": bb.share_class["share_class_id"],
+        "shares": 500.0, "issue_date": "2024-01-01"})
+    assert later.status_code == 200
+
+    receipt = _execute(client, bb, effective_date="2023-05-01")
+    assert receipt.status_code == 200, receipt.text
+    body = receipt.json()
+
+    fresh = client.get(f"{API}/admin/cap-table/snapshot", headers=bb.admin_a).json()
+    assert body["company_after"]["outstanding_shares"] == fresh["outstanding_shares"]
+    assert body["company_after"]["fully_diluted_shares"] == fresh["fully_diluted_shares"]
+    assert body["company_as_of"] == business_today().isoformat()
+    # ולא רק "שווים": 1000 + 500 - 250. הנוסחה הישנה החזירה 750 בשני השדות.
+    assert body["company_after"]["outstanding_shares"] == 1250.0
+
+
+def test_the_preview_puts_the_lot_and_the_company_on_the_same_clock(client, bb):
+    """אותו חוסם, בצד התצוגה המקדימה: lot_before מגיע מקיפול מלא בלי חתך as-of,
+    ולכן מספרי החברה חייבים להיות על אותו שעון. שני שעונים בדיף אחד, תחת תוויות
+    לא-מסויגות, הם ההפך מ"דיף של טבלת הון" שדורש §6."""
+    later = client.post(f"{API}/admin/share-issuances", headers=bb.admin_a, json={
+        "shareholder_id": bb.shareholder["shareholder_id"],
+        "share_class_id": bb.share_class["share_class_id"],
+        "shares": 500.0, "issue_date": "2024-01-01"})
+    assert later.status_code == 200
+
+    body = _preview(client, bb, effective_date="2023-05-01").json()
+
+    # ההחזקה הכוללת והמנה נמדדות "עכשיו", ולכן גם סך החברה: 1000 + 500.
+    assert body["lot_before"] == 1000.0
+    assert body["holding_before"] == 1500.0
+    assert body["company_before"]["outstanding_shares"] == 1500.0
+
+
+def test_a_fractional_share_amount_is_rejected(client, bb):
+    """אזהרה 7: זו הגרסה הראשונה שמפחיתה מניות, וכל שדה כספי הוא Float (חוב א').
+    ה-CHECK של option_pools הוא שוויון צף מדויק שמחזיק רק כל עוד הכמויות שלמות."""
+    from backend.app.models import ShareIssuance
+
+    resp = _execute(client, bb, shares=0.5)
+    assert resp.status_code == 400
+    assert "whole number" in resp.json()["detail"]
+    assert bb.db.get(ShareIssuance, bb.lot_id).shares == 1000.0
+
+
+def test_the_execution_stamps_a_company_event_id_into_the_event_payload(client, bb):
+    """מפרט §7: מפתח הקורלציה נטבע ב-payload. תחת append-only אי אפשר להוסיפו
+    בדיעבד, ולכן הוא נכתב מהאירוע הראשון (הכרעת המשתתף, 17/08/2026)."""
+    from backend.app.models import LedgerEvent
+
+    body = _execute(client, bb).json()
+    assert body["company_event_id"]
+
+    event = bb.db.get(LedgerEvent, body["ledger_event_id"])
+    assert json.loads(event.payload)["company_event_id"] == body["company_event_id"]
 
 
 def test_a_lot_without_ledger_history_is_rejected_not_silently_marked(client, bb):

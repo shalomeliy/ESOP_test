@@ -65,6 +65,18 @@ def build_buyback_projection(
     if shares == 0:
         raise BuybackRejected("shares must not be zero")
 
+    # --- שלמות הכמות (סקירה 12, אזהרה 7) ---
+    # כל שדה כספי במודל הוא Float ולא Decimal (חוב פתוח א', מתוזמן ל-v1.2.3),
+    # וה-CHECK של option_pools הוא שוויון צף מדויק שמחזיק *רק* כל עוד כל
+    # הכמויות שלמות. זו הגרסה הראשונה שמפחיתה מניות, כלומר הראשונה שיכולה
+    # להכניס שבר לעמודה - ולכן השומר יושב כאן, לפני שהשבר נכתב, ולא בהמתנה
+    # למעבר ל-Decimal. is_integer ולא int(shares) בכוונה: inf/nan מפילים int().
+    if not float(shares).is_integer():
+        raise BuybackRejected(
+            f"shares must be a whole number of shares (got {shares}) - "
+            f"fractional share amounts are not modelled"
+        )
+
     # --- קריטריון 7: מוקדם מההנפקה נדחה קשיחות, בלי חלופה מרוככת ---
     # הקיפול ממוין לפי (effective_date, sequence_no) ואירוע הבסיס של ShareIssuance
     # מתועד ב-issue_date אמיתי. אירוע שמתוארך לפניו הוא אירוע שהמודל אינו יודע
@@ -96,22 +108,40 @@ def build_buyback_projection(
             f"cannot buy back {shares} shares - the lot holds only {lot_before}"
         )
 
-    company_before = compute_cap_table_snapshot(db, issuance.company_id, effective_date)
+    # --- שעון אחד: מספרי החברה הם מספרי *עכשיו* (הכרעת המשתתף, 17/08/2026) ---
+    # עד סקירה 12 זה היה compute_cap_table_snapshot(..., effective_date), וזה
+    # הראה לאדמין - על מסך אישור בלתי-הפיך - מספרי חברה שאינם מספרי החברה: כל
+    # הפיצ'ר הוא "תיעוד עסקה שכבר קרתה מחוץ למערכת" (§2), ולכן effective_date
+    # הוא כמעט תמיד בעבר, והפער היה מגיע ל-9,000 מניות בהוכחת הסוקר.
+    # החמור מזה היה עירוב שני שעונים באותו דיף: lot_before מגיע מקיפול מלא בלי
+    # חתך as-of (למעלה), כלומר "עכשיו", בעוד מספרי החברה נחתכו ב-effective_date.
+    # עכשיו שני הבלוקים על אותו שעון, ה-as-of מוחזר במפורש בשדה company_as_of,
+    # ו-effective_date נשאר מוצג כתאריך העסקה בלבד. הדלתא נכונה לשני הרגעים:
+    # אירוע מתוארך-אחורנית משפיע גם על התמונה של היום.
+    company_before = compute_cap_table_snapshot(db, issuance.company_id, None)
 
     # --- קריטריון 15: דלתא חיובית נבדקת מול תקרת המניות המורשות ---
-    # אותה נוסחה בדיוק כמו create_share_issuance, ומאותה סיבה: זו הנקודה
-    # היחידה בקוד שאוכפת את התקרה, ובלי החזרה עליה כאן תיקון כלפי מעלה היה
-    # עוקף אילוץ עסקי שכל מסלול אחר מקיים. תקרה None => אין בדיקה (דפוס P4:
-    # לא ממציאים תקרה שלא הוגדרה).
+    # *** תוקן בסקירה 12 (חוסם 1) ***: כאן הצהירה הערה ש"זו אותה נוסחה בדיוק
+    # כמו create_share_issuance" בעוד ההשוואה נעשתה מול snapshot חתוך ב-
+    # effective_date. שתי נוסחאות נפרדות: כל הנפקה מאוחרת מ-effective_date
+    # נשמטה מהסך, וכך תיקון כלפי מעלה שמתוארך למנה ישנה *פרץ את התקרה* -
+    # פגם דיני-תאגידי שנשאר ב-ledger לנצח. הנוסחה עכשיו זהה לתו: סכום העמודה
+    # לפי company_id, בלי חתך תאריך. העמודה - ולא ה-snapshot - היא משטח האכיפה,
+    # כי היא מה ש-create_share_issuance סוכם, וקריטריון 15 מפנה אליו בשמו.
+    # תקרה None => אין בדיקה (דפוס P4: לא ממציאים תקרה שלא הוגדרה).
     if delta > 0:
         company = db.get(Company, issuance.company_id)
         cap = company.total_authorized_shares if company else None
         if cap is not None:
-            projected_total = company_before["outstanding_shares"] + delta
-            if projected_total > cap:
+            issued_total = (
+                db.query(func.sum(ShareIssuance.shares))
+                .filter(ShareIssuance.company_id == issuance.company_id)
+                .scalar()
+            ) or 0.0
+            if issued_total + delta > cap:
                 raise BuybackRejected(
                     f"Adjustment would exceed total_authorized_shares "
-                    f"(available: {cap - company_before['outstanding_shares']})"
+                    f"(available: {cap - issued_total})"
                 )
 
     shareholder = db.get(Shareholder, issuance.shareholder_id)
@@ -144,6 +174,9 @@ def build_buyback_projection(
         "lot_after": lot_after,
         "holding_before": holding_before,
         "holding_after": holding_after,
+        # התאריך שמספרי החברה נכונים לו, במפורש ולא במשתמע - הצרכן (המסך,
+        # הקבלה, בדיקה) אינו צריך לדעת איזה שעון השירות בחר.
+        "company_as_of": company_before["as_of"],
         "company_before": _company_numbers(company_before),
         "company_after": _company_numbers(company_before, delta=delta),
         "partial": company_before["partial"],

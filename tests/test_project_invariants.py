@@ -748,11 +748,27 @@ def test_the_buyback_modal_keeps_its_accessibility_contract():
         assert 'aria-live="polite"' in segment, f"{region} אינו מוכרז ל-screen reader"
 
     # Escape ו"סגור" חסומים בזמן הכתיבה בלבד - לא תמיד, ולא אף פעם.
-    assert 'if (buybackState === "committing") return;' in portal, (
+    #
+    # *** חוזק בסקירה 12 (פער אימות 6) ***: הטענה הייתה על שלוש מחרוזות מקור
+    # מילוליות, כלומר שינוי שם משתנה שבר אותה בעוד שינוי *סמנטיקה* ששומר על
+    # המחרוזת עבר. עכשיו הטענה היא על מיקום: השומר חייב לשבת בתוך הגוף של
+    # closeBuybackModal (ולא בפונקציה אחרת שמחזירה את המחרוזת), ולהיות return
+    # מוקדם שתלוי במצב committing. שם המשתנה חופשי.
+    close_body = portal[portal.index("function closeBuybackModal()"):]
+    close_body = close_body[:close_body.index("\n        }")]
+    assert re.search(r'if\s*\([^)]*===\s*"committing"\s*\)\s*return\s*;', close_body), (
         "closeBuybackModal אינו חוסם יציאה בזמן committing"
     )
-    assert 'document.getElementById("buyback-modal-title").focus();' in portal, (
+    assert re.search(r'getElementById\(\s*"buyback-modal-title"\s*\)\.focus\(\)', portal), (
         "פתיחת המודאל אינה מעבירה פוקוס לכותרת"
+    )
+    # הכפתור שכותב חייב להיות מנוטרל *לפני* שהמצב חוזר ל-preview-shown אחרי כשל
+    # (סקירה 12, אזהרה 8): אחרת 409 משאיר אותו דרוך עם סימן מיושן, ולחיצה חוזרת
+    # מייצרת את אותו 409 לנצח.
+    execute_body = portal[portal.index("async function executeBuyback()"):]
+    execute_body = execute_body[:execute_body.index("\n        function ")]
+    assert re.search(r"catch[\s\S]*buybackPreview\s*=\s*null", execute_body), (
+        "נתיב הכשל בביצוע אינו פוסל את התצוגה המקדימה - הכפתור נשאר דרוך עם סימן מיושן"
     )
 
 

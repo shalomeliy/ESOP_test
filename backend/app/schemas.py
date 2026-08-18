@@ -609,6 +609,9 @@ class BuybackPreviewOut(BaseModel):
     # None = לצמד יש שורה בלי היסטוריית ledger, ולכן ההחזקה הכוללת אינה ידועה.
     holding_before: Optional[float] = None
     holding_after: Optional[float] = None
+    # התאריך שמספרי החברה נכונים לו - "עכשיו", ולא effective_date (סקירה 12,
+    # חוסם 2). מוחזר במפורש כדי שהמסך יוכל לתייג את הבלוק ולא ינחש.
+    company_as_of: date
     company_before: BuybackCompanyNumbers
     company_after: BuybackCompanyNumbers
     partial: bool
@@ -621,8 +624,13 @@ class BuybackPreviewOut(BaseModel):
 
 class BuybackReceiptOut(BaseModel):
     ledger_event_id: str
+    # מפתח הקורלציה שנטבע ב-payload של האירוע (מפרט §7). ביצוע אחד כותב היום
+    # אירוע אחד, אבל תחת append-only אי אפשר להוסיף את המפתח בדיעבד לאירועים
+    # שנכתבו - ולכן הוא נכתב מהאירוע הראשון (הכרעת המשתתף, 17/08/2026).
+    company_event_id: str
     share_issuance_id: str
     lot_after: float
+    company_as_of: date
     company_after: BuybackCompanyNumbers
     tax_treatment: str
     tax_reason_code: str

@@ -3,10 +3,13 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import Company, Employee, ShareClass, Shareholder, ShareIssuance, User, UserRole
+from backend.app.models import (
+    Company, Employee, ShareClass, Shareholder, ShareIssuance, User, UserRole, generate_uuid,
+)
 from backend.app.schemas import (
     CreateShareClassRequest, ShareClassOut,
     CreateShareholderRequest, ShareholderOut,
@@ -103,12 +106,16 @@ def create_shareholder(payload: CreateShareholderRequest,
     # גולמי שחוזר כ-500) וגם שיוך לחברה הנכונה (מונע קישור בעל-מניות של
     # חברה A לעובד של חברה B). אותו דפוס בדיוק כמו בדיקת shareholder/share_class
     # ב-create_share_issuance למעלה.
+    #
+    # *** 404 אחיד גם כאן (סקירה 12, אזהרה 6) ***: עד כאן "עובד לא קיים" החזיר
+    # 404 ו"עובד של חברה אחרת" 403 - כלומר אורקל קיום עובד, שאפשר למנות בו את
+    # המזהים הזרועים (EMP-001, EMP-TAX-WORKINCOME-1) בבקשה אחת למזהה. אותו פגם
+    # שהגרסה הזו סגרה בשלוש ישויות טבלת ההון, על ישות Employee. שני הענפים
+    # מחזירים עכשיו גוף זהה לתו.
     if payload.employee_id is not None:
         employee = db.query(Employee).filter(Employee.employee_id == payload.employee_id).first()
-        if not employee:
+        if employee is None or employee.company_id != current_user.company_id:
             raise HTTPException(status_code=404, detail="Employee not found")
-        if employee.company_id != current_user.company_id:
-            raise HTTPException(status_code=403, detail="Cannot link shareholder to an employee outside your company")
 
     shareholder = Shareholder(
         company_id=current_user.company_id,
@@ -262,10 +269,18 @@ def execute_buyback(payload: ExecuteBuybackRequest,
     before_shares = issuance.shares
     issuance.shares = projection["lot_after"]
 
+    # מפתח הקורלציה של הביצוע (מפרט §7). ביצוע אחד כותב היום אירוע אחד, ולכן
+    # הוא אינו מקשר דבר *כרגע* - אבל ledger הוא append-only: אירוע שנכתב בלי
+    # המפתח לא יקבל אותו לעולם, ואירועי v1.2.1 (מיזוג/גיוס/העברה), שכן כותבים
+    # כמה אירועים בביצוע אחד, לא יוכלו להתקשר לאירועי v1.2.0 שנכתבו בינתיים.
+    # לכן הוא נטבע מהאירוע הראשון (הכרעת המשתתף, 17/08/2026).
+    company_event_id = generate_uuid()
+
     event = append_event(
         db, event_type="SHARE_ISSUANCE_ADJUSTED", aggregate_type="ShareIssuance",
         aggregate_id=issuance.share_issuance_id,
-        payload={"delta_shares": projection["lot_delta"], "reason": payload.reason},
+        payload={"delta_shares": projection["lot_delta"], "reason": payload.reason,
+                 "company_event_id": company_event_id},
         effective_date=payload.effective_date, actor_user_id=current_user.user_id,
     )
 
@@ -276,12 +291,29 @@ def execute_buyback(payload: ExecuteBuybackRequest,
                        after={"shares": issuance.shares, "reason": payload.reason,
                               "effective_date": payload.effective_date})
 
-    db.commit()
+    # *** שני ביצועים במקביל (סקירה 12, אזהרה 5) ***: שניהם קוראים את אותו
+    # max(sequence_no), שניהם עוברים את בדיקת ה-409 למעלה, ושניהם מנסים להכניס
+    # N+1. ה-UniqueConstraint(aggregate_id, sequence_no) מונע את ההפחתה הכפולה -
+    # זו רשת הביטחון האמיתית - אבל הוא זורק IntegrityError, ובלי הלכידה הזו
+    # נתיב הכתיבה החזיר 500 שהלקוח אינו יכול להבחין בינו לתקלת שרת ועלול לנסות
+    # שוב. אותו 409 ואותו טקסט "re-run the preview" כמו במסלול המיושן הסדרתי:
+    # מבחינת הקורא זה בדיוק אותו מצב - המנה זזה מתחתיו.
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=("the lot changed since the preview was taken "
+                    "(a concurrent adjustment was written first) - re-run the preview"),
+        )
 
     return {
         "ledger_event_id": event.event_id,
+        "company_event_id": company_event_id,
         "share_issuance_id": issuance.share_issuance_id,
         "lot_after": projection["lot_after"],
+        "company_as_of": projection["company_as_of"],
         "company_after": projection["company_after"],
         "tax_treatment": projection["tax_treatment"],
         "tax_reason_code": projection["tax_reason_code"],

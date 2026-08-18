@@ -173,15 +173,27 @@ def test_create_shareholder_requires_company_admin_role(client, world):
     assert response.status_code == 403
 
 
-def test_create_shareholder_linked_to_another_companys_employee_is_403(client, world):
+def test_create_shareholder_linked_to_another_companys_employee_is_404(client, world):
     """נועל את התיקון בקוד הייצור (backend-engineer, cap_table.py::create_shareholder):
     admin_a לא יכול לקשר Shareholder ל-employee_id ששייך ל-COMP-CT-B - קישור
     זהות חוצה-חברות שגוי, אפילו בלי לחשוף דאטה של B ישירות. לפני התיקון
-    (נמצא בסקירת ה-QA הזו) זה הצליח בשקט עם 200."""
-    response = client.post(f"{API}/admin/shareholders", headers=world.admin_a, json={
+    (נמצא בסקירת ה-QA הזו) זה הצליח בשקט עם 200.
+
+    *** 403 -> 404 (סקירה 12, אזהרה 6, 17/08/2026) ***: הבדיקה חוזקה ולא הוחלשה.
+    עד כאן היא אימתה 403 נבדל, שהוא אורקל קיום עובד - מי שמנחש מזהים למד מקוד
+    התשובה אילו מהם אמיתיים, והמזהים הזרועים צפויים. עכשיו היא בודקת שגם עובד
+    של חברה אחרת וגם מזהה מומצא מחזירים 404 עם *גוף זהה*: בדיקה שרק סופרת 404
+    הייתה מחזירה את האורקל דרך טקסט השגיאה. אותו דפוס בדיוק כמו שלוש ישויות
+    טבלת ההון בקריטריון 8."""
+    foreign = client.post(f"{API}/admin/shareholders", headers=world.admin_a, json={
         "name": "Sneaky", "shareholder_type": "EMPLOYEE", "employee_id": "CT-EMP-B1",
     })
-    assert response.status_code == 403
+    invented = client.post(f"{API}/admin/shareholders", headers=world.admin_a, json={
+        "name": "Sneaky", "shareholder_type": "EMPLOYEE", "employee_id": "EMP-DOES-NOT-EXIST",
+    })
+    assert foreign.status_code == 404
+    assert invented.status_code == 404
+    assert foreign.json() == invented.json()
 
 
 def test_create_shareholder_with_unknown_employee_id_is_404_not_500(client, world):

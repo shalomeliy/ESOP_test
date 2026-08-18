@@ -858,7 +858,12 @@
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
                         <label class="block text-xs text-slate-400 mb-1" for="buyback-shares">כמות מניות</label>
-                        <input type="number" id="buyback-shares" min="0" dir="ltr"
+                        <!-- *** בלי min (סקירה 12, אזהרה 9) ***: min="0" סימן את
+                             הכיוון השלילי - תיקון כלפי מעלה, הכיוון שקריטריון 15
+                             קיים בשבילו - כלא-חוקי בדפדפן, בסתירה לטקסט שמתחת
+                             לשדה. אפס נדחה בשרת (services/buyback.py), ששם יושבת
+                             כל הוולידציה העסקית ממילא. -->
+                        <input type="number" id="buyback-shares" step="1" dir="ltr"
                                class="w-full min-h-[44px] bg-slate-800 border border-slate-700 rounded-xl px-4 py-2 text-white">
                         <p class="text-[10px] text-slate-500 mt-1">חיובי = רכישה עצמית. שלילי = תיקון כלפי מעלה.</p>
                     </div>
@@ -2838,9 +2843,13 @@
                     </div>
                 </div>
 
+                <!-- *** התוויות נושאות את הרגע (סקירה 12, חוסם 2) ***: מספרי החברה
+                     נכונים ל-company_as_of ("עכשיו"), בעוד תאריך התוקף של העסקה יכול
+                     להיות בעבר. תווית לא-מסויגת על מסך אישור בלתי-הפיך היא הפגם עצמו. -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
                     <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                        <p class="text-xs text-slate-400">מניות מונפקות בחברה</p>
+                        <p class="text-xs text-slate-400">מניות מונפקות בחברה
+                            <span class="text-slate-500">(נכון ל-<span class="font-mono" dir="ltr">${esc(p.company_as_of)}</span>)</span></p>
                         <p class="mt-1"><span dir="ltr">${p.company_before.outstanding_shares.toLocaleString()}</span>
                             <span class="text-slate-500">→</span>
                             <b class="text-white" dir="ltr">${p.company_after.outstanding_shares.toLocaleString()}</b></p>
@@ -2848,7 +2857,8 @@
                             → ${buybackPctLine(p.company_after.outstanding_pct_of_authorized)} מהמורשות</p>
                     </div>
                     <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                        <p class="text-xs text-slate-400">דילול-מלא</p>
+                        <p class="text-xs text-slate-400">דילול-מלא
+                            <span class="text-slate-500">(נכון ל-<span class="font-mono" dir="ltr">${esc(p.company_as_of)}</span>)</span></p>
                         <p class="mt-1"><span dir="ltr">${p.company_before.fully_diluted_shares.toLocaleString()}</span>
                             <span class="text-slate-500">→</span>
                             <b class="text-white" dir="ltr">${p.company_after.fully_diluted_shares.toLocaleString()}</b></p>
@@ -2881,7 +2891,10 @@
 
         function onBuybackConfirmInput() {
             const typed = parseFloat(document.getElementById("buyback-confirm-shares").value);
-            document.getElementById("buyback-execute-btn").disabled = !(typed === buybackRequest.shares);
+            // buybackPreview === null אחרי ביצוע שנכשל (ראו executeBuyback): הסימן
+            // שנשלח היה מיושן, והקלדה חוזרת של אותה כמות תשלח אותו סימן שוב.
+            const usable = buybackPreview !== null && typed === buybackRequest.shares;
+            document.getElementById("buyback-execute-btn").disabled = !usable;
         }
 
         function restartBuyback() {
@@ -2893,6 +2906,7 @@
         async function executeBuyback() {
             document.getElementById("buyback-error").classList.add("hidden");
             const typed = parseFloat(document.getElementById("buyback-confirm-shares").value);
+            if (buybackPreview === null) return;   // תצוגה מקדימה מיושנת, ראו catch למטה
             setBuybackState("committing", "מבצע ורושם אירוע ledger...");
             try {
                 // אותו גוף בקשה שהתצוגה המקדימה קיבלה, ועוד שני שדות: הסימן
@@ -2913,7 +2927,15 @@
                 // failed. חזרה ל-preview-shown ולא ל-idle: 409 ("המנה זזה מאז
                 // התצוגה המקדימה") נפתר ב"התחל מחדש", והאדמין צריך לראות מול
                 // מה בדיוק נדחתה הבקשה.
+                //
+                // *** התצוגה המקדימה נפסלת (סקירה 12, אזהרה 8) ***: עד כאן
+                // expected_sequence_no נשאר כפי שהיה וכפתור "אשר ובצע" נשאר דרוך,
+                // כלומר אחרי 409 הכפתור היחיד שהמסך מזמין ללחוץ עליו לא יכול היה
+                // להצליח לעולם. איפוס ל-null מנטרל אותו דרך onBuybackConfirmInput,
+                // ומשאיר את "התחל מחדש" - שמריץ תצוגה מקדימה טרייה - כדרך היחידה.
+                buybackPreview = null;
                 setBuybackState("preview-shown");
+                document.getElementById("buyback-execute-btn").disabled = true;
                 showBuybackError(err.message);
             }
         }
@@ -2929,9 +2951,11 @@
                 <div class="p-4 bg-slate-950 border border-slate-800 rounded-2xl text-sm space-y-2">
                     <div><span class="text-slate-400">מזהה אירוע ledger:</span>
                         <span class="font-mono text-white break-all">${esc(receipt.ledger_event_id)}</span></div>
+                    <div><span class="text-slate-400">מזהה אירוע חברה:</span>
+                        <span class="font-mono text-slate-300 break-all">${esc(receipt.company_event_id)}</span></div>
                     <div><span class="text-slate-400">המנה אחרי:</span>
                         <b class="text-white" dir="ltr">${receipt.lot_after.toLocaleString()}</b></div>
-                    <div><span class="text-slate-400">מניות מונפקות בחברה:</span>
+                    <div><span class="text-slate-400">מניות מונפקות בחברה (נכון ל-<span class="font-mono" dir="ltr">${esc(receipt.company_as_of)}</span>):</span>
                         <b class="text-white" dir="ltr">${receipt.company_after.outstanding_shares.toLocaleString()}</b>
                         · דילול-מלא <b class="text-white" dir="ltr">${receipt.company_after.fully_diluted_shares.toLocaleString()}</b></div>
                     <div><span class="text-slate-400">מס:</span> ${esc(receipt.tax_treatment)} (${esc(receipt.tax_reason_code)})</div>
